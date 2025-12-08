@@ -128,11 +128,18 @@ class ExperimentRunner:
         # Run training with unified progress display
         start_time = time.time()
 
+        # Calculate number of batches based on memory strategy
+        # For parallel mode: ceil(num_alphas / max_parallel_alphas)
+        # For sequential mode: num_alphas (each alpha is one batch)
+        batch_size = strategy.max_parallel_alphas if strategy.mode == MemoryMode.PARALLEL else 1
+        num_batches = (len(remaining_alphas) + batch_size - 1) // batch_size
+
         # Create unified progress display
         unified_progress = UnifiedProgress(
             num_alphas=len(remaining_alphas),
             steps_per_alpha=self.config.training.max_steps,
             initial_estimate=initial_estimate,
+            num_batches=num_batches,
         )
         unified_progress.start()
 
@@ -294,11 +301,12 @@ class ExperimentRunner:
         batch_size = strategy.max_parallel_alphas
 
         # Process alphas in batches
+        batch_idx = 0
         for batch_start in range(0, len(alpha_values), batch_size):
             batch_alphas = alpha_values[batch_start:batch_start + batch_size]
 
             # Show batch info with all alphas in this batch
-            unified_progress.start_alpha(batch_alphas[0], batch_alphas=batch_alphas)
+            unified_progress.start_batch(batch_idx, batch_alphas)
 
             # Generate masks for batch
             masks = []
@@ -312,11 +320,12 @@ class ExperimentRunner:
             # Stack masks: (batch_size, N1, N2)
             masks_tensor = torch.stack(masks, dim=0)
 
-            # Train batch with progress callback
+            # Train batch with step callback
+            # Note: All samples run in parallel via Disjoint Union architecture
             batch_seed = seed + batch_start * 10000
             W_s_batch, X_s_batch = algorithm.train_batch_alphas(
                 W_t, X_t, Y_t, masks_tensor, batch_alphas, batch_seed,
-                progress_callback=unified_progress.update_step,
+                step_callback=unified_progress.update_step,
             )
 
             # Evaluate each alpha in batch
@@ -330,7 +339,8 @@ class ExperimentRunner:
                 all_results[float(alpha)] = metrics
 
             # Finish the entire batch at once (not per-alpha)
-            unified_progress.finish_alpha(metrics)
+            unified_progress.finish_batch(metrics)
+            batch_idx += 1
 
             # Clear cache between batches
             if self.device.type == 'cuda':

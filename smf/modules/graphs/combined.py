@@ -18,7 +18,7 @@ import torch
 from ..registry import register_graph
 from .base import GraphBase
 from .random import RandomGraph
-from .dinic import DinicGraph
+from .uniform import UniformGraph as DinicGraph  # DinicGraph is alias for UniformGraph
 from .low_loop import LowLoopGraph
 
 

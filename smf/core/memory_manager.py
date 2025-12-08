@@ -248,3 +248,195 @@ def calculate_smart_parallelism(
 
     max_parallel = max(1, min(int(usable_mem / mem_per_batch_alpha), num_alphas))
     return max_parallel
+
+
+# ============================================================================
+# Spreading Algorithm Memory Management (Disjoint Union Parallelization)
+# ============================================================================
+
+def estimate_memory_spreading_parallel(
+    N1: int,
+    N2: int,
+    M: int,
+    S: int,
+    B: int,
+    alpha_max: float = 4.0,
+    dtype_bytes: int = 4,
+) -> float:
+    """
+    Estimate GPU memory for Spreading BiG-AMP with Disjoint Union parallelization.
+
+    All S samples run in parallel using index offsetting.
+    B alphas per batch.
+
+    Tensor shapes in Disjoint Union architecture:
+    - W_hat: (S, B, N1, M) -> flattened to (B, S*N1, M)
+    - X_hat: (S, B, M, N2) -> flattened to (B, S*N2, M)
+    - W_var, X_var: same as above
+    - F_super: (S, C_max, M)
+    - Y_super: (S, C_max)
+    - i_offset, j_offset: (S * C_max,) int64
+
+    Intermediate tensors per step:
+    - W_sel, X_sel: (B, S*C_max, M)
+    - Z_hat, V, s_val: (B, S*C_max)
+    - r_W, tau_W: (B, S*N1, M)
+    - r_X, tau_X: (B, S*N2, M)
+
+    Args:
+        N1: Number of rows
+        N2: Number of columns
+        M: Hidden dimension (rank)
+        S: Number of samples (all parallel)
+        B: Number of alphas per batch
+        alpha_max: Maximum alpha value (determines C_max)
+        dtype_bytes: Bytes per element (4 for float32)
+
+    Returns:
+        Estimated memory in GB
+    """
+    # C_max = number of edges at alpha_max
+    # For random graph: expected edges = alpha * M * N1
+    C_max = int(alpha_max * M * N1)
+    SC = S * C_max
+
+    # Student parameters: W_hat, X_hat, W_var, X_var
+    # Shape: (S, B, N1, M) and (S, B, M, N2)
+    student_W = S * B * N1 * M * dtype_bytes
+    student_X = S * B * M * N2 * dtype_bytes
+    student_total = 4 * (student_W + student_X)  # 4 tensors
+
+    # F_super and Y_super (shared across alpha batch)
+    f_super = S * C_max * M * dtype_bytes
+    y_super = S * C_max * dtype_bytes
+
+    # Index tensors (int64 = 8 bytes)
+    i_offset = SC * 8
+    j_offset = SC * 8
+
+    # Intermediate tensors during step (most memory-intensive)
+    # Gather results: W_sel, X_sel, W_var_sel, X_var_sel = 4 tensors of (B, SC, M)
+    gather_tensors = 4 * B * SC * M * dtype_bytes
+
+    # Scalar intermediates: Z_hat, V, denom, s_val = 4 tensors of (B, SC)
+    scalar_tensors = 4 * B * SC * dtype_bytes
+
+    # Scatter targets: r_W, tau_W of (B, S*N1, M), r_X, tau_X of (B, S*N2, M)
+    scatter_W = 2 * B * S * N1 * M * dtype_bytes
+    scatter_X = 2 * B * S * N2 * M * dtype_bytes
+
+    # Total base memory
+    total_bytes = (
+        student_total +
+        f_super + y_super +
+        i_offset + j_offset +
+        gather_tensors +
+        scalar_tensors +
+        scatter_W + scatter_X
+    )
+
+    # PyTorch overhead: ~60% for fragmentation, allocator pools, temp tensors
+    pytorch_overhead = 1.6
+
+    return total_bytes * pytorch_overhead / (1024**3)
+
+
+def calculate_spreading_batches(
+    N1: int,
+    N2: int,
+    M: int,
+    S: int,
+    num_alphas: int,
+    max_memory_gb: float = 24.0,
+    alpha_max: float = 4.0,
+) -> int:
+    """
+    Calculate optimal number of alphas per batch for Spreading algorithm.
+
+    Uses binary search to find maximum B such that memory usage <= max_memory_gb.
+
+    Args:
+        N1: Number of rows
+        N2: Number of columns
+        M: Hidden dimension
+        S: Number of samples (all parallel)
+        num_alphas: Total number of alpha values
+        max_memory_gb: Maximum GPU memory to use (default 28GB)
+        alpha_max: Maximum alpha value (for C_max estimation)
+
+    Returns:
+        B: Number of alphas per batch
+    """
+    # Binary search for maximum B
+    low, high = 1, num_alphas
+
+    while low < high:
+        mid = (low + high + 1) // 2
+        mem = estimate_memory_spreading_parallel(N1, N2, M, S, mid, alpha_max)
+        if mem <= max_memory_gb:
+            low = mid
+        else:
+            high = mid - 1
+
+    return max(1, low)
+
+
+def get_spreading_memory_strategy(
+    N1: int,
+    N2: int,
+    M: int,
+    S: int,
+    num_alphas: int,
+    alpha_max: float = 4.0,
+    available_gb: Optional[float] = None,
+    verbose: bool = True,
+) -> dict:
+    """
+    Get complete memory strategy for Spreading algorithm.
+
+    Args:
+        N1, N2, M, S: Matrix dimensions
+        num_alphas: Total alpha values
+        alpha_max: Maximum alpha (for C_max)
+        available_gb: Available GPU memory (auto-detect if None)
+        verbose: Print info
+
+    Returns:
+        dict with:
+        - alphas_per_batch: Number of alphas per batch
+        - num_batches: Total batches needed
+        - estimated_memory_gb: Estimated peak memory per batch
+        - samples_parallel: Always S (all samples parallel)
+    """
+    if available_gb is None:
+        available_gb = get_available_gpu_memory()
+        if available_gb == 0:
+            available_gb = 8.0
+
+    # Reserve 3GB for system, use 90% of remaining
+    effective_gb = (min(available_gb, 32.0) - 3.0) * 0.90
+
+    # Calculate optimal batch size
+    alphas_per_batch = calculate_spreading_batches(
+        N1, N2, M, S, num_alphas, effective_gb, alpha_max
+    )
+
+    num_batches = (num_alphas + alphas_per_batch - 1) // alphas_per_batch
+    estimated_mem = estimate_memory_spreading_parallel(
+        N1, N2, M, S, alphas_per_batch, alpha_max
+    )
+
+    if verbose:
+        print("\n[Spreading Memory Strategy]")
+        print(f"  Matrix: {N1}×{N2}, M={M}")
+        print(f"  Samples: {S} (all parallel via Disjoint Union)")
+        print(f"  Alphas: {num_alphas} total, {alphas_per_batch}/batch, {num_batches} batches")
+        print(f"  Memory: {estimated_mem:.2f} GB per batch (limit: {effective_gb:.1f} GB)")
+
+    return {
+        'alphas_per_batch': alphas_per_batch,
+        'num_batches': num_batches,
+        'estimated_memory_gb': estimated_mem,
+        'samples_parallel': S,
+        'effective_available_gb': effective_gb,
+    }

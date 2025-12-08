@@ -128,9 +128,9 @@ DAMPING = 0.5                   # BiG-AMP 阻尼因子
 ### 模块系统 (smf/modules/)
 | 类别 | 模块 |
 |------|------|
-| algorithms | `bigamp.py`, `agd.py` |
+| algorithms | `bigamp.py`, `bigamp_spreading.py`, `agd.py` |
 | graphs | `random.py`, `dinic.py`, `low_loop.py`, `uniform.py` |
-| teachers | `standard.py`, `orthogonal.py`, `scaled_variance.py` |
+| teachers | `standard.py`, `orthogonal.py`, `scaled_variance.py`, `random_spreading.py` |
 | metrics | `overlap.py`, `qy_unobserved.py`, `spreading.py` |
 | outputs | `plotting.py`, `storage.py`, `comparison.py` |
 

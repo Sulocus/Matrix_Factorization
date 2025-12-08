@@ -75,17 +75,17 @@ class MainMenu:
         table = Table(show_header=False, box=None, padding=(0, 1))
 
         table.add_row(
-            f"[{THEME['option_number']}][1][/{THEME['option_number']}]",
+            f"[{THEME['option_number']}]\\[1][/{THEME['option_number']}]",
             f"[{THEME['option_title']}]{self.t('run')}[/{THEME['option_title']}]",
             f"[{THEME['option_desc']}]{self.t('run_desc')}[/{THEME['option_desc']}]"
         )
         table.add_row(
-            f"[{THEME['option_number']}][2][/{THEME['option_number']}]",
+            f"[{THEME['option_number']}]\\[2][/{THEME['option_number']}]",
             f"[{THEME['option_title']}]{self.t('browse')}[/{THEME['option_title']}]",
             f"[{THEME['option_desc']}]{self.t('browse_desc')}[/{THEME['option_desc']}]"
         )
         table.add_row(
-            f"[{THEME['option_number']}][q][/{THEME['option_number']}]",
+            f"[{THEME['option_number']}]\\[q][/{THEME['option_number']}]",
             f"[{THEME['option_title']}]{self.t('exit')}[/{THEME['option_title']}]",
             ""
         )
@@ -93,10 +93,13 @@ class MainMenu:
         self.console.print(table)
         self.console.print()
 
+        prompt = f"{self.t('select')} (默认: [1])" if self.lang == 'cn' else f"{self.t('select')} (default: [1])"
         choice = Prompt.ask(
-            self.t('select'),
+            prompt,
             choices=["1", "2", "q"],
-            default="1"
+            default="1",
+            show_default=False,
+            show_choices=False,
         )
 
         return {

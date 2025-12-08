@@ -42,6 +42,14 @@ class TrainingConfig:
 
 
 @dataclass
+class SpreadingConfig:
+    """Random spreading specific configuration."""
+    f_distribution: str = "gaussian"  # gaussian | rademacher
+    seed: int = 12345                 # Seed for F generation
+    teacher_type: str = "standard"    # standard | orthogonal (for W/X generation)
+
+
+@dataclass
 class AlgorithmConfig:
     """Algorithm-specific parameters."""
     # BiG-AMP
@@ -92,6 +100,9 @@ class Config:
     graph_key: str = "random"
     teacher_key: str = "standard"
 
+    # Algorithm-specific configurations
+    spreading: Optional[SpreadingConfig] = None  # Only used when algorithm_key="bigamp_spreading*"
+
     # LLM-generated execution parameters
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
 
@@ -124,6 +135,10 @@ class Config:
             include_qy_plot=exec_data.get('include_qy_plot', True),
         )
 
+        # Handle spreading config (only for bigamp_spreading algorithms)
+        spreading_data = data.get('spreading')
+        spreading = SpreadingConfig(**spreading_data) if spreading_data else None
+
         return cls(
             matrix=MatrixConfig(**data.get('matrix', {})),
             alpha=AlphaConfig(**data.get('alpha', {})),
@@ -132,6 +147,7 @@ class Config:
             algorithm_key=data.get('algorithm_key', 'bigamp'),
             graph_key=data.get('graph_key', 'random'),
             teacher_key=data.get('teacher_key', 'standard'),
+            spreading=spreading,
             execution=execution,
         )
 

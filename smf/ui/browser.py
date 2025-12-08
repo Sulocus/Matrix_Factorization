@@ -65,7 +65,8 @@ class ResultBrowser:
             title = "结果浏览器" if self.lang == 'cn' else "Result Browser"
             self.console.print(Panel(
                 f"[bold cyan]{title}[/bold cyan]",
-                border_style="cyan"
+                border_style="cyan",
+                expand=False
             ))
 
             table = Table(show_header=False, box=box.ROUNDED, padding=(0, 1))
@@ -150,14 +151,16 @@ class ResultBrowser:
                 self.console.print(Panel(
                     f"[{THEME['ai_title']}]AI 智能筛选[/{THEME['ai_title']}]\n"
                     "[dim]用自然语言描述你要找的实验[/dim]",
-                    border_style="magenta"
+                    border_style="magenta",
+                    expand=False
                 ))
                 self.console.print("[dim]示例：'大矩阵', '正交教师', 'M=100', '最近的实验'[/dim]")
             else:
                 self.console.print(Panel(
                     f"[{THEME['ai_title']}]AI Filter[/{THEME['ai_title']}]\n"
                     "[dim]Describe what you're looking for in natural language[/dim]",
-                    border_style="magenta"
+                    border_style="magenta",
+                    expand=False
                 ))
                 self.console.print("[dim]Examples: 'large matrix', 'orthogonal teacher', 'M=100'[/dim]")
             self.console.print()
@@ -208,7 +211,7 @@ class ResultBrowser:
     def _filter_results(self):
         """Filter results by criteria."""
         if RICH_AVAILABLE:
-            self.console.print(Panel("[bold]Filter Criteria[/bold]", border_style="yellow"))
+            self.console.print(Panel("[bold]Filter Criteria[/bold]", border_style="yellow", expand=False))
 
             # Get unique values
             algorithms = list(set(r.get('algorithm') for r in self.results if r.get('algorithm')))
@@ -309,7 +312,7 @@ class ResultBrowser:
 
         if RICH_AVAILABLE:
             self.console.print()
-            self.console.print(Panel(f"[bold]{result['name']}[/bold]", border_style="green"))
+            self.console.print(Panel(f"[bold]{result['name']}[/bold]", border_style="green", expand=False))
 
             # Config info
             config = data.get('config')

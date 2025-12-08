@@ -36,13 +36,18 @@ class UnifiedProgress:
     """
     Modern progress display with 'Dynamic Capsule' layout - Style A (Clean Cyan).
 
-    Structure:
+    Structure for Disjoint Union parallel training:
     ╭────────────────────────────────────────────────────────╮
-    │  ●  Batch  5/10   Alpha 0.4-0.7   Step  2500/5000      │
+    │  ●  Batch  1/3     Alpha 0.0-1.5   Step  2500/5000     │
     │  Step  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  50.0% │
-    │  Total ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  45.0% │
+    │  Total ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   0.0% │
     │  Power 485W   VRAM 13.5G   Elapsed   1:30   ETA   1:30 │
     ╰────────────────────────────────────────────────────────╯
+
+    - All samples run in parallel (Disjoint Union architecture)
+    - Alpha values are batched based on GPU memory
+    - Total progress: completed batches / total batches (discrete, not interpolated)
+    - ETA: based on avg_batch_time × remaining_batches
     """
 
     def __init__(
@@ -50,7 +55,8 @@ class UnifiedProgress:
         num_alphas: int,
         steps_per_alpha: int,
         batch_size: int = 1,
-        initial_estimate: float = None
+        initial_estimate: float = None,
+        num_batches: int = 1,  # Number of alpha batches
     ):
         self.num_alphas = num_alphas
         self.steps_per_alpha = steps_per_alpha
@@ -58,11 +64,17 @@ class UnifiedProgress:
         self.initial_estimate = initial_estimate
         self.gpu_monitor = GPUMonitor()
 
+        # Batch tracking state
+        self._total_batches = num_batches
+        self._current_batch_idx = 0  # Current batch (0-indexed internally, displayed as 1-indexed)
+        self._completed_batches = 0
+
         # Timing state
         self._total_start_time: float = None
         self._batch_start_time: float = None
         self._completed_alphas = 0
         self._alpha_times: List[float] = []
+        self._batch_times: List[float] = []  # Time per batch for ETA
         self._current_alpha = 0.0
         self._current_batch_alphas: List[float] = []
         self._current_step = 0
@@ -78,13 +90,16 @@ class UnifiedProgress:
     def _render(self):
         """
         Render the Dynamic Capsule panel - Style A (Clean Cyan).
+
+        Layout for Disjoint Union parallel training:
+        - Step: current step within current batch (0 → max_steps)
+        - Batch: completed batches / total batches
         """
         # Data Calculations
         pct_step = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
-        pct_total = self._completed_alphas / self.num_alphas if self.num_alphas > 0 else 0
-
-        current_batch = self._completed_alphas + 1
-        total_batches = self.num_alphas
+        # Batch progress: completed batches + current step fraction
+        batch_progress = self._completed_batches + (pct_step if self._completed_batches < self._total_batches else 0)
+        pct_batch = batch_progress / self._total_batches if self._total_batches > 0 else 0
 
         # Timing
         elapsed = time.time() - self._total_start_time if self._total_start_time else 0
@@ -133,22 +148,26 @@ class UnifiedProgress:
         grid = Table.grid(padding=0)
         grid.add_column()
 
-        # Row 1: Header
+        # Row 1: Header - show batch progress and step progress
+        # Batch N/B means: training batch N out of B total batches
+        batch_display = self._current_batch_idx + 1
         grid.add_row(Text.from_markup(
-            f" [cyan]{spinner}[/]  Batch [cyan]{current_batch:>2}[/]/{total_batches}   "
+            f" [cyan]{spinner}[/]  Batch [cyan]{batch_display:>2}[/]/{self._total_batches}     "
             f"Alpha [cyan]{alpha_str:>7}[/]   Step [cyan]{self._current_step:>5}[/]/{self.steps_per_alpha}"
         ))
 
-        # Row 2: Step progress
+        # Row 2: Step progress (within current batch)
         row2 = Text(" Step  ")
         row2.append_text(make_bar_text(pct_step, 40, "━", "━", "cyan"))
         row2.append(f" {pct_step*100:5.1f}%", style="cyan")
         grid.add_row(row2)
 
-        # Row 3: Total progress
+        # Row 3: Total progress (completed batches / total) - no number since header shows Batch X/Y
+        # Use discrete batch completion (not interpolated with step progress)
+        total_pct = self._completed_batches / self._total_batches if self._total_batches > 0 else 0
         row3 = Text(" Total ")
-        row3.append_text(make_bar_text(pct_total, 40, "━", "━", "cyan"))
-        row3.append(f" {pct_total*100:5.1f}%", style="cyan")
+        row3.append_text(make_bar_text(total_pct, 40, "━", "━", "cyan"))
+        row3.append(f" {total_pct*100:5.1f}%", style="cyan")
         grid.add_row(row3)
 
         # Row 4: Metrics
@@ -166,41 +185,43 @@ class UnifiedProgress:
         )
 
     def _estimate_eta(self) -> float:
-        """Estimate remaining time based on cumulative timing."""
+        """Estimate remaining time based on batch timing."""
         if not self._total_start_time:
             return self.initial_estimate if self.initial_estimate else 0
 
         total_elapsed = time.time() - self._total_start_time
 
-        if self._completed_alphas == 0:
+        # If no batches completed yet, estimate from current batch progress
+        if self._completed_batches == 0:
             if self._batch_start_time and self._current_step > 0:
                 step_elapsed = time.time() - self._batch_start_time
                 step_pct = self._current_step / self.steps_per_alpha
-                if step_pct > 0.05:
+                if step_pct > 0.05:  # Wait for 5% progress before estimating
                     estimated_batch_time = step_elapsed / step_pct
-                    batch_count = len(self._current_batch_alphas) if self._current_batch_alphas else 1
                     remaining_in_current = estimated_batch_time * (1 - step_pct)
-                    time_per_alpha = estimated_batch_time / batch_count
-                    remaining_alphas = self.num_alphas - batch_count
-                    return remaining_in_current + time_per_alpha * remaining_alphas
+                    remaining_batches = self._total_batches - 1
+                    return remaining_in_current + estimated_batch_time * remaining_batches
             return self.initial_estimate if self.initial_estimate else 0
 
-        if self._alpha_times:
-            avg_time_per_alpha = sum(self._alpha_times) / len(self._alpha_times)
+        # Use completed batch times for estimation
+        if self._batch_times:
+            avg_time_per_batch = sum(self._batch_times) / len(self._batch_times)
         else:
-            avg_time_per_alpha = total_elapsed / self._completed_alphas
+            avg_time_per_batch = total_elapsed / self._completed_batches
 
-        remaining_alphas = self.num_alphas - self._completed_alphas
+        remaining_batches = self._total_batches - self._completed_batches
 
+        # Estimate remaining time in current batch
         remaining_in_current = 0
-        if self._batch_start_time and self._current_step > 0:
+        if remaining_batches > 0 and self._batch_start_time and self._current_step > 0:
             step_elapsed = time.time() - self._batch_start_time
             step_pct = self._current_step / self.steps_per_alpha
             if step_pct > 0:
                 estimated_batch_time = step_elapsed / step_pct
                 remaining_in_current = estimated_batch_time * (1 - step_pct)
+                remaining_batches -= 1  # Current batch partially counted
 
-        return avg_time_per_alpha * remaining_alphas + remaining_in_current
+        return avg_time_per_batch * remaining_batches + remaining_in_current
 
     def start(self):
         """Start progress display."""
@@ -226,8 +247,29 @@ class UnifiedProgress:
         )
         self._live.start()
 
+    def start_batch(self, batch_idx: int, batch_alphas: List[float]):
+        """Start tracking a new batch.
+
+        Args:
+            batch_idx: 0-indexed batch number
+            batch_alphas: List of alpha values in this batch
+        """
+        if not RICH_AVAILABLE or not self._live:
+            return
+
+        self._current_batch_idx = batch_idx
+        self._current_batch_alphas = batch_alphas
+        self._current_alpha = batch_alphas[0] if batch_alphas else 0.0
+        self._batch_start_time = time.time()
+        self._current_step = 0
+        self._frame += 1
+        self._live.update(self._render())
+
     def start_alpha(self, alpha: float, batch_alphas: List[float] = None):
-        """Start tracking a new alpha or batch."""
+        """Start tracking a new alpha or batch (legacy interface).
+
+        For backward compatibility. Prefer start_batch() for new code.
+        """
         if not RICH_AVAILABLE or not self._live:
             return
 
@@ -239,7 +281,7 @@ class UnifiedProgress:
         self._live.update(self._render())
 
     def update_step(self, current: int, total: int = None):
-        """Update step progress."""
+        """Update step progress within current batch."""
         if not RICH_AVAILABLE or not self._live:
             return
 
@@ -249,22 +291,55 @@ class UnifiedProgress:
         self._frame += 1
         self._live.update(self._render())
 
-    def finish_alpha(self, metrics: Dict = None):
-        """Finish tracking current batch."""
+    def finish_batch(self, metrics: Dict = None):
+        """Finish tracking current batch and record timing.
+
+        Call this after a batch completes to update batch progress.
+        """
         if not RICH_AVAILABLE or not self._live:
             return
 
         if self._batch_start_time:
             batch_time = time.time() - self._batch_start_time
+            self._batch_times.append(batch_time)
+
+            # Also track per-alpha times for legacy compatibility
             num_in_batch = len(self._current_batch_alphas) if self._current_batch_alphas else 1
             time_per_alpha = batch_time / num_in_batch
-
             for _ in range(num_in_batch):
                 self._alpha_times.append(time_per_alpha)
 
+        self._completed_batches += 1
         self._completed_alphas += len(self._current_batch_alphas) if self._current_batch_alphas else 1
+        # Step progress should show 100% when batch completes
+        self._current_step = self.steps_per_alpha
         self._frame += 1
         self._live.update(self._render())
+
+    def update_sample(self, current: int, total: int = None):
+        """Update sample progress (legacy interface).
+
+        Deprecated: Use finish_batch() for new code.
+        Maps to batch completion for compatibility.
+        """
+        if not RICH_AVAILABLE or not self._live:
+            return
+
+        # Map sample to batch for backward compatibility
+        self._completed_batches = current
+        if total:
+            self._total_batches = total
+        # Step progress should show 100% when sample completes
+        self._current_step = self.steps_per_alpha
+        self._frame += 1
+        self._live.update(self._render())
+
+    def finish_alpha(self, metrics: Dict = None):
+        """Finish tracking current batch (legacy interface).
+
+        Deprecated: Use finish_batch() for new code.
+        """
+        self.finish_batch(metrics)
 
     def stop(self):
         """Stop progress display."""

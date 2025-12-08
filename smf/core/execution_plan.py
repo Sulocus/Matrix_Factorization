@@ -89,6 +89,9 @@ class ExecutionPlan:
         """Get number of execution steps (1 for single-step plans)."""
         return len(self.steps) if self.steps else 1
 
+    # Spreading configuration (only for spreading algorithms)
+    spreading_f_distribution: Optional[str] = None  # gaussian | rademacher
+
     def to_display_list(self, lang: str = 'cn') -> List[Dict[str, Any]]:
         """
         Convert to UI display format.
@@ -101,14 +104,14 @@ class ExecutionPlan:
         labels = {
             'cn': {
                 'teacher': '教师模型', 'graph': '图结构', 'algorithm': '算法',
-                'algo_params': '算法参数',
+                'algo_params': '算法参数', 'spreading': 'F分布',
                 'matrix': '矩阵维度', 'alpha': 'Alpha范围',
                 'metrics': '评估指标', 'outputs': '输出图表',
                 'mode': '执行模式', 'steps': '执行步骤', 'post': '后处理'
             },
             'en': {
                 'teacher': 'Teacher', 'graph': 'Graph', 'algorithm': 'Algorithm',
-                'algo_params': 'Algo Params',
+                'algo_params': 'Algo Params', 'spreading': 'F Dist',
                 'matrix': 'Matrix', 'alpha': 'Alpha',
                 'metrics': 'Metrics', 'outputs': 'Plots',
                 'mode': 'Mode', 'steps': 'Steps', 'post': 'Post-process'
@@ -172,6 +175,20 @@ class ExecutionPlan:
             'is_special': False,
             'edit_key': str(len(items) + 1),
         })
+
+        # 3.3. Spreading configuration (only for spreading algorithms)
+        if self.spreading_f_distribution is not None:
+            f_dist_display = {
+                'gaussian': 'Gaussian N(0,1)',
+                'rademacher': 'Rademacher {-1,+1}',
+            }.get(self.spreading_f_distribution, self.spreading_f_distribution)
+            items.append({
+                'key': 'spreading',
+                'label': l['spreading'],
+                'value': f_dist_display,
+                'is_special': self.spreading_f_distribution != 'gaussian',
+                'edit_key': str(len(items) + 1),
+            })
 
         # 3.5. Algorithm parameters (damping, trials) - only show if non-default
         algo_params_parts = []
@@ -393,6 +410,12 @@ def build_execution_plan_from_dict(config_dict: Dict[str, Any],
     damping = config_dict.get('damping', 0.5)
     samples_per_alpha = config_dict.get('samples_per_alpha', 1)
 
+    # Spreading configuration (only for spreading algorithms)
+    spreading_f_distribution = None
+    if 'spreading' in algorithm_key:
+        spreading_dict = config_dict.get('spreading', {})
+        spreading_f_distribution = spreading_dict.get('f_distribution', 'gaussian')
+
     # Metrics and plots from execution_params
     exec_params = execution_params or {}
     metrics = exec_params.get('metrics_to_compute',
@@ -431,4 +454,5 @@ def build_execution_plan_from_dict(config_dict: Dict[str, Any],
         execution_mode="parallel",  # Default
         steps=steps,
         post_process=post_process,
+        spreading_f_distribution=spreading_f_distribution,
     )

@@ -1,7 +1,7 @@
 # SMF 任务交接文档
 
-**最后更新**: 2025-12-08 (第十六次更新)
-**上次会话**: 项目文件系统重组 + CLAUDE.md 重构
+**最后更新**: 2025-12-09 (第二十二次更新)
+**上次会话**: Spreading Parallel 功能完善 - F² Bug 修复 + UI/UX 改进
 
 ---
 
@@ -9,95 +9,123 @@
 
 ### 已完成（本次会话）
 
-- [x] **CLAUDE.md 重构**
-  - 添加标准 Claude Code 头部
-  - 添加常用命令（pip install, pytest, smf CLI）
-  - 更新项目结构表格
-  - 添加 Git 分支策略说明
+- [x] **F² Algorithm Bug 修复（最关键）**
+  - τ_W 和 τ_X 计算缺少 F² 项，导致方差衰减错误
+  - 修复 4 处：`bigamp_spreading_parallel_step()` 2处 + `bigamp_step_disjoint_union()` 2处
+  - 正确公式: `τ_W[i,μ] = (1/M) Σ_c F²[c,μ] × (1/V[c]) × x²[c,μ]`
+  - 同时修复 V 计算也需要 F²
 
-- [x] **项目文件系统重组**
-  - `docs/` → `smf_docs/`（重命名）
-  - `scripts/` → `smf/scripts/`（移动）
-  - `phase_analysis/` → `_legacy/phase_analysis/`（归档）
-  - `New module.md` → `prompt.md`（重命名）
+- [x] **F 分布选项弹出修复**
+  - 修复 `_configure_custom()` 流程（用户使用的流程）
+  - 修复 `_finalize_ai_config()` 流程（AI 推荐流程）
+  - 选择 spreading 算法后自动弹出 F 分布 + Teacher 类型选项
 
-- [x] **冗余文件清理**（共清理 ~3MB）
-  - 删除 `results/`（空数据库）
-  - 删除 `tests/*.json`（中间测试结果）
-  - 删除 `test_progress*.md`（过时日志）
-  - 删除所有 `__pycache__/`（22个目录）
+- [x] **正交/非正交选项添加**
+  - `_select_spreading()` 新增 teacher_type 选择
+  - Standard: 标准高斯 W,X ~ N(0,1)
+  - Orthogonal: QR 分解正交化 W,X
+  - SpreadingConfig 新增 teacher_type 字段
 
-- [x] **Git 分支配置**
-  - main 分支：`README.md` → `README_Japanese.md`
-  - dev 分支：删除 README.md
-  - 已推送两个分支到远程
+- [x] **进度条 UI 修改**
+  - Row 3: "Batch" → "Total"
+  - 离散完成：只在 batch 完成时更新（不插值）
+  - 不显示数字（因为左上角已有 Batch X/Y）
+
+- [x] **显存限制调整**
+  - 默认上限从 28GB 改为 24GB
+  - `calculate_spreading_batches()` 和 `train_batch_alphas()` 均更新
+
+### 待验证
+
+- [ ] F 分布选项是否正确弹出（用户报告 "F还是没有选项" 后已修复）
+- [ ] F² 修复后算法结果是否正确
 
 ### 待开始
 
 - [ ] 恢复误删文件：results_db.py, queue_manager.py, analysis/compare.py
-- [ ] 实际运行 `smf run` 测试完整流程
-- [ ] 创建随机扩频模块文档 (`smf_docs/modules/teachers/random_spreading.md`)
 
 ---
 
 ## 本次会话关键变更
 
-### 文件移动/重命名
+### 修改文件
 
-| 原路径 | 新路径 |
-|--------|--------|
-| `docs/` | `smf_docs/` |
-| `scripts/` | `smf/scripts/` |
-| `phase_analysis/` | `_legacy/phase_analysis/` |
-| `New module.md` | `prompt.md` |
-| `README.md` (main) | `README_Japanese.md` (main only) |
-
-### 删除的文件
-
-| 路径 | 原因 |
-|------|------|
-| `results/experiments.db` | 空数据库，相关代码已删 |
-| `tests/*.json` | 中间测试结果 |
-| `test_progress*.md` | 过时开发日志 |
-| `__pycache__/` (22个) | 编译缓存 |
-
-### Git 提交记录
-
-```
-main: 607703d - Rename README.md to README_Japanese.md
-dev:  7123671 - Major project reorganization and cleanup
-```
+| 文件 | 变更类型 | 说明 |
+|------|----------|------|
+| `smf/modules/algorithms/bigamp_spreading_parallel.py` | **修复** | F² bug 4处修复 + 24GB 限制 |
+| `smf/ui/wizard.py` | 修改 | `_configure_custom()` + `_finalize_ai_config()` spreading 检测 |
+| `smf/core/config.py` | 修改 | SpreadingConfig 新增 teacher_type 字段 |
+| `smf/core/progress.py` | 修改 | Batch → Total，离散完成 |
+| `smf/core/memory_manager.py` | 修改 | 默认 24GB |
 
 ---
 
-## 当前项目结构
+## F² Bug 详解
 
+### 问题根因
+
+τ_W 和 τ_X 的计算中**缺少 F²**：
+
+```python
+# 错误实现（缺少 F²）
+tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * inv_V
+
+# 正确实现（包含 F²）
+F_sq_expanded = F_expanded.pow(2)  # (1, C_max, M)
+tau_W_contrib = alpha_scale_sq * F_sq_expanded * X_sel.pow(2) * inv_V
 ```
-Sparse-Matrix/           (dev 分支)
-├── Wang/                 # 生产代码 (Git tracked)
-├── smf/                  # 模块化框架
-│   ├── core/
-│   ├── modules/
-│   ├── scripts/          # ← 从根目录移入
-│   └── ui/
-├── smf_docs/             # ← 原 docs/
-├── _legacy/
-│   └── phase_analysis/   # ← 从根目录归档
-├── tests/
-├── share/
-├── CLAUDE.md
-├── HANDOVER.md
-├── prompt.md             # ← 原 New module.md
-└── pyproject.toml
-```
+
+### 数学公式
+
+正确：`τ_W[i,μ] = (1/M) Σ_{c: i_idx[c]=i} F²[c,μ] × (1/V[c]) × x²[c,μ]`
+
+### 修复位置
+
+| 文件 | 行号 | 函数 |
+|------|------|------|
+| bigamp_spreading_parallel.py | ~399-400 | `bigamp_spreading_parallel_step` - τ_W |
+| bigamp_spreading_parallel.py | ~422 | `bigamp_spreading_parallel_step` - τ_X |
+| bigamp_spreading_parallel.py | ~559-560 | `bigamp_step_disjoint_union` - τ_W |
+| bigamp_spreading_parallel.py | ~575 | `bigamp_step_disjoint_union` - τ_X |
+
+同时 V 的计算也需要 F²（~行 275-280）。
 
 ---
 
-## 远程仓库信息
+## 进度条显示
 
-**仓库地址**: `https://github.com/Sulocus/Sparse-Matrix-Factorization.git`
+### 修改后
+```
+╭────────────────────────────────────────────────────────╮
+│  ●  Batch  1/3     Alpha 0.0-1.5   Step  2500/5000     │
+│  Step  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  50.0% │
+│  Total ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   0.0% │
+│  Power 485W   VRAM 13.5G   Elapsed   1:30   ETA   1:30 │
+╰────────────────────────────────────────────────────────╯
+```
 
-（注意：仓库已从 Sparse-Matrix 迁移到 Sparse-Matrix-Factorization）
+- Total 进度按 batch 离散更新（完成 1 batch 后跳到 33.3%）
+- 不显示 "1/3" 数字（左上角已有 Batch X/Y）
+
+---
+
+## Spreading 配置界面
+
+```
+Spreading 算法需要配置 F 分布和教师类型:
+
+F distribution:
+ [1]  Gaussian    Standard normal distribution N(0,1)
+ [2]  Rademacher  Random ±1 values
+选择 (默认: [1]):
+
+W/X 教师类型:
+ [1]  Standard    标准高斯分布 W,X ~ N(0,1)
+ [2]  Orthogonal  QR 分解正交化 W,X
+选择 (默认: [1]):
+
+F 生成种子: 12345
+```
 
 ---
 
@@ -111,4 +139,4 @@ Sparse-Matrix/           (dev 分支)
 
 ---
 
-*本文档由 Claude Code 在 2025-12-08 自动更新（第十六次）*
+*本文档由 Claude Code 在 2025-12-09 自动更新（第二十二次）*

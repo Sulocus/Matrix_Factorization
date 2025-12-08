@@ -91,17 +91,17 @@ class ResultPlotter(OutputBase):
         fig, ax = plt.subplots(figsize=(10, 6))
 
         # Plot curves with unified style
-        ax.errorbar(alphas, qy_mean, yerr=qy_std,
+        ax.errorbar(alphas, qy_mean, yerr=None,  # No error bars
                     color=COLORS['Q_Y'], label='$Q_Y$',
                     linewidth=STYLE['linewidth'], marker=STYLE['marker'],
                     markersize=STYLE['markersize'], capsize=STYLE['capsize'])
 
-        ax.errorbar(alphas, qw_prime_mean, yerr=qw_prime_std,
+        ax.errorbar(alphas, qw_prime_mean, yerr=None,  # No error bars
                     color=COLORS['Q_W_prime'], label="$Q'_W$",
                     linewidth=STYLE['linewidth'], marker=STYLE['marker'],
                     markersize=STYLE['markersize'], capsize=STYLE['capsize'])
 
-        ax.errorbar(alphas, qx_prime_mean, yerr=qx_prime_std,
+        ax.errorbar(alphas, qx_prime_mean, yerr=None,  # No error bars
                     color=COLORS['Q_X_prime'], label="$Q'_X$",
                     linewidth=STYLE['linewidth'], marker=STYLE['marker'],
                     markersize=STYLE['markersize'], capsize=STYLE['capsize'])
@@ -169,7 +169,7 @@ class ResultPlotter(OutputBase):
 
         fig, ax = plt.subplots(figsize=(8, 5))
 
-        ax.errorbar(alphas, qy_mean, yerr=qy_std,
+        ax.errorbar(alphas, qy_mean, yerr=None,  # No error bars
                     color=COLORS['Q_Y'], label='$Q_Y$',
                     linewidth=STYLE['linewidth'] * 1.2,
                     marker=STYLE['marker'], markersize=STYLE['markersize'] * 1.2,

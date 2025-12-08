@@ -11,11 +11,14 @@ Physical motivation:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, TYPE_CHECKING
 import torch
 
 from ..registry import register_teacher
 from .base import TeacherBase
+
+if TYPE_CHECKING:
+    from ..graphs.supergraph import SuperGraphData
 
 
 @dataclass
@@ -71,6 +74,73 @@ class SpreadingData:
             Y_values=self.Y_values.clone(),
             seed=self.seed,
             M=self.M,
+        )
+
+
+@dataclass
+class SpreadingDataParallel:
+    """
+    Parallel spreading data for Super-Graph strategy.
+
+    Stores F and Y for all samples at all edges (up to C_max).
+    Uses masks to select active edges for each alpha value.
+
+    Attributes:
+        supergraph: SuperGraphData containing indices and masks
+        F_super: (S, C_max, M) spreading coefficients for all samples
+        Y_super: (S, C_max) Y values at all positions (masked by alpha)
+        M: Hidden dimension
+        alpha_values: (A,) array of alpha values
+        W_teacher: (N1, M) teacher W matrix
+        X_teacher: (M, N2) teacher X matrix
+    """
+    supergraph: 'SuperGraphData'
+    F_super: torch.Tensor       # (S, C_max, M)
+    Y_super: torch.Tensor       # (S, C_max)
+    M: int
+    alpha_values: torch.Tensor  # (A,)
+    W_teacher: torch.Tensor     # (N1, M)
+    X_teacher: torch.Tensor     # (M, N2)
+
+    @property
+    def S(self) -> int:
+        """Number of samples."""
+        return self.F_super.shape[0]
+
+    @property
+    def A(self) -> int:
+        """Number of alpha values."""
+        return len(self.alpha_values)
+
+    @property
+    def C_max(self) -> int:
+        """Maximum number of edges."""
+        return self.F_super.shape[1]
+
+    @property
+    def device(self) -> torch.device:
+        """Device of tensors."""
+        return self.F_super.device
+
+    def get_F(self, sample_idx: int) -> torch.Tensor:
+        """Return F for a specific sample: (C_max, M)."""
+        return self.F_super[sample_idx]
+
+    def get_Y_masked(self, sample_idx: int, alpha_idx: int) -> torch.Tensor:
+        """Return Y values for active edges: (C_k,) where C_k = active edges."""
+        C_k = self.supergraph.get_active_edges(alpha_idx)
+        return self.Y_super[sample_idx, :C_k]
+
+    def to(self, device: torch.device) -> 'SpreadingDataParallel':
+        """Move all tensors to specified device."""
+        return SpreadingDataParallel(
+            supergraph=self.supergraph.to(device),
+            F_super=self.F_super.to(device),
+            Y_super=self.Y_super.to(device),
+            M=self.M,
+            alpha_values=self.alpha_values.to(device),
+            W_teacher=self.W_teacher.to(device),
+            X_teacher=self.X_teacher.to(device),
         )
 
 
@@ -326,9 +396,10 @@ class RandomSpreadingTeacher(TeacherBase):
         """
         torch.manual_seed(seed)
 
-        scale = 1.0 / (M ** 0.5)
-        W = torch.randn((N1, M), device=device, dtype=torch.float32) * scale
-        X = torch.randn((M, N2), device=device, dtype=torch.float32) * scale
+        # Mean Field Scaling: W, X ~ N(0, 1)
+        # The 1/sqrt(M) factor is handled in the interaction term (compute_sparse_Y)
+        W = torch.randn((N1, M), device=device, dtype=torch.float32)
+        X = torch.randn((M, N2), device=device, dtype=torch.float32)
 
         return W, X
 

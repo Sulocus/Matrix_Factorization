@@ -35,7 +35,7 @@ from .algorithms import bigamp, agd
 from .algorithms.combined import CombinedAlgorithm
 
 # Graphs
-from .graphs import random, uniform, dinic, low_loop
+from .graphs import random, uniform, low_loop
 from .graphs.combined import CombinedGraph
 
 # Teachers

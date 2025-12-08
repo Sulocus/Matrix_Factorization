@@ -299,8 +299,8 @@ def _bigamp_spreading_step_batched(
 
 @register_algorithm(
     key="bigamp_spreading",
-    name="BiG-AMP Random Spreading",
-    description="BiG-AMP with random spreading F for disordered model",
+    name="BiG-AMP Spreading (Sequential)",
+    description="Sequential mode - processes one alpha at a time, for debugging",
     default_params={'damping': 0.5, 'noise_var': 1e-10},
 )
 class BiGAMPSpreadingAlgorithm(AlgorithmBase):
@@ -525,7 +525,8 @@ class BiGAMPSpreadingAlgorithm(AlgorithmBase):
             )
 
             # Compute Y values at observed positions
-            Y_values = compute_sparse_Y(W_teacher, X_teacher, i_idx, j_idx, F)
+            # Note: Parameter order is (W, X, F, i_idx, j_idx)
+            Y_values = compute_sparse_Y(W_teacher, X_teacher, F, i_idx, j_idx)
 
             # Create SpreadingData
             spreading_data = SpreadingData(
@@ -561,8 +562,15 @@ class BiGAMPSpreadingAlgorithm(AlgorithmBase):
         return W_students, X_students
 
     def supports_batch_training(self) -> bool:
-        """BiG-AMP spreading supports batch training."""
-        return True
+        """BiG-AMP spreading does NOT support true batch training.
+
+        Reason: Each alpha has different observation positions (i_idx, j_idx),
+        which means different spreading coefficients F. This prevents true
+        GPU parallelization across alphas. The train_batch_alphas() method
+        processes alphas sequentially, so returning False allows the runner
+        to use SEQUENTIAL mode which is more appropriate.
+        """
+        return False
 
     def estimate_memory_per_alpha(self, N1: int, N2: int, M: int, S: int) -> float:
         """

@@ -30,7 +30,7 @@ except ImportError:
     RICH_AVAILABLE = False
     box = None
 
-from ..core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, ExecutionConfig
+from ..core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, ExecutionConfig, SpreadingConfig
 from ..modules.registry import list_algorithms, list_graphs, list_teachers
 from ..core.llm_advisor import get_config_advisor, AnalysisResult
 from ..core.execution_plan import build_execution_plan_from_dict, ExecutionPlan
@@ -75,7 +75,8 @@ TEXTS = {
         'init_scale_desc': 'Different k/√M initialization comparison',
         'custom': 'Custom',
         'custom_desc': 'Full manual configuration (advanced)',
-        'select': 'Select (default: 0)',
+        'select': 'Select',
+        'select_default': 'Select (default: [{0}])',
         'confirm': 'Confirm?',
         'matrix_dim': 'Matrix Dimensions',
         'alpha_range': 'Alpha Scan Range',
@@ -93,6 +94,17 @@ TEXTS = {
         'ai_understanding': 'AI Understanding',
         'confirm_or_modify': 'Confirm or modify',
         'no_input': 'No input provided, using default',
+        # New entries for UI consistency
+        'custom_config': 'Custom Configuration',
+        'standard_config': 'Standard Experiment Configuration',
+        'size_scaling_config': 'Size Scaling Experiment',
+        'init_scale_config': 'Init Scale Experiment',
+        'damping': 'Damping (0.5~0.95)',
+        # Spreading configuration
+        'spreading_config': 'Spreading Configuration',
+        'f_distribution': 'F Distribution',
+        'gaussian_desc': 'Gaussian F ~ N(0,1)',
+        'rademacher_desc': 'Rademacher F ~ {-1, +1}',
     },
     'cn': {
         'select_language': '选择语言',
@@ -108,14 +120,15 @@ TEXTS = {
         'init_scale_desc': '不同 k/√M 初始化比较',
         'custom': '自定义',
         'custom_desc': '完整手动配置（高级）',
-        'select': '选择 (默认: 0)',
+        'select': '选择',
+        'select_default': '选择 (默认: [{0}])',
         'confirm': '确认？',
         'matrix_dim': '矩阵维度',
         'alpha_range': 'Alpha 扫描范围',
         'training_params': '训练参数',
         'steps': '最大步数',
         'samples': '每个 alpha 样本数',
-        'config_summary': '配置概要',
+        'config_summary': '配置摘要',
         'background_prompt': '后台运行（断开连接后继续）？',
         'background_started': '已启动后台运行。日志文件：',
         'ai_title': 'AI 智能配置',
@@ -126,6 +139,17 @@ TEXTS = {
         'ai_understanding': 'AI 理解',
         'confirm_or_modify': '确认或修改',
         'no_input': '未提供输入，使用默认配置',
+        # New entries for UI consistency
+        'custom_config': '自定义配置',
+        'standard_config': '标准实验配置',
+        'size_scaling_config': '尺寸缩放实验',
+        'init_scale_config': '初始化缩放实验',
+        'damping': '阻尼系数 (0.5~0.95)',
+        # Spreading configuration
+        'spreading_config': 'Spreading 配置',
+        'f_distribution': 'F 分布类型',
+        'gaussian_desc': '高斯分布 F ~ N(0,1)',
+        'rademacher_desc': '二值分布 F ~ {-1, +1}',
     }
 }
 
@@ -208,7 +232,7 @@ class ConfigWizard:
         )
         self.console.print(table)
 
-        exp_type = Prompt.ask(self.t('select'), choices=["0", "1", "2", "3", "4"], default="0", show_choices=False, show_default=False)
+        exp_type = Prompt.ask(self.t('select_default').format(0), choices=["0", "1", "2", "3", "4"], default="0", show_choices=False, show_default=False)
         self.console.print()
 
         if exp_type == "0":
@@ -227,21 +251,22 @@ class ConfigWizard:
     def _configure_with_ai(self) -> Optional[dict]:
         """AI-powered configuration via natural language (unified UI)."""
         self.console.print(Panel(
-            f"[{THEME['ai_title']}]AI Smart Configuration[/{THEME['ai_title']}]\n"
-            "[dim]Describe what experiment you want in natural language[/dim]",
-            border_style="magenta"
+            f"[{THEME['ai_title']}]{self.t('ai_title')}[/{THEME['ai_title']}]\n"
+            f"[dim]{self.t('ai_desc')}[/dim]",
+            border_style="magenta",
+            expand=False
         ))
 
-        self.console.print("[dim]Examples:[/dim]")
+        self.console.print(f"[dim]{self.t('ai_examples')}[/dim]")
         self.console.print("  - 大矩阵的基准相变实验，N=5000")
         self.console.print("  - 对比不同尺寸的有限尺寸效应")
         self.console.print("  - 快速测试，200x200，500步")
         self.console.print()
 
-        user_input = Prompt.ask("Describe your experiment")
+        user_input = Prompt.ask(self.t('describe'))
 
         if not user_input.strip():
-            self.console.print("[yellow]No input provided, using default[/yellow]")
+            self.console.print(f"[yellow]{self.t('no_input')}[/yellow]")
             return self._configure_standard()
 
         # Analyze with AI - using dynamic spinner with API mode indicator
@@ -403,6 +428,16 @@ class ConfigWizard:
             c['algorithm_key'] = self._select_algorithm()
             step_prompt = '步数' if self.lang == 'cn' else 'Steps'
             c['max_steps'] = IntPrompt.ask(step_prompt, default=c.get('max_steps', 5000))
+
+            # Auto-trigger F distribution selection for spreading algorithms
+            if 'spreading' in c['algorithm_key']:
+                self.console.print()
+                if self.lang == 'cn':
+                    self.console.print("[yellow]Spreading 算法需要配置 F 分布:[/yellow]")
+                else:
+                    self.console.print("[yellow]Configure F distribution for spreading algorithm:[/yellow]")
+                spreading_dict = self._select_spreading()
+                c['spreading'] = spreading_dict
         elif module_key == 'matrix':
             c['N1'] = IntPrompt.ask("N1", default=c.get('N1', 200))
             c['N2'] = IntPrompt.ask("N2", default=c.get('N2', c['N1']))
@@ -420,8 +455,7 @@ class ConfigWizard:
             c['graph_key'] = self._select_graph()
         elif module_key == 'algo_params':
             # Algorithm parameters: damping, samples_per_alpha
-            damping_prompt = 'Damping (0.5~0.95)' if self.lang == 'cn' else 'Damping (0.5~0.95)'
-            c['damping'] = FloatPrompt.ask(damping_prompt, default=c.get('damping', 0.5))
+            c['damping'] = FloatPrompt.ask(self.t('damping'), default=c.get('damping', 0.5))
             trials_prompt = '每个α采样次数' if self.lang == 'cn' else 'Samples per alpha'
             c['samples_per_alpha'] = IntPrompt.ask(trials_prompt, default=c.get('samples_per_alpha', 1))
         elif module_key == 'metrics':
@@ -435,6 +469,10 @@ class ConfigWizard:
             # TODO: Implement outputs modification UI
             msg = '输出配置修改功能暂未实现' if self.lang == 'cn' else 'Outputs modification not implemented yet'
             self.console.print(f"[yellow]{msg}[/yellow]")
+        elif module_key == 'spreading':
+            # Spreading configuration (F distribution)
+            spreading_dict = self._select_spreading()
+            c['spreading'] = spreading_dict
 
         return result
 
@@ -454,14 +492,13 @@ class ConfigWizard:
             if t.key == DEFAULTS['teacher_key']:
                 default_marker = f" [dim]({'默认' if self.lang == 'cn' else 'default'})[/dim]"
             table.add_row(
-                f"[yellow][{i}][/yellow]",
+                f"[{THEME['option_number']}][{i}][/{THEME['option_number']}]",
                 t.name,
                 f"[dim]{t.description}[/dim]{default_marker}"
             )
         self.console.print(table)
 
-        prompt = '选择' if self.lang == 'cn' else 'Select'
-        choice = IntPrompt.ask(prompt, default=1)
+        choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
         choice = max(1, min(choice, len(teachers)))
         return teachers[choice - 1].key
 
@@ -481,14 +518,13 @@ class ConfigWizard:
             if g.key == DEFAULTS['graph_key']:
                 default_marker = f" [dim]({'默认' if self.lang == 'cn' else 'default'})[/dim]"
             table.add_row(
-                f"[yellow][{i}][/yellow]",
+                f"[{THEME['option_number']}][{i}][/{THEME['option_number']}]",
                 g.name,
                 f"[dim]{g.description}[/dim]{default_marker}"
             )
         self.console.print(table)
 
-        prompt = '选择' if self.lang == 'cn' else 'Select'
-        choice = IntPrompt.ask(prompt, default=1)
+        choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
         choice = max(1, min(choice, len(graphs)))
         return graphs[choice - 1].key
 
@@ -497,6 +533,66 @@ class ConfigWizard:
         self.console.print("[dim]可用指标: Q_Y, Q_W, Q_X, Q_Y_unobserved, Q_Y_observed[/dim]")
         metrics_str = Prompt.ask("输入指标 (逗号分隔)", default="Q_Y")
         return [m.strip() for m in metrics_str.split(",") if m.strip()]
+
+    def _select_spreading(self) -> dict:
+        """
+        Select spreading configuration interactively.
+
+        Returns:
+            dict with 'f_distribution', 'teacher_type', and 'seed' keys
+        """
+        result = {}
+
+        # 1. F distribution selection
+        self.console.print(f"[bold]{self.t('f_distribution')}:[/bold]")
+
+        table = Table(show_header=False, box=None)
+        table.add_row(
+            f"[{THEME['option_number']}][1][/{THEME['option_number']}]",
+            "Gaussian",
+            f"[dim]{self.t('gaussian_desc')}[/dim]"
+        )
+        table.add_row(
+            f"[{THEME['option_number']}][2][/{THEME['option_number']}]",
+            "Rademacher",
+            f"[dim]{self.t('rademacher_desc')}[/dim]"
+        )
+        self.console.print(table)
+
+        choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
+        choice = max(1, min(choice, 2))
+        result['f_distribution'] = 'gaussian' if choice == 1 else 'rademacher'
+        self.console.print()
+
+        # 2. Teacher type selection (orthogonal vs standard)
+        teacher_title = 'W/X 教师类型' if self.lang == 'cn' else 'W/X Teacher Type'
+        self.console.print(f"[bold]{teacher_title}:[/bold]")
+
+        table2 = Table(show_header=False, box=None)
+        standard_desc = '标准高斯分布 W,X ~ N(0,1)' if self.lang == 'cn' else 'Standard Gaussian W,X ~ N(0,1)'
+        orthogonal_desc = 'QR 分解正交化 W,X' if self.lang == 'cn' else 'Orthogonalized W,X via QR decomposition'
+        table2.add_row(
+            f"[{THEME['option_number']}][1][/{THEME['option_number']}]",
+            "Standard",
+            f"[dim]{standard_desc}[/dim]"
+        )
+        table2.add_row(
+            f"[{THEME['option_number']}][2][/{THEME['option_number']}]",
+            "Orthogonal",
+            f"[dim]{orthogonal_desc}[/dim]"
+        )
+        self.console.print(table2)
+
+        choice2 = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
+        choice2 = max(1, min(choice2, 2))
+        result['teacher_type'] = 'standard' if choice2 == 1 else 'orthogonal'
+        self.console.print()
+
+        # 3. Seed configuration
+        seed_prompt = 'F 生成种子' if self.lang == 'cn' else 'F generation seed'
+        result['seed'] = IntPrompt.ask(seed_prompt, default=12345)
+
+        return result
 
     def _print_ai_config_summary(self, config: Dict):
         """Print AI-generated config summary."""
@@ -529,6 +625,28 @@ class ConfigWizard:
             include_qy_plot=exec_params.get('include_qy_plot', True),
         )
 
+        # Handle spreading config (only for bigamp_spreading algorithms)
+        algorithm_key = c.get('algorithm_key', 'bigamp')
+        spreading = None
+        if 'spreading' in algorithm_key:
+            spreading_dict = c.get('spreading', {})
+            if not spreading_dict:
+                # Spreading algorithm selected but no F distribution configured
+                # -> Prompt user to select F distribution and teacher type
+                self.console.print()
+                if self.lang == 'cn':
+                    self.console.print("[yellow]Spreading 算法需要配置 F 分布和教师类型:[/yellow]")
+                else:
+                    self.console.print("[yellow]Configure F distribution and teacher type for spreading algorithm:[/yellow]")
+                spreading_dict = self._select_spreading()
+                c['spreading'] = spreading_dict
+
+            spreading = SpreadingConfig(
+                f_distribution=spreading_dict.get('f_distribution', 'gaussian'),
+                seed=spreading_dict.get('seed', 12345),
+                teacher_type=spreading_dict.get('teacher_type', 'standard'),
+            )
+
         config = Config(
             matrix=MatrixConfig(
                 N1=c.get('N1', 200),
@@ -545,9 +663,10 @@ class ConfigWizard:
                 samples_per_alpha=c.get('samples_per_alpha', 1),
                 resample_mask=c.get('resample_mask', True)
             ),
-            algorithm_key=c.get('algorithm_key', 'bigamp'),
+            algorithm_key=algorithm_key,
             graph_key=c.get('graph_key', 'random'),
             teacher_key=c.get('teacher_key', 'standard'),
+            spreading=spreading,  # Pass spreading config for spreading algorithms
             execution=execution,  # Pass LLM-generated execution params!
         )
 
@@ -570,19 +689,20 @@ class ConfigWizard:
 
         table = Table(show_header=False, box=None)
         for i, alg in enumerate(algorithms, 1):
-            table.add_row(f"[yellow][{i}][/yellow]", alg.name, f"[dim]{alg.description}[/dim]")
+            table.add_row(f"[{THEME['option_number']}][{i}][/{THEME['option_number']}]", alg.name, f"[dim]{alg.description}[/dim]")
         self.console.print(table)
 
-        choice = IntPrompt.ask("Select", default=1)
+        choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
         choice = max(1, min(choice, len(algorithms)))
         return algorithms[choice - 1].key
 
     def _configure_standard(self) -> Optional[dict]:
         """Configure standard single-config experiment."""
         self.console.print(Panel(
-            "[bold]Standard Experiment Configuration[/bold]\n"
+            f"[bold]{self.t('standard_config')}[/bold]\n"
             "[dim]Single (N, M) configuration, full α range[/dim]",
-            border_style="blue"
+            border_style="blue",
+            expand=False
         ))
 
         # Matrix dimensions
@@ -617,16 +737,17 @@ class ConfigWizard:
         # Summary
         self._print_standard_summary(config)
 
-        if Confirm.ask("Confirm?", default=True):
+        if Confirm.ask(self.t('confirm'), default=True):
             return {'type': 'standard', 'config': config}
         return None
 
     def _configure_size_scaling(self) -> Optional[dict]:
         """Configure size scaling (finite-size effect) experiment."""
         self.console.print(Panel(
-            "[bold]Size Scaling Experiment[/bold]\n"
+            f"[bold]{self.t('size_scaling_config')}[/bold]\n"
             "[dim]Multiple N values to study finite-size effects[/dim]",
-            border_style="blue"
+            border_style="blue",
+            expand=False
         ))
 
         # Multiple sizes
@@ -665,14 +786,14 @@ class ConfigWizard:
         self.console.print()
 
         # Summary
-        self.console.print(Panel("[bold]Configuration Summary[/bold]", border_style="green"))
+        self.console.print(Panel(f"[bold]{self.t('config_summary')}[/bold]", border_style="green", expand=False))
         table = Table(show_header=False, box=None)
         table.add_row("Sizes", f"{N_values} (M={M})")
         table.add_row("Alpha", f"{alpha_start} ~ {alpha_stop}, step {alpha_step}")
         table.add_row("Training", f"steps={max_steps}, S={samples}")
         self.console.print(table)
 
-        if Confirm.ask("Confirm?", default=True):
+        if Confirm.ask(self.t('confirm'), default=True):
             return {
                 'type': 'size_scaling',
                 'matrix_configs': matrix_configs,
@@ -687,9 +808,10 @@ class ConfigWizard:
     def _configure_init_scale(self) -> Optional[dict]:
         """Configure init scale comparison experiment."""
         self.console.print(Panel(
-            "[bold]Init Scale Experiment[/bold]\n"
+            f"[bold]{self.t('init_scale_config')}[/bold]\n"
             "[dim]Compare different k/√M initialization scales[/dim]",
-            border_style="blue"
+            border_style="blue",
+            expand=False
         ))
 
         # Matrix dimensions (single config)
@@ -728,7 +850,7 @@ class ConfigWizard:
         self.console.print()
 
         # Summary
-        self.console.print(Panel("[bold]Configuration Summary[/bold]", border_style="green"))
+        self.console.print(Panel(f"[bold]{self.t('config_summary')}[/bold]", border_style="green", expand=False))
         table = Table(show_header=False, box=None)
         table.add_row("Matrix", f"{N1}×{N2}, M={M}")
         table.add_row("Scale factors", str(scale_factors))
@@ -744,7 +866,7 @@ class ConfigWizard:
             graph_key="random",
         )
 
-        if Confirm.ask("Confirm?", default=True):
+        if Confirm.ask(self.t('confirm'), default=True):
             return {
                 'type': 'init_scale',
                 'config': config,
@@ -755,9 +877,10 @@ class ConfigWizard:
     def _configure_custom(self) -> Optional[dict]:
         """Full manual configuration (original wizard)."""
         self.console.print(Panel(
-            "[bold]Custom Configuration[/bold]\n"
+            f"[bold]{self.t('custom_config')}[/bold]\n"
             "[dim]Full manual control over all parameters[/dim]",
-            border_style="blue"
+            border_style="blue",
+            expand=False
         ))
 
         # Step 1: Algorithm
@@ -769,11 +892,22 @@ class ConfigWizard:
         else:
             table = Table(show_header=False, box=None)
             for i, alg in enumerate(algorithms, 1):
-                table.add_row(f"[yellow][{i}][/yellow]", alg.name, f"[dim]{alg.description}[/dim]")
+                table.add_row(f"[{THEME['option_number']}][{i}][/{THEME['option_number']}]", alg.name, f"[dim]{alg.description}[/dim]")
             self.console.print(table)
-            alg_choice = IntPrompt.ask("Select", default=1)
+            alg_choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
             alg_choice = max(1, min(alg_choice, len(algorithms)))
             algorithm_key = algorithms[alg_choice - 1].key
+
+        # Check if spreading algorithm - prompt for F distribution
+        spreading_config = None
+        if 'spreading' in algorithm_key:
+            self.console.print()
+            if self.lang == 'cn':
+                self.console.print("[yellow]Spreading 算法需要配置 F 分布和教师类型:[/yellow]")
+            else:
+                self.console.print("[yellow]Configure F distribution and teacher type for spreading algorithm:[/yellow]")
+            spreading_config = self._select_spreading()
+
         self.console.print()
 
         # Step 2: Graph
@@ -781,9 +915,9 @@ class ConfigWizard:
         graphs = list_graphs()
         table = Table(show_header=False, box=None)
         for i, g in enumerate(graphs, 1):
-            table.add_row(f"[yellow][{i}][/yellow]", g.name, f"[dim]{g.description}[/dim]")
+            table.add_row(f"[{THEME['option_number']}][{i}][/{THEME['option_number']}]", g.name, f"[dim]{g.description}[/dim]")
         self.console.print(table)
-        graph_choice = IntPrompt.ask("Select", default=1)
+        graph_choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
         graph_choice = max(1, min(graph_choice, len(graphs)))
         graph_key = graphs[graph_choice - 1].key
         self.console.print()
@@ -809,6 +943,15 @@ class ConfigWizard:
         seed = IntPrompt.ask("  Random seed", default=42)
         self.console.print()
 
+        # Build spreading config if applicable
+        spreading = None
+        if spreading_config:
+            spreading = SpreadingConfig(
+                f_distribution=spreading_config.get('f_distribution', 'gaussian'),
+                seed=spreading_config.get('seed', 12345),
+                teacher_type=spreading_config.get('teacher_type', 'standard'),
+            )
+
         config = Config(
             matrix=MatrixConfig(N1=N1, N2=N2, M=M),
             alpha=AlphaConfig(start=alpha_start, stop=alpha_stop, step=alpha_step),
@@ -817,17 +960,18 @@ class ConfigWizard:
             algorithm_key=algorithm_key,
             graph_key=graph_key,
             teacher_key="standard",
+            spreading=spreading,
         )
 
         self._print_standard_summary(config)
 
-        if Confirm.ask("Confirm?", default=True):
+        if Confirm.ask(self.t('confirm'), default=True):
             return {'type': 'standard', 'config': config}
         return None
 
     def _print_standard_summary(self, config: Config):
         """Print config summary."""
-        self.console.print(Panel("[bold]Configuration Summary[/bold]", border_style="green"))
+        self.console.print(Panel(f"[bold]{self.t('config_summary')}[/bold]", border_style="green", expand=False))
         table = Table(show_header=False, box=None)
         m = config.matrix
         a = config.alpha

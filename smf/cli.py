@@ -39,7 +39,7 @@ def _select_language() -> str:
     ))
 
     try:
-        choice = input("Select / 选择 [1]: ").strip()
+        choice = input("Select / 选择 (默认: [1]): ").strip()
         if choice == '2':
             return 'en'
     except (KeyboardInterrupt, EOFError):
