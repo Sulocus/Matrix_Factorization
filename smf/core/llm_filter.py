@@ -11,6 +11,21 @@ import os
 import re
 from typing import Dict, List, Any, Optional, Set, Literal
 from enum import Enum
+from pathlib import Path
+
+# Load .env file if exists
+def _load_dotenv():
+    """Load environment variables from .env file."""
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+
+_load_dotenv()
 
 
 class GeminiModel(Enum):
@@ -217,18 +232,24 @@ class GeminiClient:
     Fallback Strategy:
     - Try free keys first (with rotation on rate limit)
     - Auto-switch to paid API when all free keys are rate limited
+
+    API Keys:
+    - Load from environment variables (set in .env file)
+    - GEMINI_API_KEY_FREE_1, _2, _3 for free tier
+    - GEMINI_API_KEY_PAID for paid tier
     """
 
-    # API keys for rotation (free tier limits)
+    # API keys loaded from environment variables
     FREE_API_KEYS = [
-        "AIzaSyDQbCDTzWhVgU1DpCPIDms46yQsms-9WSE",  # Default free 1
-        "AIzaSyBgR0L5kyX3VCXYPs7jcRcHWk6BBbzi2VM",  # Free 2
-        "AIzaSyAlyXtVamnrQkX5q4n6j4dSl_wPA6rjWz8",  # Free 3
-        "AIzaSyA7e40HymYKxDiaqkl2FgfvokeLf5Cgoz4",  # Free 4
+        os.environ.get("GEMINI_API_KEY_FREE_1", ""),
+        os.environ.get("GEMINI_API_KEY_FREE_2", ""),
+        os.environ.get("GEMINI_API_KEY_FREE_3", ""),
     ]
+    # Filter out empty keys
+    FREE_API_KEYS = [k for k in FREE_API_KEYS if k]
 
     # Paid API key (fallback when free keys are rate limited)
-    PAID_API_KEY = "AIzaSyCFXEXyqc5V1HEaBv-EQ2WzwqyfPwLp45s"
+    PAID_API_KEY = os.environ.get("GEMINI_API_KEY_PAID", "")
 
     # Keep backward compatibility
     API_KEYS = FREE_API_KEYS
