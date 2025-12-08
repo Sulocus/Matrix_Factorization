@@ -1,0 +1,99 @@
+{
+  "metric": "Q_Y_unobserved",
+  "configs": [
+    {
+      "key": "500x50",
+      "N": 500,
+      "M": 50,
+      "ratio": 10.0
+    },
+    {
+      "key": "1000x50",
+      "N": 1000,
+      "M": 50,
+      "ratio": 20.0
+    },
+    {
+      "key": "1500x50",
+      "N": 1500,
+      "M": 50,
+      "ratio": 30.0
+    },
+    {
+      "key": "2000x50",
+      "N": 2000,
+      "M": 50,
+      "ratio": 40.0
+    }
+  ],
+  "linear_fits": {
+    "500x50": {
+      "slope": 0.1284378016663885,
+      "intercept": -0.05765509829771796,
+      "r2": 0.9833239302425246,
+      "slope_err": 0.005575324585361692,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.3000000000000003,
+      "transition_start": 2.2,
+      "transition_end": 2.4000000000000004,
+      "max_gradient": 2.386021123578149
+    },
+    "1000x50": {
+      "slope": 0.06432046759238635,
+      "intercept": -0.027831802991303542,
+      "r2": 0.9782378694877752,
+      "slope_err": 0.0031978376241700492,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.6,
+      "transition_start": 2.5,
+      "transition_end": 2.7,
+      "max_gradient": 2.506860649834074
+    },
+    "1500x50": {
+      "slope": 0.04487202140841294,
+      "intercept": -0.02050128119828349,
+      "r2": 0.9803576416293143,
+      "slope_err": 0.00211718557073243,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.7,
+      "transition_start": 2.6,
+      "transition_end": 2.9000000000000004,
+      "max_gradient": 2.6890294129649774
+    },
+    "2000x50": {
+      "slope": 0.032933076198043476,
+      "intercept": -0.014360995889133362,
+      "r2": 0.9800986937833074,
+      "slope_err": 0.0015642887794490357,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.8000000000000003,
+      "transition_start": 2.7,
+      "transition_end": 2.9000000000000004,
+      "max_gradient": 2.722045661260682
+    }
+  },
+  "slope_vs_ratio": {
+    "linear_origin": {
+      "a": 1.2910031647485434,
+      "R2": 0.9998185941107222,
+      "formula": "slope = 1.291003 * (M/N)"
+    },
+    "linear": {
+      "a": 1.266320484605703,
+      "b": 0.0016866498097607707,
+      "R2": 0.9997055412214187,
+      "formula": "slope = 1.266320 * (M/N) + 0.001687"
+    },
+    "power_law": {
+      "a": 1.215773329369889,
+      "b": 0.976667125498612,
+      "R2": 0.9996660159788435,
+      "formula": "slope = 1.215773 * (M/N)^0.9767"
+    }
+  },
+  "best_model": "linear_origin"
+}

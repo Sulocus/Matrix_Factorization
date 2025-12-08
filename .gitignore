@@ -1,18 +1,26 @@
 # =============================================================================
-# Git Whitelist Mode: Only track Wang/ and share/ directories
+# Git Blacklist Mode: Ignore specific directories, track Wang/ and share/
 # =============================================================================
 
-# Ignore everything at root level
-/*
+# Directories to ignore (not uploaded to git)
+smf/
+docs/
+scripts/
+results/
+_legacy/
+phase_analysis/
+tests/
 
-# But allow these directories (whitelist)
-!Wang/
-!share/
+# Keep Wang/ and share/ (tracked by default)
+# Keep README.md, .gitignore, LICENSE (tracked by default)
 
-# Also keep essential git files
-!.gitignore
+# Root level files to ignore (private)
+CLAUDE.md
+HANDOVER.md
+*.md
 !README.md
-!LICENSE
+pyproject.toml
+test_*.md
 
 # =============================================================================
 # Python (applies globally)

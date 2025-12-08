@@ -1,0 +1,77 @@
+{
+  "config": {
+    "N1": 200,
+    "N2": 200,
+    "M": 50,
+    "steps": 200,
+    "replicas_per_alpha": 10,
+    "pairs_per_alpha": 45,
+    "damping": 0.5,
+    "noise_var": 1e-10,
+    "total_time": 0.6754682064056396
+  },
+  "alpha_values": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "results": {
+    "0.0": {
+      "Q_W_replica_mean": 0.19863689475589327,
+      "Q_X_replica_mean": 0.19993719293011558,
+      "Q_Y_replica_mean": 0.00037083497057513644,
+      "Q_W_replica_std": 0.005805996013215202,
+      "Q_X_replica_std": 0.005993800282309166,
+      "Q_Y_replica_std": 0.00585758762764564,
+      "n_pairs": 45,
+      "Q_Y_teacher_mean": -0.0016719476428988856,
+      "Q_Y_teacher_std": 0.004669206342742271
+    },
+    "0.5": {
+      "Q_W_replica_mean": 0.3743343512217204,
+      "Q_X_replica_mean": 0.3754532946480645,
+      "Q_Y_replica_mean": 0.34420093562867904,
+      "Q_W_replica_std": 0.009052166412656737,
+      "Q_X_replica_std": 0.009239319598517419,
+      "Q_Y_replica_std": 0.008729409859692748,
+      "n_pairs": 45,
+      "Q_Y_teacher_mean": 0.2212013602256775,
+      "Q_Y_teacher_std": 0.00507254539958849
+    },
+    "1.0": {
+      "Q_W_replica_mean": 0.4580883622169495,
+      "Q_X_replica_mean": 0.46072361800405714,
+      "Q_Y_replica_mean": 0.4121972686714596,
+      "Q_W_replica_std": 0.01045438007667863,
+      "Q_X_replica_std": 0.009199575416708843,
+      "Q_Y_replica_std": 0.010518263402487632,
+      "n_pairs": 45,
+      "Q_Y_teacher_mean": 0.3946871101856232,
+      "Q_Y_teacher_std": 0.007566500037282629
+    },
+    "1.5": {
+      "Q_W_replica_mean": 0.5339496003256904,
+      "Q_X_replica_mean": 0.5385602288775974,
+      "Q_Y_replica_mean": 0.47943777905570134,
+      "Q_W_replica_std": 0.0076357874370260315,
+      "Q_X_replica_std": 0.0067638662485981615,
+      "Q_Y_replica_std": 0.008153862924357451,
+      "n_pairs": 45,
+      "Q_Y_teacher_mean": 0.552132123708725,
+      "Q_Y_teacher_std": 0.00905886975215311
+    },
+    "2.0": {
+      "Q_W_replica_mean": 0.8785884711477492,
+      "Q_X_replica_mean": 0.8816501524713304,
+      "Q_Y_replica_mean": 0.8740731530719333,
+      "Q_W_replica_std": 0.015040645649148076,
+      "Q_X_replica_std": 0.0147611499498071,
+      "Q_Y_replica_std": 0.016758554188103562,
+      "n_pairs": 45,
+      "Q_Y_teacher_mean": 0.9148358464241028,
+      "Q_Y_teacher_std": 0.01721128053600241
+    }
+  }
+}

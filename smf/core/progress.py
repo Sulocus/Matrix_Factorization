@@ -1,0 +1,486 @@
+"""
+Progress display using rich library with GPU monitoring.
+
+Modern UI with 'Dynamic Capsule' aesthetic.
+"""
+
+from contextlib import contextmanager
+from typing import Optional, Dict, Any, Callable, List
+import time
+import math
+from datetime import timedelta
+
+try:
+    from rich.console import Console, Group
+    from rich.progress import (
+        Progress, SpinnerColumn, TextColumn, BarColumn,
+        TaskProgressColumn, TimeRemainingColumn, TimeElapsedColumn,
+        MofNCompleteColumn
+    )
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.text import Text
+    from rich.style import Style
+    from rich.spinner import Spinner
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+from .gpu_monitor import GPUMonitor
+
+
+class UnifiedProgress:
+    """
+    Modern progress display with 'Dynamic Capsule' layout - Style A (Clean Cyan).
+
+    Structure:
+    ╭────────────────────────────────────────────────────────╮
+    │  ●  Batch  5/10   Alpha 0.4-0.7   Step  2500/5000      │
+    │  Step  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  50.0% │
+    │  Total ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  45.0% │
+    │  Power 485W   VRAM 13.5G   Elapsed   1:30   ETA   1:30 │
+    ╰────────────────────────────────────────────────────────╯
+    """
+
+    def __init__(
+        self,
+        num_alphas: int,
+        steps_per_alpha: int,
+        batch_size: int = 1,
+        initial_estimate: float = None
+    ):
+        self.num_alphas = num_alphas
+        self.steps_per_alpha = steps_per_alpha
+        self.batch_size = batch_size
+        self.initial_estimate = initial_estimate
+        self.gpu_monitor = GPUMonitor()
+
+        # Timing state
+        self._total_start_time: float = None
+        self._batch_start_time: float = None
+        self._completed_alphas = 0
+        self._alpha_times: List[float] = []
+        self._current_alpha = 0.0
+        self._current_batch_alphas: List[float] = []
+        self._current_step = 0
+        self._frame = 0
+
+        if not RICH_AVAILABLE:
+            self._live = None
+            return
+
+        self._console = Console()
+        self._live = None
+
+    def _render(self):
+        """
+        Render the Dynamic Capsule panel - Style A (Clean Cyan).
+        """
+        # Data Calculations
+        pct_step = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
+        pct_total = self._completed_alphas / self.num_alphas if self.num_alphas > 0 else 0
+
+        current_batch = self._completed_alphas + 1
+        total_batches = self.num_alphas
+
+        # Timing
+        elapsed = time.time() - self._total_start_time if self._total_start_time else 0
+        eta = self._estimate_eta()
+
+        def fmt_time(seconds):
+            if seconds < 3600:
+                return f"{int(seconds)//60}:{int(seconds)%60:02d}"
+            h = int(seconds) // 3600
+            m = (int(seconds) % 3600) // 60
+            s = int(seconds) % 60
+            return f"{h}:{m:02d}:{s:02d}"
+
+        elapsed_str = fmt_time(elapsed)
+        eta_str = fmt_time(eta) if eta >= 0 else "--:--"
+
+        # GPU Stats
+        gpu_status = self.gpu_monitor.get_status()
+        if gpu_status:
+            power = gpu_status['power_draw']
+            memory = gpu_status['memory_used']
+        else:
+            power = 0
+            memory = 0
+
+        # Alpha range string
+        if self._current_batch_alphas and len(self._current_batch_alphas) > 1:
+            alpha_str = f"{self._current_batch_alphas[0]:.1f}-{self._current_batch_alphas[-1]:.1f}"
+        else:
+            alpha_str = f"{self._current_alpha:.2f}"
+
+        # Spinner (slow animation)
+        spinner = "◦●"[self._frame // 5 % 2]
+
+        # Build progress bar as Text object for accurate width
+        def make_bar_text(pct, width, filled_char, empty_char, color):
+            pct = max(0.0, min(1.0, pct))
+            filled = int(width * pct)
+            empty = width - filled
+            text = Text()
+            text.append(filled_char * filled, style=color)
+            text.append(empty_char * empty, style="dim")
+            return text
+
+        # Build grid
+        grid = Table.grid(padding=0)
+        grid.add_column()
+
+        # Row 1: Header
+        grid.add_row(Text.from_markup(
+            f" [cyan]{spinner}[/]  Batch [cyan]{current_batch:>2}[/]/{total_batches}   "
+            f"Alpha [cyan]{alpha_str:>7}[/]   Step [cyan]{self._current_step:>5}[/]/{self.steps_per_alpha}"
+        ))
+
+        # Row 2: Step progress
+        row2 = Text(" Step  ")
+        row2.append_text(make_bar_text(pct_step, 40, "━", "━", "cyan"))
+        row2.append(f" {pct_step*100:5.1f}%", style="cyan")
+        grid.add_row(row2)
+
+        # Row 3: Total progress
+        row3 = Text(" Total ")
+        row3.append_text(make_bar_text(pct_total, 40, "━", "━", "cyan"))
+        row3.append(f" {pct_total*100:5.1f}%", style="cyan")
+        grid.add_row(row3)
+
+        # Row 4: Metrics
+        grid.add_row(Text.from_markup(
+            f" Power [cyan]{power:3.0f}W[/]   VRAM [cyan]{memory:4.1f}G[/]   "
+            f"Elapsed [cyan]{elapsed_str:>6}[/]   ETA [cyan]{eta_str:>6}[/]"
+        ))
+
+        return Panel(
+            grid,
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            expand=False
+        )
+
+    def _estimate_eta(self) -> float:
+        """Estimate remaining time based on cumulative timing."""
+        if not self._total_start_time:
+            return self.initial_estimate if self.initial_estimate else 0
+
+        total_elapsed = time.time() - self._total_start_time
+
+        if self._completed_alphas == 0:
+            if self._batch_start_time and self._current_step > 0:
+                step_elapsed = time.time() - self._batch_start_time
+                step_pct = self._current_step / self.steps_per_alpha
+                if step_pct > 0.05:
+                    estimated_batch_time = step_elapsed / step_pct
+                    batch_count = len(self._current_batch_alphas) if self._current_batch_alphas else 1
+                    remaining_in_current = estimated_batch_time * (1 - step_pct)
+                    time_per_alpha = estimated_batch_time / batch_count
+                    remaining_alphas = self.num_alphas - batch_count
+                    return remaining_in_current + time_per_alpha * remaining_alphas
+            return self.initial_estimate if self.initial_estimate else 0
+
+        if self._alpha_times:
+            avg_time_per_alpha = sum(self._alpha_times) / len(self._alpha_times)
+        else:
+            avg_time_per_alpha = total_elapsed / self._completed_alphas
+
+        remaining_alphas = self.num_alphas - self._completed_alphas
+
+        remaining_in_current = 0
+        if self._batch_start_time and self._current_step > 0:
+            step_elapsed = time.time() - self._batch_start_time
+            step_pct = self._current_step / self.steps_per_alpha
+            if step_pct > 0:
+                estimated_batch_time = step_elapsed / step_pct
+                remaining_in_current = estimated_batch_time * (1 - step_pct)
+
+        return avg_time_per_alpha * remaining_alphas + remaining_in_current
+
+    def start(self):
+        """Start progress display."""
+        if not RICH_AVAILABLE:
+            return
+
+        self._total_start_time = time.time()
+        self._batch_start_time = time.time()
+        self._current_step = 0
+        self._frame = 0
+
+        if self.initial_estimate:
+             # Just a small log before we start
+            est_str = str(timedelta(seconds=int(self.initial_estimate)))
+            self._console.print(f"[dim]Estimated total time: ~{est_str}[/dim]")
+
+        self._live = Live(
+            self._render(),
+            refresh_per_second=10,
+            console=self._console,
+            transient=False,
+            # vertical_overflow="crop", # Removed to avoid cutting off the panel
+        )
+        self._live.start()
+
+    def start_alpha(self, alpha: float, batch_alphas: List[float] = None):
+        """Start tracking a new alpha or batch."""
+        if not RICH_AVAILABLE or not self._live:
+            return
+
+        self._current_alpha = alpha
+        self._current_batch_alphas = batch_alphas or [alpha]
+        self._batch_start_time = time.time()
+        self._current_step = 0
+        self._frame += 1
+        self._live.update(self._render())
+
+    def update_step(self, current: int, total: int = None):
+        """Update step progress."""
+        if not RICH_AVAILABLE or not self._live:
+            return
+
+        self._current_step = current
+        if total:
+            self.steps_per_alpha = total
+        self._frame += 1
+        self._live.update(self._render())
+
+    def finish_alpha(self, metrics: Dict = None):
+        """Finish tracking current batch."""
+        if not RICH_AVAILABLE or not self._live:
+            return
+
+        if self._batch_start_time:
+            batch_time = time.time() - self._batch_start_time
+            num_in_batch = len(self._current_batch_alphas) if self._current_batch_alphas else 1
+            time_per_alpha = batch_time / num_in_batch
+
+            for _ in range(num_in_batch):
+                self._alpha_times.append(time_per_alpha)
+
+        self._completed_alphas += len(self._current_batch_alphas) if self._current_batch_alphas else 1
+        self._frame += 1
+        self._live.update(self._render())
+
+    def stop(self):
+        """Stop progress display."""
+        if self._live:
+            self._live.stop()
+
+
+class ExperimentProgress:
+    """Legacy progress tracking - kept for compatibility."""
+
+    def __init__(
+        self,
+        num_alphas: int,
+        steps_per_alpha: int,
+        samples: int,
+        initial_estimate_seconds: float = None,
+    ):
+        self.num_alphas = num_alphas
+        self.steps_per_alpha = steps_per_alpha
+        self.samples = samples
+        self.initial_estimate = initial_estimate_seconds
+
+        self.gpu_monitor = GPUMonitor()
+        self.console = Console() if RICH_AVAILABLE else None
+
+        self.start_time: float = None
+        self.alpha_start_time: float = None
+        self.alpha_times: list = []
+        self.completed_alphas = 0
+        self.current_alpha: float = None
+
+        self._progress: Progress = None
+        self._alpha_task = None
+
+    def start(self):
+        """Start progress tracking."""
+        self.start_time = time.time()
+
+        if RICH_AVAILABLE:
+            self._progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(bar_width=30),
+                TaskProgressColumn(),
+                TextColumn("[dim]{task.fields[status]}[/dim]"),
+                TimeElapsedColumn(),
+                console=self.console,
+                transient=False,
+            )
+            self._alpha_task = self._progress.add_task(
+                "Alpha Sweep",
+                total=self.num_alphas,
+                status=""
+            )
+            self._progress.start()
+
+            if self.initial_estimate:
+                 # Helper for time format
+                est_str = str(timedelta(seconds=int(self.initial_estimate)))
+                self.console.print(f"[dim]Estimated total time: ~{est_str}[/dim]")
+
+    def start_alpha(self, alpha: float):
+        """Start tracking a new alpha value."""
+        self.current_alpha = alpha
+        self.alpha_start_time = time.time()
+
+        if self._progress:
+            self._progress.update(self._alpha_task, status=f"α={alpha:.2f}")
+
+    def finish_alpha(self, metrics: Dict[str, float] = None):
+        """Finish tracking current alpha."""
+        if self.alpha_start_time:
+            alpha_duration = time.time() - self.alpha_start_time
+            self.alpha_times.append(alpha_duration)
+
+        self.completed_alphas += 1
+
+        if self._progress:
+            self._progress.update(self._alpha_task, advance=1)
+
+    def finish(self) -> float:
+        """Finish progress tracking and return total time."""
+        total_time = time.time() - self.start_time if self.start_time else 0
+
+        if self._progress:
+            self._progress.stop()
+
+        return total_time
+
+
+class ProgressManager:
+    """Manages progress display for experiments."""
+
+    def __init__(self, use_rich: bool = True):
+        self.use_rich = use_rich and RICH_AVAILABLE
+        self.console = Console() if self.use_rich else None
+
+    def print(self, *args, **kwargs):
+        """Print message."""
+        if self.console:
+            self.console.print(*args, **kwargs)
+        else:
+            print(*args)
+
+    def print_header(self, title: str, config_info: dict = None):
+        """Print experiment header."""
+        if self.use_rich:
+            self.console.print()
+            self.console.print(Panel(
+                f"[bold cyan]{title}[/bold cyan]",
+                expand=False,
+                border_style="cyan"
+            ))
+            if config_info:
+                table = Table(show_header=False, box=None, padding=(0, 2))
+                for key, value in config_info.items():
+                    table.add_row(f"[dim]{key}:[/dim]", str(value))
+                self.console.print(table)
+            self.console.print()
+        else:
+            print(f"\n{'='*60}")
+            print(f"  {title}")
+            print(f"{'='*60}")
+            if config_info:
+                for key, value in config_info.items():
+                    print(f"  {key}: {value}")
+            print()
+
+    def print_completion(self, total_time: float, result_path: str = None):
+        """Print completion message."""
+        if self.use_rich:
+            self.console.print()
+            self.console.print(f"[bold green]✓ Complete![/bold green] Total time: {total_time:.1f}s")
+            if result_path:
+                self.console.print(f"  Results saved to: [cyan]{result_path}[/cyan]")
+            self.console.print()
+        else:
+            print(f"\nComplete! Total time: {total_time:.1f}s")
+            if result_path:
+                print(f"Results saved to: {result_path}")
+            print()
+
+    @contextmanager
+    def progress(self, description: str, total: int):
+        """Context manager for progress bar."""
+        if self.use_rich:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(bar_width=40),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=self.console,
+                transient=False,
+            ) as progress:
+                task = progress.add_task(description, total=total)
+                yield lambda n=1, **kw: progress.update(task, advance=n, **kw)
+        else:
+            try:
+                from tqdm.auto import tqdm
+                pbar = tqdm(total=total, desc=description, mininterval=1.0)
+                yield lambda n=1, **kw: pbar.update(n)
+                pbar.close()
+            except ImportError:
+                current = [0]
+                def update(n=1, **kw):
+                    current[0] += n
+                    if current[0] % max(1, total // 10) == 0:
+                        print(f"  {description}: {current[0]}/{total}")
+                yield update
+
+    @contextmanager
+    def training_progress(
+        self,
+        num_alphas: int,
+        steps_per_alpha: int,
+        initial_estimate: float = None,
+    ):
+        """Context manager for training progress with GPU monitoring."""
+        exp_progress = ExperimentProgress(
+            num_alphas=num_alphas,
+            steps_per_alpha=steps_per_alpha,
+            samples=1,
+            initial_estimate_seconds=initial_estimate,
+        )
+
+        try:
+            exp_progress.start()
+            yield exp_progress
+        finally:
+            exp_progress.finish()
+
+    def create_experiment_progress(
+        self,
+        num_alphas: int,
+        steps_per_alpha: int,
+        samples: int = 1,
+        initial_estimate: float = None,
+    ) -> ExperimentProgress:
+        """Create an ExperimentProgress instance."""
+        return ExperimentProgress(
+            num_alphas=num_alphas,
+            steps_per_alpha=steps_per_alpha,
+            samples=samples,
+            initial_estimate_seconds=initial_estimate,
+        )
+
+
+# Global instance
+_progress_manager: Optional[ProgressManager] = None
+
+
+def get_progress_manager() -> ProgressManager:
+    """Get or create the global progress manager."""
+    global _progress_manager
+    if _progress_manager is None:
+        _progress_manager = ProgressManager()
+    return _progress_manager

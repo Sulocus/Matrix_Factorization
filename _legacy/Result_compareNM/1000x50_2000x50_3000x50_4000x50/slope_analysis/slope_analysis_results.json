@@ -1,0 +1,99 @@
+{
+  "input_file": "Result_compareNM/1000x50_2000x50_3000x50_4000x50/multi_size_results_steps5000.json",
+  "configs": [
+    {
+      "key": "1000x50",
+      "N": 1000,
+      "M": 50,
+      "ratio": 20.0
+    },
+    {
+      "key": "2000x50",
+      "N": 2000,
+      "M": 50,
+      "ratio": 40.0
+    },
+    {
+      "key": "3000x50",
+      "N": 3000,
+      "M": 50,
+      "ratio": 60.0
+    },
+    {
+      "key": "4000x50",
+      "N": 4000,
+      "M": 50,
+      "ratio": 80.0
+    }
+  ],
+  "linear_fits": {
+    "1000x50": {
+      "slope": 0.08287100636146287,
+      "intercept": 0.0062960416078567255,
+      "r2": 0.9983976389782896,
+      "slope_err": 0.0011066486827908386,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.6,
+      "transition_start": 2.5,
+      "transition_end": 2.7,
+      "max_gradient": 2.3596439659595467
+    },
+    "2000x50": {
+      "slope": 0.041100615533915426,
+      "intercept": 0.003994738784703342,
+      "r2": 0.9988036996025853,
+      "slope_err": 0.00047414057676279135,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.8000000000000003,
+      "transition_start": 2.7,
+      "transition_end": 2.9000000000000004,
+      "max_gradient": 2.637995091577368
+    },
+    "3000x50": {
+      "slope": 0.027238284153017128,
+      "intercept": 0.0027607971971685165,
+      "r2": 0.9987204689679665,
+      "slope_err": 0.0003249839609195696,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.9000000000000004,
+      "transition_start": 2.8000000000000003,
+      "transition_end": 2.9000000000000004,
+      "max_gradient": 2.1824399381875965
+    },
+    "4000x50": {
+      "slope": 0.021064646415073763,
+      "intercept": 0.0016676037572324227,
+      "r2": 0.9985950539672765,
+      "slope_err": 0.0002633710496946107,
+      "alpha_start": 0.5,
+      "alpha_end": 1.5,
+      "transition_alpha": 2.9000000000000004,
+      "transition_start": 2.7,
+      "transition_end": 2.9000000000000004,
+      "max_gradient": 0.4492654502391809
+    }
+  },
+  "slope_vs_ratio": {
+    "linear_origin": {
+      "a": 1.6544813799785403,
+      "R2": 0.9999640471961526,
+      "formula": "slope = 1.654481 * (M/N)"
+    },
+    "linear": {
+      "a": 1.6565508553927601,
+      "b": -7.07070766524931e-05,
+      "R2": 0.9998512556630875,
+      "formula": "slope = 1.656551 * (M/N) + -0.000071"
+    },
+    "power_law": {
+      "a": 1.6740922802138443,
+      "b": 1.003610454436407,
+      "R2": 0.999859592001112,
+      "formula": "slope = 1.674092 * (M/N)^1.0036"
+    }
+  },
+  "best_model": "linear_origin"
+}
