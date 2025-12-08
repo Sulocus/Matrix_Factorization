@@ -145,6 +145,26 @@ DAMPING = 0.5                   # BiG-AMP 阻尼因子
 
 ---
 
+## Git 分支策略
+
+| 分支 | 用途 | .gitignore 模式 |
+|------|------|-----------------|
+| `main` | 生产代码，与日本同学共享 | 白名单（仅 Wang/, share/） |
+| `dev` | 本地开发，包含 smf/ 等 | 全量跟踪 |
+
+**远程仓库**: `https://github.com/Sulocus/Sparse-Matrix-Factorization.git`
+
+```bash
+# 常用 Git 操作
+git checkout main             # 切换到生产分支
+git checkout dev              # 切换到开发分支
+git push origin main dev      # 推送两个分支
+```
+
+**注意**: `README_Japanese.md` 仅存在于 main 分支
+
+---
+
 ## 依赖
 
 核心依赖：`torch>=2.0.0`, `numpy`, `scipy`, `matplotlib`, `rich`
