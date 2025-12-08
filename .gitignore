@@ -1,29 +1,10 @@
 # =============================================================================
-# Git Blacklist Mode: Ignore specific directories, track Wang/ and share/
+# sucia-backup branch: Track ALL project files
+# (main branch has different .gitignore that ignores private directories)
 # =============================================================================
 
-# Directories to ignore (not uploaded to git)
-smf/
-docs/
-scripts/
-results/
-_legacy/
-phase_analysis/
-tests/
-
-# Keep Wang/ and share/ (tracked by default)
-# Keep README.md, .gitignore, LICENSE (tracked by default)
-
-# Root level files to ignore (private)
-CLAUDE.md
-HANDOVER.md
-*.md
-!README.md
-pyproject.toml
-test_*.md
-
 # =============================================================================
-# Python (applies globally)
+# Python
 # =============================================================================
 __pycache__/
 *.py[cod]
