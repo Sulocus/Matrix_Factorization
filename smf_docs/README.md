@@ -10,7 +10,7 @@
 ## 目录结构
 
 ```
-docs/
+smf_docs/
 ├── README.md                 ← 本文件（总览）
 ├── core/                     ← 核心工具
 │   └── device.md             # D1: 设备检测

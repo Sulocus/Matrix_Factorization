@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Claude Code 项目指南 - 精简索引版
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ---
 
-## 🔑 必须遵守的规则
+## 必须遵守的规则
 
 ### 语言规范
 - **沟通语言**：中文
@@ -16,67 +16,79 @@ Claude Code 项目指南 - 精简索引版
 3. **文档语言**：Wang/README.md 用日语，技术术语用英语
 
 ### SMF 文档同步规则（重要）
-- **更新程序模块时，必须同步更新 `docs/` 中对应的文档**
-- 每个 `smf/core/` 模块应在 `docs/core/` 有对应文档
-- 每个 `smf/modules/` 模块应在 `docs/modules/` 有对应文档
-- 新功能不明白时，先查阅 `docs/` 目录
+- **更新程序模块时，必须同步更新 `smf_docs/` 中对应的文档**
+- 每个 `smf/core/` 模块应在 `smf_docs/core/` 有对应文档
+- 每个 `smf/modules/` 模块应在 `smf_docs/modules/` 有对应文档
+- 新功能不明白时，先查阅 `smf_docs/` 目录
 
 ---
 
-## 📂 项目结构
-
-| 目录 | Git | 说明 | 详细文档 |
-|------|-----|------|----------|
-| `Wang/` | ✅ | 生产代码，与日本同学共享 | `Wang/README.md` |
-| `smf/` | ❌ | 模块化开发框架 | `docs/README.md` |
-| `docs/` | ❌ | SMF 模块详细文档 | `docs/CODE_STRUCTURE.md` |
-| `results/` | ❌ | 实验结果 | - |
-| `scripts/` | ❌ | 独立脚本工具 | - |
-
-### 📚 docs/ 文档索引
-| 类别 | 路径 | 内容 |
-|------|------|------|
-| 核心模块 | `docs/core/` | device, config 等 |
-| 算法 | `docs/modules/algorithms/` | BiG-AMP, AGD |
-| 图结构 | `docs/modules/graphs/` | random, dinic, low_loop |
-| 教师模型 | `docs/modules/teachers/` | standard, orthogonal |
-| 指标 | `docs/modules/metrics/` | Q_Y, overlap 等 |
-| 输出 | `docs/modules/outputs/` | 绘图, 存储 |
-
----
-
-## 📖 项目概述
-
-基于 PyTorch 的 Teacher-Student 掩码矩阵分解研究 (Y = W × X)。
-
-| 算法 | 特点 | 适用场景 |
-|------|------|----------|
-| **BiG-AMP** | ~200-5000 步 | 推荐，适合大矩阵 (N>1000) |
-| **AGD** | ~20k epochs | 适合小矩阵 |
-
----
-
-## 🚀 快速入口
+## 常用命令
 
 ```bash
-# 生产训练 (Wang/)
-python Wang/bigamp/train.py           # BiG-AMP（推荐）
-python Wang/agd/train_parallel.py     # AGD 并行版
+# 安装 SMF 框架（开发模式）
+pip install -e .
 
-# SMF 框架
+# 运行测试
+pytest tests/                           # 运行所有测试
+pytest tests/test_e2e_comprehensive.py  # 运行单个测试文件
+
+# SMF CLI
 smf                # 交互模式（自然语言配置）
 smf run            # 实验向导
 smf run --bg       # 后台运行
 smf resume         # 检查点恢复
 smf log            # 查看日志
+smf vis            # 结果浏览器
+smf test           # 快速测试
 
-# 实验追踪
-aim up             # Aim Web UI
+# 生产训练 (Wang/)
+python Wang/bigamp/train.py           # BiG-AMP（推荐）
+python Wang/agd/train_parallel.py     # AGD 并行版
 ```
 
 ---
 
-## 📊 核心指标
+## 项目结构
+
+**双轨架构**：
+- `Wang/` - 生产代码，提交到 Git，与日本同学共享（README 用日语）
+- `smf/` - 本地模块化框架，不提交（通过 `pip install -e .` 安装使用）
+
+| 目录 | Git | 说明 |
+|------|-----|------|
+| `Wang/` | ✅ | 生产代码：`agd/`, `bigamp/`, `analysis/` |
+| `smf/` | - | 模块化框架：`core/`, `modules/`, `ui/`, `scripts/` |
+| `smf_docs/` | - | SMF 模块文档，查阅 `smf_docs/README.md` |
+| `tests/` | - | 临时测试目录 |
+| `_legacy/` | - | 归档的旧代码 |
+
+### smf_docs/ 文档索引
+| 类别 | 路径 | 内容 |
+|------|------|------|
+| 核心模块 | `smf_docs/core/` | device, config 等 |
+| 算法 | `smf_docs/modules/algorithms/` | BiG-AMP, AGD |
+| 图结构 | `smf_docs/modules/graphs/` | random, dinic, low_loop |
+| 教师模型 | `smf_docs/modules/teachers/` | standard, orthogonal |
+| 指标 | `smf_docs/modules/metrics/` | Q_Y, overlap 等 |
+| 输出 | `smf_docs/modules/outputs/` | 绘图, 存储 |
+
+---
+
+## 项目概述
+
+基于 PyTorch 的 Teacher-Student 掩码矩阵分解研究：`Y = W × X`
+
+研究 **相转移现象 (phase transition)**：在稀疏观测下，当观测密度 α 超过临界值 α_c 时，Q_Y 急剧接近 1。
+
+| 算法 | 收敛速度 | 适用场景 |
+|------|----------|----------|
+| **BiG-AMP** | ~200-5000 步 | 推荐，大矩阵 (N>1000) |
+| **AGD** | ~20k epochs | 小矩阵，调试 |
+
+---
+
+## 核心指标
 
 | Metric | 范围 | 含义 |
 |--------|------|------|
@@ -84,11 +96,9 @@ aim up             # Aim Web UI
 | `Q_W`, `Q_X` | [-1, 1] | Factor cosine overlap |
 | `Q_W'`, `Q_X'` | [0, 1] | Normalized versions |
 
-**相转移点 (α_c)**：Q_Y 急剧接近 1 的临界观测密度
-
 ---
 
-## ⚙️ 关键配置参数
+## 关键配置参数
 
 ```python
 N1, N2, M = 200, 200, 50        # 矩阵维度
@@ -100,29 +110,33 @@ DAMPING = 0.5                   # BiG-AMP 阻尼因子
 
 ---
 
-## 🛠️ SMF 框架功能
+## SMF 架构
 
-### 核心模块
-| 模块 | 文件 | 状态 |
-|------|------|------|
-| 配置系统 | `core/config.py` | ✅ |
-| 实验运行 | `core/runner.py` | ✅ |
-| 检查点 | `core/checkpoint.py` | ✅ |
-| LLM 配置 | `core/llm_advisor.py` | ✅ |
-| 执行计划 | `core/execution_plan.py` | ✅ |
-| 计划执行器 | `core/plan_executor.py` | ✅ |
-| LLM 日志 | `core/llm_logger.py` | ✅ |
+### 核心模块 (smf/core/)
+| 模块 | 说明 |
+|------|------|
+| `config.py` | 配置系统 |
+| `device.py` | GPU/CPU 设备检测 |
+| `experiment.py` | 实验运行器 |
+| `checkpoint.py` | 检查点保存/恢复 |
+| `execution_plan.py` | 执行计划生成 |
+| `plan_executor.py` | 计划执行器 |
+| `llm_advisor.py` | LLM 自然语言配置 |
+| `llm_logger.py` | LLM 日志记录 |
+| `memory_manager.py` | GPU 内存管理 |
 
-### 待恢复模块（误删）
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| 结果数据库 | `core/results_db.py` | TODO: 需重写 |
-| 批量队列 | `core/queue_manager.py` | TODO: 需重写 |
-| 实验对比 | `analysis/compare.py` | TODO: 需重写 |
+### 模块系统 (smf/modules/)
+| 类别 | 模块 |
+|------|------|
+| algorithms | `bigamp.py`, `agd.py` |
+| graphs | `random.py`, `dinic.py`, `low_loop.py`, `uniform.py` |
+| teachers | `standard.py`, `orthogonal.py`, `scaled_variance.py` |
+| metrics | `overlap.py`, `qy_unobserved.py`, `spreading.py` |
+| outputs | `plotting.py`, `storage.py`, `comparison.py` |
 
 ---
 
-## 📋 跨会话任务接力
+## 跨会话任务接力
 
 | 命令 | 用途 |
 |------|------|
@@ -131,14 +145,11 @@ DAMPING = 0.5                   # BiG-AMP 阻尼因子
 
 ---
 
-## 📦 依赖
+## 依赖
 
+核心依赖：`torch>=2.0.0`, `numpy`, `scipy`, `matplotlib`, `rich`
+
+```bash
+# GPU 加速
+pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
-torch>=2.0.0  numpy>=1.21.0  scipy>=1.7.0  matplotlib>=3.5.0
-```
-
-GPU 加速：`pip install torch --index-url https://download.pytorch.org/whl/cu121`
-
----
-
-*最后更新：2025年12月*
