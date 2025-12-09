@@ -368,6 +368,12 @@ def bigamp_spreading_parallel_step(
         W_hat, X_hat, W_var, X_var, F, i_idx, j_idx, alpha_mask
     )  # (A, C_max)
 
+    # ===== FIX #1: Onsager correction with damping =====
+    if prev_s is not None:
+        onsager_term = prev_s * V * damping
+        Z_hat = Z_hat - onsager_term
+        Z_hat = Z_hat * alpha_mask.float()
+
     # ===== Compute residuals and beliefs =====
     # s = (Y - Z_hat) / (V + noise_var)
     Y_broadcast = Y_values.unsqueeze(0)  # (1, C_max)
@@ -532,6 +538,12 @@ def bigamp_step_disjoint_union(
     # V = (1/M) Σ F² (...)
     V = alpha_scale_sq * (F_sq_flat * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * alpha_mask_exp.float() + 1e-10
+
+    # ===== FIX #1: Onsager correction with damping =====
+    if prev_s is not None:
+        onsager_term = prev_s * V * damping
+        Z_hat = Z_hat - onsager_term
+        Z_hat = Z_hat * alpha_mask_exp.float()
 
     # ===== 5. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
@@ -1007,26 +1019,14 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         A = len(alpha_values)
         alpha_max = max(alpha_values) if alpha_values else 4.0
 
-        # Get memory strategy with dynamic batching
+        # Get memory strategy
         strategy = get_spreading_memory_strategy(
             N1, N2, M, S, A, alpha_max,
             available_gb=max_memory_gb + 3.0,  # Add back the reserved 3GB
-            verbose=True,
-            alpha_values=alpha_values,  # Enable dynamic batching
+            verbose=False,
         )
-        
-        # Use dynamic batches if available, otherwise fall back to fixed
-        dynamic_batches = strategy.get('dynamic_batches')
-        if dynamic_batches:
-            num_batches = len(dynamic_batches)
-        else:
-            alphas_per_batch = strategy['alphas_per_batch']
-            num_batches = strategy['num_batches']
-            # Create fixed batch ranges
-            dynamic_batches = [
-                (i * alphas_per_batch, min((i + 1) * alphas_per_batch, A), alpha_max)
-                for i in range(num_batches)
-            ]
+        alphas_per_batch = strategy['alphas_per_batch']
+        num_batches = strategy['num_batches']
 
         # Create spreading data (generates its own masks via Super-Graph)
         spreading_data = self.create_spreading_data(
@@ -1037,8 +1037,10 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         W_result = torch.zeros(A, S, N1, M, device=self.device)
         X_result = torch.zeros(A, S, M, N2, device=self.device)
 
-        # Train in batches (now with variable batch sizes)
-        for batch_idx, (alpha_start, alpha_end, _) in enumerate(dynamic_batches):
+        # Train in batches
+        for batch_idx in range(num_batches):
+            alpha_start = batch_idx * alphas_per_batch
+            alpha_end = min((batch_idx + 1) * alphas_per_batch, A)
             batch_alpha_indices = list(range(alpha_start, alpha_end))
 
             # Train this batch using Disjoint Union (all samples parallel)

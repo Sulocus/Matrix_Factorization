@@ -91,9 +91,15 @@ class UnifiedProgress:
         """
         Render the Dynamic Capsule panel - Style A (Clean Cyan).
 
-        Layout for Disjoint Union parallel training:
-        - Step: current step within current batch (0 → max_steps)
-        - Batch: completed batches / total batches
+        Layout:
+        - Row 1: Step count + Alpha range + it/s + batch countdown
+        - Row 2: Step progress bar + percentage
+        - Row 3: Total progress bar + batch count (e.g., 0/9)
+        - Row 4: Power + VRAM + Elapsed + ETA (total)
+        
+        Color scheme:
+        - Static labels = white (default)
+        - Dynamic values = cyan
         """
         # Data Calculations
         pct_step = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
@@ -105,6 +111,25 @@ class UnifiedProgress:
         elapsed = time.time() - self._total_start_time if self._total_start_time else 0
         eta = self._estimate_eta()
 
+        # Calculate it/s (iterations per second for current batch)
+        batch_elapsed = time.time() - self._batch_start_time if self._batch_start_time else 0
+        if batch_elapsed > 0 and self._current_step > 0:
+            it_per_sec = self._current_step / batch_elapsed
+        else:
+            it_per_sec = 0
+
+        # Calculate batch countdown: elapsed / total_estimated
+        # Left side: current elapsed time (starts at 0, increases)
+        # Right side: estimated total batch time (stable)
+        if batch_elapsed > 0 and self._current_step > 0:
+            step_pct = self._current_step / self.steps_per_alpha
+            if step_pct > 0.01:  # Avoid division issues at very start
+                batch_total_estimated = batch_elapsed / step_pct
+            else:
+                batch_total_estimated = 0
+        else:
+            batch_total_estimated = 0
+
         def fmt_time(seconds):
             if seconds < 3600:
                 return f"{int(seconds)//60}:{int(seconds)%60:02d}"
@@ -115,6 +140,8 @@ class UnifiedProgress:
 
         elapsed_str = fmt_time(elapsed)
         eta_str = fmt_time(eta) if eta >= 0 else "--:--"
+        batch_elapsed_str = fmt_time(batch_elapsed)
+        batch_total_str = fmt_time(batch_total_estimated)
 
         # GPU Stats
         gpu_status = self.gpu_monitor.get_status()
@@ -131,8 +158,9 @@ class UnifiedProgress:
         else:
             alpha_str = f"{self._current_alpha:.2f}"
 
-        # Spinner (slow animation)
-        spinner = "◦●"[self._frame // 5 % 2]
+        # Moon phase spinner (8 frames, smooth animation)
+        moon_frames = "🌑🌒🌓🌔🌕🌖🌗🌘"
+        spinner = moon_frames[self._frame // 3 % 8]
 
         # Build progress bar as Text object for accurate width
         def make_bar_text(pct, width, filled_char, empty_char, color):
@@ -148,32 +176,34 @@ class UnifiedProgress:
         grid = Table.grid(padding=0)
         grid.add_column()
 
-        # Row 1: Header - show batch progress and step progress
-        # Batch N/B means: training batch N out of B total batches
-        batch_display = self._current_batch_idx + 1
+        # Row 1: Step + α + it/s + batch countdown
+        # Colors: labels=white, dynamic values=cyan
+        it_s_val = f"{it_per_sec:.1f}" if it_per_sec > 0 else "--"
         grid.add_row(Text.from_markup(
-            f" [cyan]{spinner}[/]  Batch [cyan]{batch_display:>2}[/]/{self._total_batches}     "
-            f"Alpha [cyan]{alpha_str:>7}[/]   Step [cyan]{self._current_step:>5}[/]/{self.steps_per_alpha}"
+            f" {spinner}  Step [cyan]{self._current_step}[/]/{self.steps_per_alpha}  "
+            f"α [cyan]{alpha_str}[/]  [cyan]{it_s_val}[/]it/s  "
+            f"[cyan]{batch_elapsed_str}[/]/{batch_total_str}"
         ))
 
         # Row 2: Step progress (within current batch)
+        # Percentage: number=cyan, %=white
         row2 = Text(" Step  ")
         row2.append_text(make_bar_text(pct_step, 40, "━", "━", "cyan"))
-        row2.append(f" {pct_step*100:5.1f}%", style="cyan")
+        row2.append(f" {pct_step*100:5.1f}", style="cyan")
+        row2.append("%")
         grid.add_row(row2)
 
-        # Row 3: Total progress (completed batches / total) - no number since header shows Batch X/Y
-        # Use discrete batch completion (not interpolated with step progress)
-        total_pct = self._completed_batches / self._total_batches if self._total_batches > 0 else 0
+        # Row 3: Total progress (batch count: completed=cyan, /total=white)
         row3 = Text(" Total ")
-        row3.append_text(make_bar_text(total_pct, 40, "━", "━", "cyan"))
-        row3.append(f" {total_pct*100:5.1f}%", style="cyan")
+        row3.append_text(make_bar_text(pct_batch, 40, "━", "━", "cyan"))
+        row3.append(f"  {self._completed_batches}", style="cyan")
+        row3.append(f"/{self._total_batches}")
         grid.add_row(row3)
 
-        # Row 4: Metrics
+        # Row 4: GPU Metrics + Elapsed + ETA
         grid.add_row(Text.from_markup(
-            f" Power [cyan]{power:3.0f}W[/]   VRAM [cyan]{memory:4.1f}G[/]   "
-            f"Elapsed [cyan]{elapsed_str:>6}[/]   ETA [cyan]{eta_str:>6}[/]"
+            f" Power [cyan]{power:.0f}[/]W  VRAM [cyan]{memory:.1f}[/]G  "
+            f"Elapsed [cyan]{elapsed_str}[/]  ETA [cyan]{eta_str}[/]"
         ))
 
         return Panel(

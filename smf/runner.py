@@ -82,11 +82,14 @@ class ExperimentRunner:
             }
 
         # Select memory strategy
+        alpha_max = max(alpha_values) if alpha_values else 4.0
         strategy = select_memory_mode(
             N1=m.N1, N2=m.N2, M=m.M, S=S,
             num_alphas=len(remaining_alphas),
             available_gb=self.device_info.available_memory_gb if hasattr(self.device_info, 'available_memory_gb') else None,
             verbose=True,
+            algorithm_key=self.config.algorithm_key,
+            alpha_max=alpha_max,
         )
 
         # Print header

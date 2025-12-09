@@ -1,201 +1,746 @@
-# Prompt 3: 深度程序分析与优化报告
+"""
+BiG-AMP with Random Spreading - Parallel Implementation.
+
+This module implements BiG-AMP algorithm for the random spreading model
+with Super-Graph parallelization across alpha values.
+
+Key features:
+1. Configurable F distribution: gaussian or rademacher
+2. Super-Graph strategy: parallel processing of all alphas
+3. Teacher type controlled by config.teacher_key
+4. CORRECTED: Onsager term interaction with Damping
+5. CORRECTED: Bayesian posterior update for N(0,1) prior
+"""
+
+from typing import Tuple, Callable, Dict, Optional, List
+from dataclasses import dataclass
+import math
+import torch
 
-## 1. 核心问题诊断 (Critical Diagnosis)
+from ..registry import register_algorithm
+from .base import AlgorithmBase
+from ..graphs.supergraph import SuperGraphData, create_supergraph
+from ..teachers.random_spreading import SpreadingDataParallel
 
-经过与参考代码 (`Wang`) 的逐行比对和物理图景分析，发现以下关键差异和潜在问题：
 
-### A. 更新公式的致命差异 (Update Rule Discrepancy)
-
-**这是目前最可疑的 Bug。**
-
-*   **参考代码 (`Wang/bigamp/train.py`, line 59)**:
-    ```python
-    w_hat_new = w_hat + w_var_new * r_W
-    ```
-    这是一个**增量更新**。新值 = 旧值 + (方差 * 梯度/残差)。这保留了之前的学习成果，类似于梯度下降步。
-
-*   **当前代码 (`smf/.../bigamp_spreading_parallel.py`, line 569)**:
-    ```python
-    W_hat_new = W_var_new * r_W
-    ```
-    这是一个**替换更新**。**缺少了 `+ W_hat`**！
-    这意味着每一步 `W_hat_new` 仅由当前的残差 `r_W` 决定。这导致算法“失忆”，每一步都像是在原点 (0) 附近主要基于当前梯度进行一次跳跃，而不是在现有估计基础上微调。这极大地解释了为什么算法难以收敛或性能极差。
-
-### B. Q_Y 指标定义 (Metric Definition)
-
-*   目前 `smf` 中的 `Q_Y` 是**余弦相似度 (Cosine Similarity)**：
-    $$ Q_Y = \frac{Y_{pred} \cdot Y_{true}}{\|Y_{pred}\| \|Y_{true}\|} $$
-*   物理上的序参量 $m$ (Magnetization) 通常指投影：
-    $$ m = \frac{Y_{pred} \cdot Y_{true}}{\|Y_{true}\|^2} $$
-*   **差异**: 由于收缩效应 (Shrinkage)，$\|Y_{pred}\|$ 通常小于 $\|Y_{true}\|$。余弦相似度会归一化掉这个模长差异，导致数值虚高 (看起来接近 1.0，但实际信号强度 $m$ 可能很小)。建议同时监控这两个指标。
-
-### C. 物理尺度 (Physical Scaling) - 已修正
-
-*   我们已经成功将 Teacher 和 Student 统一到了 **Mean Field Scaling** ($N(0,1)$)。
-*   这解决了初始方差不匹配的问题，为算法提供了正确的物理起点。
-
-### D. Onsager 校正
-
-*   目前我们移除了 `Z` 计算中的显式 Onsager 校正 (`- s * V`) 和 `s` 的 Damping。
-*   这与参考代码 (`Wang`) 保持了一致，是去除不稳定因素的正确举措。
-
----
-
-## 2. 修正与优化方案 (Action Plan)
-
-### 第一步：修复更新公式 (Top Priority)
-
-必须立即在 `bigamp_spreading_parallel.py` 中找回丢失的 `+ W_hat` 和 `+ X_hat`。
-
-**修改目标**:
-```python
-# W update
-r_W = ...
-W_hat_new = W_hat + W_var_new * r_W  # 加上 W_hat
-
-# X update
-r_X = ...
-X_hat_new = X_hat + X_var_new * r_X  # 加上 X_hat
-```
-*(注意：需要确认 `Wang` 代码中 `r_W` 的确切数学含义。如果 `smf` 中的 `r_W` 定义与 `Wang` 完全一致，那么这个加法就是必须的。)*
-
-### 第二步：完善指标监控
-
-建议在 `smf/modules/metrics/spreading.py` 中增加 `overlap_projected` 指标：
-```python
-overlap = dot / (norm_t * norm_t)  # 除以真值的模长平方
-```
-直接对应物理序参量 $m$ (或 $m^2$)。
-
-### 第三步：重新验证
-
-在修复更新公式后，重新运行实验。结合 Mean Field Scaling 的修正，预期 Q_Y 应该能观察到明显的相变行为。
-
-## 3. 待查证细节
-
-*   **`r_W` 的定义**: 再次确认 `smf` 中的 `r_W` 计算逻辑（`scatter_add` 部分）是否在数学上等价于 `Wang` 中的 `torch.matmul(s, x.T)`。从代码看结构是一致的，都是 $\sum_{\mu} s_{i\mu} x_{\mu j}$。
-
----
-
-**总结**: 强烈建议优先修复 **"丢失的 W_hat"** 问题。这很可能是导致算法表现不如旧代码的根本原因。
-
----
-
-# Claude Code 独立分析报告 (2025-12-09)
-
-## 4. 多 Agent 深度分析结果
-
-通过 3 个并行 Explore agent 对 spreading 相关代码进行了全面分析：
-
-### 分析方法
-1. **Agent 1**: 算法实现对比（bigamp.py vs bigamp_spreading.py vs bigamp_spreading_parallel.py）
-2. **Agent 2**: Teacher/Graph 模块分析（random_spreading.py, supergraph.py）
-3. **Agent 3**: 指标和结果分析（spreading.py, 实验结果文件）
-
-### 关键发现汇总
-
-| 问题 | prompt3.md | Claude 分析 | 一致性 |
-|------|-----------|-------------|--------|
-| **缺少 `+ W_hat`** | ✅ 指出 | ✅ 确认 | **完全一致** |
-| 方差公式差异 `1/(1+τ)` vs `1/(M+τ)` | ❌ 未提及 | ✅ 发现 | Claude 补充 |
-| 初始化缩放 0.1 vs 1/√M | 提到已修正 | ✅ 发现仍存在 | Claude 补充 |
-| Q_Y 指标定义 | ✅ 建议监控 | ❌ 未深入 | prompt3 更全面 |
-
----
-
-## 5. O(1) 框架下的自洽性验证
-
-### 背景说明
-
-用户确认：**故意采用 O(1) 量级框架**，而非传统的 Mean Field Scaling (1/M 方差)。
-
-因此以下设计是**有意的**，不是 bug：
-- `1/(1 + tau_W)` 方差公式 → 对应先验 W ~ N(0, I)
-- 初始方差 `1.0` → O(1) 量级
-- 初始缩放 `0.1` 或其他 O(1) 值
-
-### Sequential vs Parallel 对比验证
-
-| 版本 | 方差公式 | 更新公式 | 框架 | 状态 |
-|------|----------|----------|------|------|
-| **Wang (参考)** | `1/(M + τ)` | `w + var*r` | Mean Field | ✅ 基准 |
-| **Sequential spreading** | `1/(M + τ)` | `w + var*r` | Mean Field | ✅ 正确 |
-| **Parallel spreading** | `1/(1 + τ)` | `var*r` | O(1) | ❌ 缺少 `+W` |
-
-**关键证据**：
-```python
-# Sequential spreading (bigamp_spreading.py L133) - 正确
-w_hat_new = w_hat + w_var_new * r_W  # ✅ 有 + w_hat
-
-# Parallel spreading (bigamp_spreading_parallel.py L408) - 错误
-W_hat_new = W_var_new * r_W  # ❌ 缺少 + W_hat
-```
-
-**结论**：无论使用 Mean Field 还是 O(1) 框架，`+ W_hat` 增量更新结构都是必需的。这是消息传递算法的基本结构，与先验选择无关。
-
----
-
-## 6. 数学证明
-
-BiG-AMP 后验均值更新（无论先验）：
-
-$$\hat{w}_{new} = \sigma^2_{new} \left( \frac{\hat{w}_{old}}{\sigma^2_{old}} + r_W \right)$$
-
-简化近似：
-
-$$\hat{w}_{new} \approx \hat{w}_{old} + \sigma^2_{new} \cdot r_W$$
-
-**`r_W` 代表增量信息（梯度方向），不是绝对估计。**
-
-当前公式 `W_hat_new = W_var_new * r_W` 丢失了 `W_hat_old`，导致：
-- 每一步都从零开始估计
-- 之前学习的信息被丢弃
-- 算法无法积累信息收敛
-
----
-
-## 7. 修复实施记录
-
-### 修复位置
-
-**文件**: `smf/modules/algorithms/bigamp_spreading_parallel.py`
-
-| 函数 | 行号 | 修改内容 |
-|------|------|----------|
-| `bigamp_spreading_step_all_alphas()` | L408 | `W_hat_new = W_hat + W_var_new * r_W` |
-| `bigamp_spreading_step_all_alphas()` | L432 | `X_hat_new = X_hat + X_var_new * r_X` |
-| `bigamp_spreading_step_disjoint()` | L569 | 同上（需处理形状） |
-| `bigamp_spreading_step_disjoint()` | L584 | 同上（需处理形状） |
-
-### 修复后验证
-
-**测试 1** (N1=N2=100, M=25, steps=1000):
-```
-α=3.5: Q_W=0.53  ← 相变中，未完全收敛
-```
-
-**测试 2** (N1=N2=100, M=25, steps=3000, 更高 α):
-```
-α=2.0: Q_W=0.21
-α=3.0: Q_W=0.27  ← 相变开始
-α=4.0: Q_W=0.93  ← 相变完成！
-α=5.0: Q_W=0.94
-```
-
-**结论**:
-- 相变点 α_c ≈ 3.5
-- α > 4 时 Q_W → 0.93+ (接近 1.0)
-- 需要足够的迭代步数 (≥3000) 才能完全收敛
-
-✅ **修复成功！Q_W 可达 0.93+！**
-
----
-
-## 8. 结论
-
-**prompt3.md 的分析完全正确**：`+ W_hat` 缺失是导致算法失效的根本原因。
-
-**Claude 补充发现**：
-1. 方差公式 `1/(1+τ)` vs `1/(M+τ)` 是 O(1) 框架的设计选择，**不需要修改**
-2. 初始化相关参数在 O(1) 框架下是合理的，**不需要修改**
-3. 唯一需要修复的是 `+ W_hat` / `+ X_hat` 增量更新
+# ============================================================================
+# F Generation Strategies
+# ============================================================================
+
+def generate_F_gaussian(
+    C: int,
+    M: int,
+    seed: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if C == 0:
+        return torch.empty(0, M, device=device, dtype=torch.float32)
+
+    gen = torch.Generator(device=device)
+    gen.manual_seed(seed ^ 0x5DEECE66D)
+    return torch.randn(C, M, device=device, dtype=torch.float32, generator=gen)
+
+
+def generate_F_rademacher(
+    C: int,
+    M: int,
+    seed: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if C == 0:
+        return torch.empty(0, M, device=device, dtype=torch.float32)
+
+    gen = torch.Generator(device=device)
+    gen.manual_seed(seed ^ 0x5DEECE66D)
+
+    bits = torch.randint(0, 2, (C, M), device=device, dtype=torch.float32, generator=gen)
+    return bits * 2 - 1
+
+
+F_GENERATORS: Dict[str, Callable] = {
+    'gaussian': generate_F_gaussian,
+    'rademacher': generate_F_rademacher,
+}
+
+
+# ============================================================================
+# Super-Graph F Generation
+# ============================================================================
+
+def generate_F_super(
+    supergraph: SuperGraphData,
+    M: int,
+    base_seed: int,
+    device: torch.device,
+    f_distribution: str = 'gaussian',
+) -> torch.Tensor:
+    if f_distribution not in F_GENERATORS:
+        raise ValueError(f"Invalid f_distribution='{f_distribution}'")
+
+    generator = F_GENERATORS[f_distribution]
+    S = supergraph.seeds.shape[0]
+    C_max = supergraph.C_max
+
+    F_super = torch.empty(S, C_max, M, device=device, dtype=torch.float32)
+
+    for s in range(S):
+        sample_seed = base_seed + int(supergraph.seeds[s].item())
+        F_super[s] = generator(C_max, M, sample_seed, device)
+
+    return F_super
+
+
+def compute_Y_super(
+    W_teacher: torch.Tensor,
+    X_teacher: torch.Tensor,
+    supergraph: SuperGraphData,
+    F_super: torch.Tensor,
+) -> torch.Tensor:
+    S, C_max, M = F_super.shape
+    alpha_scale = 1.0 / math.sqrt(M)
+
+    Y_super = torch.empty(S, C_max, device=F_super.device, dtype=F_super.dtype)
+
+    for s in range(S):
+        i_idx = supergraph.i_idx[s]
+        j_idx = supergraph.j_idx[s]
+
+        W_sel = W_teacher[i_idx]
+        X_sel = X_teacher[:, j_idx].T
+
+        Y_super[s] = alpha_scale * (F_super[s] * W_sel * X_sel).sum(dim=1)
+
+    return Y_super
+
+
+# ============================================================================
+# Parallel BiG-AMP Core Functions
+# ============================================================================
+
+def scatter_add_parallel(
+    src: torch.Tensor,
+    idx: torch.Tensor,
+    target_size: int,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    A, C_max, M = src.shape
+    result = torch.zeros(A, target_size, M, device=src.device, dtype=src.dtype)
+    
+    src_masked = src * mask.unsqueeze(2).float()
+    idx_expanded = idx.view(1, C_max, 1).expand(A, C_max, M)
+    
+    result.scatter_add_(1, idx_expanded, src_masked)
+    return result
+
+
+def bigamp_spreading_parallel_step(
+    W_hat: torch.Tensor,
+    X_hat: torch.Tensor,
+    W_var: torch.Tensor,
+    X_var: torch.Tensor,
+    Y_values: torch.Tensor,
+    F: torch.Tensor,
+    i_idx: torch.Tensor,
+    j_idx: torch.Tensor,
+    alpha_mask: torch.Tensor,
+    damping: float,
+    noise_var: float,
+    prev_s: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Standard Parallel Step (for single sample, multiple alphas).
+    """
+    A, N1, M = W_hat.shape
+    _, _, N2 = X_hat.shape
+    C_max = F.shape[0]
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+
+    # --- 1. Forward Pass (Z calculation) ---
+    W_sel = W_hat[:, i_idx, :]
+    X_sel = X_hat[:, :, j_idx].transpose(1, 2)
+    F_expanded = F.unsqueeze(0)
+    
+    Z_raw = alpha_scale * (F_expanded * W_sel * X_sel).sum(dim=2)
+    Z_hat = Z_raw * alpha_mask.float()
+
+    # --- 2. Variance Pass (V calculation) ---
+    W_var_sel = W_var[:, i_idx, :]
+    X_var_sel = X_var[:, :, j_idx].transpose(1, 2)
+    F_sq = F.pow(2).unsqueeze(0)
+    
+    V_raw = alpha_scale_sq * (F_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
+    V = V_raw * alpha_mask.float() + 1e-10
+
+    # --- 3. Onsager Correction & Residuals ---
+    # FIX #1: Scale Onsager by damping factor
+    if prev_s is not None:
+        onsager_term = prev_s * V * damping
+        Z_hat = Z_hat - onsager_term
+        Z_hat = Z_hat * alpha_mask.float()
+
+    denominator = torch.clamp(V + noise_var, min=1e-6)
+    s_values = (Y_values.unsqueeze(0) - Z_hat) / denominator
+    s_values = torch.clamp(s_values, min=-1e5, max=1e5) # Tighter clamp
+    s_values = s_values * alpha_mask.float()
+
+    # --- 4. Backward Pass (Update W) ---
+    s_expanded = s_values.unsqueeze(2)
+    
+    # Gradient/Residual term: r_W
+    r_W_contrib = alpha_scale * F_expanded * X_sel * s_expanded
+    r_W = scatter_add_parallel(r_W_contrib, i_idx, N1, alpha_mask)
+
+    # Precision/Curvature term: tau_W
+    inv_V = (1.0 / denominator).unsqueeze(2)
+    tau_W_contrib = alpha_scale_sq * F_sq * X_sel.pow(2) * inv_V
+    tau_W = scatter_add_parallel(tau_W_contrib, i_idx, N1, alpha_mask)
+    tau_W = tau_W.clamp(min=1e-10)
+
+    # FIX #2: Correct Bayesian Update for N(0,1) Prior
+    # W_new = (tau_W * W_old + r_W) / (tau_W + 1)
+    W_var_new = 1.0 / (1.0 + tau_W)
+    r_W = torch.clamp(r_W, min=-1e4, max=1e4)
+    # The term (W_hat * tau_W) represents the contribution from the prior estimate
+    W_hat_new = W_var_new * (r_W + W_hat * tau_W)
+
+    # --- 5. Backward Pass (Update X) ---
+    # Gradient/Residual term: r_X
+    r_X_contrib = alpha_scale * F_expanded * W_sel * s_expanded
+    r_X_contrib_T = r_X_contrib.transpose(1, 2)
+    
+    r_X = torch.zeros(A, M, N2, device=W_hat.device, dtype=W_hat.dtype)
+    j_idx_expanded = j_idx.view(1, 1, C_max).expand(A, M, C_max)
+    mask_expanded_X = alpha_mask.unsqueeze(1).float()
+    r_X.scatter_add_(2, j_idx_expanded, r_X_contrib_T * mask_expanded_X)
+
+    # Precision/Curvature term: tau_X
+    tau_X_contrib = alpha_scale_sq * F_sq * W_sel.pow(2) * inv_V
+    tau_X_contrib_T = tau_X_contrib.transpose(1, 2)
+    
+    tau_X = torch.zeros(A, M, N2, device=W_hat.device, dtype=W_hat.dtype)
+    tau_X.scatter_add_(2, j_idx_expanded, tau_X_contrib_T * mask_expanded_X)
+    tau_X = tau_X.clamp(min=1e-10)
+
+    # FIX #2 for X
+    X_var_new = 1.0 / (1.0 + tau_X)
+    r_X = torch.clamp(r_X, min=-1e4, max=1e4)
+    X_hat_new = X_var_new * (r_X + X_hat * tau_X)
+
+    # --- 6. Damping ---
+    W_hat_out = damping * W_hat_new + (1 - damping) * W_hat
+    X_hat_out = damping * X_hat_new + (1 - damping) * X_hat
+    W_var_out = damping * W_var_new + (1 - damping) * W_var
+    X_var_out = damping * X_var_new + (1 - damping) * X_var
+
+    W_hat_out = torch.nan_to_num(W_hat_out, nan=0.0)
+    X_hat_out = torch.nan_to_num(X_hat_out, nan=0.0)
+    W_var_out = torch.nan_to_num(W_var_out, nan=1.0)
+    X_var_out = torch.nan_to_num(X_var_out, nan=1.0)
+
+    return W_hat_out, X_hat_out, W_var_out, X_var_out, s_values
+
+
+# ============================================================================
+# Disjoint Union Parallelization (All Samples Parallel)
+# ============================================================================
+
+def bigamp_step_disjoint_union(
+    W_hat: torch.Tensor,
+    X_hat: torch.Tensor,
+    W_var: torch.Tensor,
+    X_var: torch.Tensor,
+    Y_super: torch.Tensor,
+    F_super: torch.Tensor,
+    i_offset: torch.Tensor,
+    j_offset: torch.Tensor,
+    alpha_mask: torch.Tensor,
+    S: int,
+    damping: float,
+    noise_var: float,
+    prev_s: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    High-performance Disjoint Union Step.
+    """
+    _, A, N1, M = W_hat.shape
+    N2 = X_hat.shape[3]
+    C_max = F_super.shape[1]
+    SC = S * C_max
+
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+
+    # --- Flatten ---
+    W_flat = W_hat.permute(1, 0, 2, 3).reshape(A, S * N1, M)
+    X_flat = X_hat.permute(1, 0, 3, 2).reshape(A, S * N2, M)
+    W_var_flat = W_var.permute(1, 0, 2, 3).reshape(A, S * N1, M)
+    X_var_flat = X_var.permute(1, 0, 3, 2).reshape(A, S * N2, M)
+
+    F_flat = F_super.reshape(SC, M)
+    Y_flat = Y_super.reshape(SC)
+    alpha_mask_exp = alpha_mask.unsqueeze(1).expand(A, S, C_max).reshape(A, SC)
+
+    # --- Gather ---
+    W_sel = W_flat[:, i_offset, :]
+    X_sel = X_flat[:, j_offset, :]
+    W_var_sel = W_var_flat[:, i_offset, :]
+    X_var_sel = X_var_flat[:, j_offset, :]
+
+    # --- Forward Pass ---
+    Z_hat = alpha_scale * (F_flat.unsqueeze(0) * W_sel * X_sel).sum(dim=2)
+    Z_hat = Z_hat * alpha_mask_exp.float()
+
+    # --- Variance ---
+    F_sq_flat = F_flat.pow(2).unsqueeze(0)
+    V = alpha_scale_sq * (F_sq_flat * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
+    V = V * alpha_mask_exp.float() + 1e-10
+
+    # --- Onsager ---
+    # FIX #1: Scale Onsager by damping factor
+    if prev_s is not None:
+        onsager_term = prev_s * V * damping
+        Z_hat = Z_hat - onsager_term
+        Z_hat = Z_hat * alpha_mask_exp.float()
+
+    # --- Residuals ---
+    denom = torch.clamp(V + noise_var, min=1e-6)
+    s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom
+    s_values = torch.clamp(s_values, min=-1e5, max=1e5)
+    s_values = s_values * alpha_mask_exp.float()
+
+    # --- Scatter Add ---
+    s_exp = s_values.unsqueeze(2)
+    mask_exp = alpha_mask_exp.unsqueeze(2).float()
+    F_exp = F_flat.unsqueeze(0)
+    
+    # Constants for variance update
+    inv_V = (1.0 / denom).unsqueeze(2)
+    F_sq_exp = F_exp.pow(2)
+
+    # --- Update W ---
+    r_W_contrib = alpha_scale * F_exp * X_sel * s_exp * mask_exp
+    r_W = torch.zeros(A, S * N1, M, device=W_hat.device, dtype=W_hat.dtype)
+    idx_W = i_offset.view(1, SC, 1).expand(A, SC, M)
+    r_W.scatter_add_(1, idx_W, r_W_contrib)
+
+    tau_W_contrib = alpha_scale_sq * F_sq_exp * X_sel.pow(2) * inv_V * mask_exp
+    tau_W = torch.zeros(A, S * N1, M, device=W_hat.device, dtype=W_hat.dtype)
+    tau_W.scatter_add_(1, idx_W, tau_W_contrib)
+    tau_W = tau_W.clamp(min=1e-10)
+
+    # FIX #2: Correct Bayesian Update for W
+    W_var_new = 1.0 / (1.0 + tau_W)
+    r_W = torch.clamp(r_W, min=-1e4, max=1e4)
+    # W_new = (tau_W * W_old + r_W) * Var_new
+    W_hat_new = W_var_new * (r_W + W_flat * tau_W)
+
+    # --- Update X ---
+    r_X_contrib = alpha_scale * F_exp * W_sel * s_exp * mask_exp
+    r_X = torch.zeros(A, S * N2, M, device=W_hat.device, dtype=W_hat.dtype)
+    idx_X = j_offset.view(1, SC, 1).expand(A, SC, M)
+    r_X.scatter_add_(1, idx_X, r_X_contrib)
+
+    tau_X_contrib = alpha_scale_sq * F_sq_exp * W_sel.pow(2) * inv_V * mask_exp
+    tau_X = torch.zeros(A, S * N2, M, device=W_hat.device, dtype=W_hat.dtype)
+    tau_X.scatter_add_(1, idx_X, tau_X_contrib)
+    tau_X = tau_X.clamp(min=1e-10)
+
+    # FIX #2: Correct Bayesian Update for X
+    X_var_new = 1.0 / (1.0 + tau_X)
+    r_X = torch.clamp(r_X, min=-1e4, max=1e4)
+    X_hat_new = X_var_new * (r_X + X_flat * tau_X)
+
+    # --- Reshape Back ---
+    W_hat_new = W_hat_new.reshape(A, S, N1, M).permute(1, 0, 2, 3)
+    W_var_new = W_var_new.reshape(A, S, N1, M).permute(1, 0, 2, 3)
+    X_hat_new = X_hat_new.reshape(A, S, N2, M).permute(1, 0, 3, 2)
+    X_var_new = X_var_new.reshape(A, S, N2, M).permute(1, 0, 3, 2)
+
+    # --- Damping ---
+    W_hat_out = damping * W_hat_new + (1 - damping) * W_hat
+    X_hat_out = damping * X_hat_new + (1 - damping) * X_hat
+    W_var_out = damping * W_var_new + (1 - damping) * W_var
+    X_var_out = damping * X_var_new + (1 - damping) * X_var
+
+    # NaN protection
+    W_hat_out = torch.nan_to_num(W_hat_out, nan=0.0)
+    X_hat_out = torch.nan_to_num(X_hat_out, nan=0.0)
+    W_var_out = torch.nan_to_num(W_var_out, nan=1.0)
+    X_var_out = torch.nan_to_num(X_var_out, nan=1.0)
+
+    return W_hat_out, X_hat_out, W_var_out, X_var_out, s_values
+
+
+def compute_offset_indices(
+    i_idx: torch.Tensor,
+    j_idx: torch.Tensor,
+    N1: int,
+    N2: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    S = i_idx.shape[0]
+    device = i_idx.device
+
+    offsets_N1 = torch.arange(S, device=device) * N1
+    offsets_N2 = torch.arange(S, device=device) * N2
+
+    i_offset = (i_idx + offsets_N1.unsqueeze(1)).reshape(-1)
+    j_offset = (j_idx + offsets_N2.unsqueeze(1)).reshape(-1)
+
+    return i_offset, j_offset
+
+
+@register_algorithm(
+    key="bigamp_spreading_parallel",
+    name="BiG-AMP Spreading (Parallel)",
+    description="GPU parallel across all alphas - 30x faster for production",
+    default_params={
+        'damping': 0.5,
+        'noise_var': 1e-10,
+    },
+)
+class BiGAMPSpreadingParallel(AlgorithmBase):
+
+    def __init__(self, config, device: torch.device):
+        self.config = config
+        self.device = device
+        self.damping = config.algorithm.damping
+        self.noise_var = config.algorithm.noise_var
+        self.max_steps = config.training.max_steps
+
+        spreading_cfg = config.spreading
+        if spreading_cfg is not None:
+            self.f_distribution = spreading_cfg.f_distribution
+            self.spreading_seed = spreading_cfg.seed
+        else:
+            self.f_distribution = 'gaussian'
+            self.spreading_seed = 12345
+
+        if self.f_distribution not in F_GENERATORS:
+            raise ValueError(f"Invalid f_distribution='{self.f_distribution}'")
+
+        print(f"[BiG-AMP Spreading Parallel] F distribution: {self.f_distribution}")
+
+    def create_spreading_data(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        alpha_values: List[float],
+        S: int,
+        base_seed: int,
+    ) -> SpreadingDataParallel:
+        N1, M = W_teacher.shape
+        _, N2 = X_teacher.shape
+
+        supergraph = create_supergraph(
+            N1=N1,
+            N2=N2,
+            M=M,
+            alpha_values=alpha_values,
+            S=S,
+            base_seed=base_seed,
+            device=self.device,
+        )
+
+        F_super = generate_F_super(
+            supergraph=supergraph,
+            M=M,
+            base_seed=self.spreading_seed,
+            device=self.device,
+            f_distribution=self.f_distribution,
+        )
+
+        Y_super = compute_Y_super(
+            W_teacher=W_teacher,
+            X_teacher=X_teacher,
+            supergraph=supergraph,
+            F_super=F_super,
+        )
+
+        return SpreadingDataParallel(
+            supergraph=supergraph,
+            F_super=F_super,
+            Y_super=Y_super,
+            M=M,
+            alpha_values=torch.tensor(alpha_values, device=self.device),
+            W_teacher=W_teacher,
+            X_teacher=X_teacher,
+        )
+
+    def train_sample(
+        self,
+        spreading_data: SpreadingDataParallel,
+        sample_idx: int,
+        verbose: bool = False,
+        step_callback=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        A = spreading_data.A
+        N1 = spreading_data.supergraph.N1
+        N2 = spreading_data.supergraph.N2
+        M = spreading_data.M
+
+        F = spreading_data.get_F(sample_idx)
+        Y_values = spreading_data.Y_super[sample_idx]
+        i_idx, j_idx = spreading_data.supergraph.get_sample_indices(sample_idx)
+        alpha_mask = spreading_data.supergraph.alpha_mask
+
+        # Initialize student variables (Mean Field Scaling: N(0,1))
+        # Important: Start with small random values to break symmetry
+        W_hat = torch.randn(A, N1, M, device=self.device) * 0.01
+        X_hat = torch.randn(A, M, N2, device=self.device) * 0.01
+        W_var = torch.ones(A, N1, M, device=self.device)
+        X_var = torch.ones(A, M, N2, device=self.device)
+
+        prev_s = None
+
+        for step in range(self.max_steps):
+            W_hat, X_hat, W_var, X_var, prev_s = bigamp_spreading_parallel_step(
+                W_hat=W_hat,
+                X_hat=X_hat,
+                W_var=W_var,
+                X_var=X_var,
+                Y_values=Y_values,
+                F=F,
+                i_idx=i_idx,
+                j_idx=j_idx,
+                alpha_mask=alpha_mask,
+                damping=self.damping,
+                noise_var=self.noise_var,
+                prev_s=prev_s,
+            )
+
+            if verbose and (step + 1) % 100 == 0:
+                print(f" Step {step + 1}/{self.max_steps}")
+
+            if step_callback:
+                step_callback(step + 1, self.max_steps)
+
+        return W_hat, X_hat
+
+    def train_all_samples(
+        self,
+        spreading_data: SpreadingDataParallel,
+        verbose: bool = True,
+        step_callback=None,
+        sample_callback=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        S = spreading_data.S
+        A = spreading_data.A
+        N1 = spreading_data.supergraph.N1
+        N2 = spreading_data.supergraph.N2
+        M = spreading_data.M
+
+        W_all = torch.zeros(S, A, N1, M, device=self.device)
+        X_all = torch.zeros(S, A, M, N2, device=self.device)
+
+        for s in range(S):
+            if verbose:
+                print(f"Training sample {s + 1}/{S}")
+            W_s, X_s = self.train_sample(spreading_data, s, verbose=False, step_callback=step_callback)
+            W_all[s] = W_s
+            X_all[s] = X_s
+            
+            if sample_callback:
+                sample_callback(s + 1, S)
+
+        return W_all, X_all
+
+    def train_full_parallel(
+        self,
+        spreading_data: SpreadingDataParallel,
+        batch_alpha_indices: Optional[List[int]] = None,
+        verbose: bool = False,
+        step_callback=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        S = spreading_data.S
+        A = spreading_data.A
+        N1 = spreading_data.supergraph.N1
+        N2 = spreading_data.supergraph.N2
+        M = spreading_data.M
+        C_max = spreading_data.C_max
+
+        if batch_alpha_indices is None:
+            batch_alpha_indices = list(range(A))
+        B = len(batch_alpha_indices)
+
+        full_alpha_mask = spreading_data.supergraph.alpha_mask
+        batch_alpha_mask = full_alpha_mask[batch_alpha_indices]
+
+        i_offset, j_offset = compute_offset_indices(
+            spreading_data.supergraph.i_idx,
+            spreading_data.supergraph.j_idx,
+            N1, N2
+        )
+
+        # Initialize student variables
+        W_hat = torch.randn(S, B, N1, M, device=self.device) * 0.01
+        X_hat = torch.randn(S, B, M, N2, device=self.device) * 0.01
+        W_var = torch.ones(S, B, N1, M, device=self.device)
+        X_var = torch.ones(S, B, M, N2, device=self.device)
+
+        prev_s = None
+
+        for step in range(self.max_steps):
+            W_hat, X_hat, W_var, X_var, prev_s = bigamp_step_disjoint_union(
+                W_hat=W_hat,
+                X_hat=X_hat,
+                W_var=W_var,
+                X_var=X_var,
+                Y_super=spreading_data.Y_super,
+                F_super=spreading_data.F_super,
+                i_offset=i_offset,
+                j_offset=j_offset,
+                alpha_mask=batch_alpha_mask,
+                S=S,
+                damping=self.damping,
+                noise_var=self.noise_var,
+                prev_s=prev_s,
+            )
+
+            if verbose and (step + 1) % 100 == 0:
+                print(f" Step {step + 1}/{self.max_steps}")
+
+            if step_callback:
+                step_callback(step + 1, self.max_steps)
+
+        return W_hat, X_hat
+
+    def supports_batch_training(self) -> bool:
+        return True
+
+    def train_batch_alphas(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: torch.Tensor,
+        alpha_values: List[float],
+        seed: int,
+        step_callback=None,
+        sample_callback=None,
+        max_memory_gb: float = 24.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        from ...core.memory_manager import get_spreading_memory_strategy
+
+        S = self.config.training.samples_per_alpha
+        N1, M = W_teacher.shape
+        N2 = X_teacher.shape[1]
+        A = len(alpha_values)
+        alpha_max = max(alpha_values) if alpha_values else 4.0
+
+        strategy = get_spreading_memory_strategy(
+            N1, N2, M, S, A, alpha_max,
+            available_gb=max_memory_gb + 3.0,
+            verbose=False,
+        )
+        alphas_per_batch = strategy['alphas_per_batch']
+        num_batches = strategy['num_batches']
+
+        spreading_data = self.create_spreading_data(
+            W_teacher, X_teacher, alpha_values, S, seed
+        )
+
+        W_result = torch.zeros(A, S, N1, M, device=self.device)
+        X_result = torch.zeros(A, S, M, N2, device=self.device)
+
+        for batch_idx in range(num_batches):
+            alpha_start = batch_idx * alphas_per_batch
+            alpha_end = min((batch_idx + 1) * alphas_per_batch, A)
+            batch_alpha_indices = list(range(alpha_start, alpha_end))
+
+            W_batch, X_batch = self.train_full_parallel(
+                spreading_data,
+                batch_alpha_indices=batch_alpha_indices,
+                verbose=False,
+                step_callback=step_callback,
+            )
+
+            W_result[alpha_start:alpha_end] = W_batch.transpose(0, 1)
+            X_result[alpha_start:alpha_end] = X_batch.transpose(0, 1)
+
+            if sample_callback:
+                sample_callback(batch_idx + 1, num_batches)
+
+            if batch_idx < num_batches - 1:
+                torch.cuda.empty_cache()
+
+        return W_result, X_result
+
+    def train_single_alpha(self, alpha, teacher_data, graph_data):
+        raise NotImplementedError("Use train_sample or train_all_samples")
+
+
+def run_spreading_parallel(config, verbose: bool = True) -> Dict:
+    import time
+    from ..metrics.spreading import compute_all_metrics_spreading_parallel
+    from ..registry import get_teacher
+    from ...core.device import setup_device
+
+    device, device_info = setup_device()
+
+    m = config.matrix
+    alpha_values = config.alpha.get_values()
+    S = config.training.samples_per_alpha
+    seed = config.training.seed
+
+    if verbose:
+        print(f"[Spreading Parallel] Running with:")
+        print(f" Matrix: {m.N1}x{m.N2}, M={m.M}")
+        print(f" Alpha: {alpha_values[0]:.2f} ~ {alpha_values[-1]:.2f} ({len(alpha_values)} points)")
+        print(f" Samples: {S}")
+        print(f" F distribution: {config.spreading.f_distribution if config.spreading else 'gaussian'}")
+
+    start_time = time.time()
+
+    teacher_cls = get_teacher(config.teacher_key).cls
+    teacher = teacher_cls()
+    W_teacher, X_teacher = teacher.create(m.N1, m.N2, m.M, device, seed)
+
+    if verbose:
+        print(f" Teacher type: {config.teacher_key}")
+
+    algorithm = BiGAMPSpreadingParallel(config, device)
+
+    spreading_data = algorithm.create_spreading_data(
+        W_teacher=W_teacher,
+        X_teacher=X_teacher,
+        alpha_values=alpha_values,
+        S=S,
+        base_seed=seed,
+    )
+
+    if verbose:
+        print(f" SuperGraph created: C_max={spreading_data.C_max}")
+
+    W_students, X_students = algorithm.train_all_samples(
+        spreading_data, verbose=verbose
+    )
+
+    metrics = compute_all_metrics_spreading_parallel(
+        W_students, X_students, spreading_data
+    )
+
+    total_time = time.time() - start_time
+
+    if verbose:
+        print(f"\n[Spreading Parallel] Completed in {total_time:.1f}s")
+
+    results = {}
+    for i, alpha in enumerate(alpha_values):
+        results[float(alpha)] = {
+            'Q_Y_mean': float(metrics['Q_Y_mean'][i]),
+            'Q_Y_std': float(metrics['Q_Y_std'][i]),
+            'Q_W_mean': float(metrics['Q_W_mean'][i]),
+            'Q_W_std': float(metrics['Q_W_std'][i]),
+            'Q_X_mean': float(metrics['Q_X_mean'][i]),
+            'Q_X_std': float(metrics['Q_X_std'][i]),
+        }
+
+    return {
+        'results': results,
+        'config': config,
+        'total_time': total_time,
+        'spreading_data': spreading_data,
+        'W_students': W_students,
+        'X_students': X_students,
+    }

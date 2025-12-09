@@ -135,12 +135,17 @@ def create_supergraph(
         seeds[s] = seed
 
         # Generate random permutation of edge indices
-        gen = torch.Generator(device='cpu').manual_seed(seed)
-        perm = torch.randperm(total_edges, generator=gen)[:C_max]
-
-        # Convert flat indices to (i, j) pairs
-        i_idx_all[s] = (perm // N2).to(device)
-        j_idx_all[s] = (perm % N2).to(device)
+        # Use GPU generator if device is CUDA for much faster generation
+        if device.type == 'cuda':
+            gen = torch.Generator(device=device).manual_seed(seed)
+            perm = torch.randperm(total_edges, generator=gen, device=device)[:C_max]
+            i_idx_all[s] = perm // N2
+            j_idx_all[s] = perm % N2
+        else:
+            gen = torch.Generator(device='cpu').manual_seed(seed)
+            perm = torch.randperm(total_edges, generator=gen)[:C_max]
+            i_idx_all[s] = (perm // N2).to(device)
+            j_idx_all[s] = (perm % N2).to(device)
 
     # Create alpha masks
     # mask[a, c] = True if c < C_per_alpha[a]
