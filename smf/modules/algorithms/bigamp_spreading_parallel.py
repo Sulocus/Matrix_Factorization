@@ -65,6 +65,9 @@ def generate_F_rademacher(
     """
     Generate F ~ Rademacher (uniform {-1, +1}).
 
+    OPTIMIZATION: Uses int8 storage for 4x memory reduction.
+    Values are stored as int8 and converted to float on demand.
+
     Properties:
         E[F] = 0
         Var[F] = 1
@@ -77,17 +80,17 @@ def generate_F_rademacher(
         device: Target device
 
     Returns:
-        F: (C, M) tensor with F ∈ {-1, +1}
+        F: (C, M) tensor with F ∈ {-1, +1} stored as int8
     """
     if C == 0:
-        return torch.empty(0, M, device=device, dtype=torch.float32)
+        return torch.empty(0, M, device=device, dtype=torch.int8)
 
     gen = torch.Generator(device=device)
     gen.manual_seed(seed ^ 0x5DEECE66D)
 
-    # Generate 0 or 1, then map to -1 or +1
-    bits = torch.randint(0, 2, (C, M), device=device, dtype=torch.float32, generator=gen)
-    return bits * 2 - 1  # {0, 1} -> {-1, +1}
+    # Generate 0 or 1, then map to -1 or +1, store as int8
+    bits = torch.randint(0, 2, (C, M), device=device, dtype=torch.int8, generator=gen)
+    return bits * 2 - 1  # {0, 1} -> {-1, +1} as int8
 
 
 # Strategy dictionary
@@ -114,6 +117,8 @@ def generate_F_super(
     Each sample has independent F, but within a sample,
     different alphas share the same F (just different masks).
 
+    OPTIMIZATION: For Rademacher, stores as int8 (4x memory reduction).
+
     Args:
         supergraph: SuperGraphData with edge structure
         M: Hidden dimension
@@ -122,7 +127,7 @@ def generate_F_super(
         f_distribution: 'gaussian' or 'rademacher'
 
     Returns:
-        F_super: (S, C_max, M) tensor
+        F_super: (S, C_max, M) tensor (float32 for gaussian, int8 for rademacher)
     """
     if f_distribution not in F_GENERATORS:
         raise ValueError(
@@ -134,7 +139,9 @@ def generate_F_super(
     S = supergraph.seeds.shape[0]
     C_max = supergraph.C_max
 
-    F_super = torch.empty(S, C_max, M, device=device, dtype=torch.float32)
+    # Determine dtype based on distribution
+    dtype = torch.int8 if f_distribution == 'rademacher' else torch.float32
+    F_super = torch.empty(S, C_max, M, device=device, dtype=dtype)
 
     for s in range(S):
         # Combine base_seed with sample seed for independence
@@ -159,15 +166,16 @@ def compute_Y_super(
         W_teacher: (N1, M) teacher W matrix
         X_teacher: (M, N2) teacher X matrix
         supergraph: SuperGraphData with edge indices
-        F_super: (S, C_max, M) spreading coefficients
+        F_super: (S, C_max, M) spreading coefficients (int8 or float32)
 
     Returns:
-        Y_super: (S, C_max) Y values at all positions
+        Y_super: (S, C_max) Y values (always float32)
     """
     S, C_max, M = F_super.shape
     alpha_scale = 1.0 / math.sqrt(M)
 
-    Y_super = torch.empty(S, C_max, device=F_super.device, dtype=F_super.dtype)
+    # Y is always float32 even if F is int8
+    Y_super = torch.empty(S, C_max, device=F_super.device, dtype=torch.float32)
 
     for s in range(S):
         i_idx = supergraph.i_idx[s]  # (C_max,)
@@ -176,8 +184,11 @@ def compute_Y_super(
         W_sel = W_teacher[i_idx]     # (C_max, M)
         X_sel = X_teacher[:, j_idx].T  # (C_max, M)
 
+        # Convert F to float for computation (handles int8 Rademacher)
+        F_s = F_super[s].float() if F_super.dtype == torch.int8 else F_super[s]
+        
         # Y[c] = (1/√M) Σ_μ F[c,μ] W[i,μ] X[μ,j]
-        Y_super[s] = alpha_scale * (F_super[s] * W_sel * X_sel).sum(dim=1)
+        Y_super[s] = alpha_scale * (F_s * W_sel * X_sel).sum(dim=1)
 
     return Y_super
 
@@ -604,6 +615,143 @@ def bigamp_step_disjoint_union(
     return W_hat_out, X_hat_out, W_var_out, X_var_out, s_values
 
 
+def bigamp_step_disjoint_union_flat(
+    W_flat: torch.Tensor,      # (A, S*N1, M) - already flattened
+    X_flat: torch.Tensor,      # (A, S*N2, M) - already flattened
+    W_var_flat: torch.Tensor,  # (A, S*N1, M)
+    X_var_flat: torch.Tensor,  # (A, S*N2, M)
+    Y_flat: torch.Tensor,      # (S*C_max,) - flattened Y
+    F_flat: torch.Tensor,      # (S*C_max, M) - flattened F
+    i_offset: torch.Tensor,    # (S*C_max,) - precomputed offset indices
+    j_offset: torch.Tensor,    # (S*C_max,) - precomputed offset indices
+    alpha_mask_exp: torch.Tensor,  # (A, S*C_max) - expanded mask
+    S: int,
+    N1: int,
+    N2: int,
+    damping: float,
+    noise_var: float,
+    is_rademacher: bool = False,  # Optimization: skip F² for Rademacher
+    prev_s: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Optimized BiG-AMP step operating on flat tensors.
+    
+    Key optimization: NO reshape/permute inside this function.
+    All tensors remain in flat (A, S*N, M) format throughout.
+    
+    Args:
+        W_flat: (A, S*N1, M) W estimates, already flattened
+        X_flat: (A, S*N2, M) X estimates, already flattened  
+        W_var_flat: (A, S*N1, M) W variance, flattened
+        X_var_flat: (A, S*N2, M) X variance, flattened
+        Y_flat: (S*C_max,) Y values, flattened
+        F_flat: (S*C_max, M) F coefficients, flattened
+        i_offset: (S*C_max,) row indices with sample offset
+        j_offset: (S*C_max,) col indices with sample offset
+        alpha_mask_exp: (A, S*C_max) expanded alpha mask
+        S: number of samples
+        N1, N2: original dimensions
+        damping: damping factor
+        noise_var: noise variance
+        is_rademacher: if True, skip F² computation (F²=1)
+        prev_s: previous s values (unused, kept for API compatibility)
+    
+    Returns:
+        Updated (W_flat, X_flat, W_var_flat, X_var_flat, s_values)
+        All in flat format (A, S*N, M)
+    """
+    A = W_flat.shape[0]
+    M = W_flat.shape[2]
+    SC = F_flat.shape[0]
+    
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    
+    # ===== 1. Gather: one operation for all S*C_max edges =====
+    W_sel = W_flat[:, i_offset, :]  # (A, SC, M)
+    X_sel = X_flat[:, j_offset, :]  # (A, SC, M)
+    W_var_sel = W_var_flat[:, i_offset, :]  # (A, SC, M)
+    X_var_sel = X_var_flat[:, j_offset, :]  # (A, SC, M)
+    
+    # ===== 2. Forward pass =====
+    # Convert F to float if stored as int8 (Rademacher optimization)
+    F_compute = F_flat.float() if F_flat.dtype == torch.int8 else F_flat
+    F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
+    Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)  # (A, SC)
+    Z_hat = Z_hat * alpha_mask_exp.float()
+    
+    # ===== 3. Variance =====
+    if is_rademacher:
+        # F² = 1 for Rademacher, skip pow(2) computation
+        V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
+        F_sq_exp = None  # Not needed
+    else:
+        F_sq_exp = F_exp.pow(2)  # (1, SC, M)
+        V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
+    V = V * alpha_mask_exp.float() + 1e-10
+    
+    # ===== 4. Residuals =====
+    denom = torch.clamp(V + noise_var, min=1e-6)
+    s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
+    s_values = torch.clamp(s_values, min=-1e6, max=1e6)
+    s_values = s_values * alpha_mask_exp.float()
+    
+    # ===== 5. Scatter: one operation for all edges =====
+    s_exp = s_values.unsqueeze(2)  # (A, SC, 1)
+    mask_exp = alpha_mask_exp.unsqueeze(2).float()  # (A, SC, 1)
+    inv_V = (1.0 / denom).unsqueeze(2)  # (A, SC, 1)
+    
+    # W update
+    r_W_contrib = alpha_scale * F_exp * X_sel * s_exp * mask_exp  # (A, SC, M)
+    r_W = torch.zeros(A, S * N1, M, device=W_flat.device, dtype=W_flat.dtype)
+    idx_W = i_offset.view(1, SC, 1).expand(A, SC, M)
+    r_W.scatter_add_(1, idx_W, r_W_contrib)
+    
+    if is_rademacher:
+        tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * inv_V * mask_exp
+    else:
+        tau_W_contrib = alpha_scale_sq * F_sq_exp * X_sel.pow(2) * inv_V * mask_exp
+    tau_W = torch.zeros(A, S * N1, M, device=W_flat.device, dtype=W_flat.dtype)
+    tau_W.scatter_add_(1, idx_W, tau_W_contrib)
+    tau_W = tau_W.clamp(min=1e-10)
+    
+    W_var_new = 1.0 / (1.0 + tau_W)
+    r_W = torch.clamp(r_W, min=-1e4, max=1e4)
+    W_hat_new = W_flat + W_var_new * r_W
+    
+    # X update
+    r_X_contrib = alpha_scale * F_exp * W_sel * s_exp * mask_exp  # (A, SC, M)
+    r_X = torch.zeros(A, S * N2, M, device=W_flat.device, dtype=W_flat.dtype)
+    idx_X = j_offset.view(1, SC, 1).expand(A, SC, M)
+    r_X.scatter_add_(1, idx_X, r_X_contrib)
+    
+    if is_rademacher:
+        tau_X_contrib = alpha_scale_sq * W_sel.pow(2) * inv_V * mask_exp
+    else:
+        tau_X_contrib = alpha_scale_sq * F_sq_exp * W_sel.pow(2) * inv_V * mask_exp
+    tau_X = torch.zeros(A, S * N2, M, device=W_flat.device, dtype=W_flat.dtype)
+    tau_X.scatter_add_(1, idx_X, tau_X_contrib)
+    tau_X = tau_X.clamp(min=1e-10)
+    
+    X_var_new = 1.0 / (1.0 + tau_X)
+    r_X = torch.clamp(r_X, min=-1e4, max=1e4)
+    X_hat_new = X_flat + X_var_new * r_X
+    
+    # ===== 6. Damping =====
+    W_flat_out = damping * W_hat_new + (1 - damping) * W_flat
+    X_flat_out = damping * X_hat_new + (1 - damping) * X_flat
+    W_var_out = damping * W_var_new + (1 - damping) * W_var_flat
+    X_var_out = damping * X_var_new + (1 - damping) * X_var_flat
+    
+    # NaN protection
+    W_flat_out = torch.nan_to_num(W_flat_out, nan=0.0)
+    X_flat_out = torch.nan_to_num(X_flat_out, nan=0.0)
+    W_var_out = torch.nan_to_num(W_var_out, nan=1.0)
+    X_var_out = torch.nan_to_num(X_var_out, nan=1.0)
+    
+    return W_flat_out, X_flat_out, W_var_out, X_var_out, s_values
+
+
 def compute_offset_indices(
     i_idx: torch.Tensor,  # (S, C_max)
     j_idx: torch.Tensor,  # (S, C_max)
@@ -670,6 +818,9 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         )
     """
 
+    # Class-level cache for compiled step function
+    _compiled_step = None
+
     def __init__(self, config, device: torch.device):
         """
         Initialize parallel spreading algorithm.
@@ -702,6 +853,20 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
                 f"Invalid f_distribution='{self.f_distribution}'. "
                 f"Available: {list(F_GENERATORS.keys())}"
             )
+
+        # torch.compile for kernel fusion (Phase 4 optimization)
+        self.use_compile = getattr(config.algorithm, 'use_compile', True)
+        if self.use_compile and BiGAMPSpreadingParallel._compiled_step is None:
+            try:
+                # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph issues
+                BiGAMPSpreadingParallel._compiled_step = torch.compile(
+                    bigamp_step_disjoint_union_flat,
+                    mode='default'
+                )
+                print(f"[BiG-AMP Spreading Parallel] torch.compile enabled")
+            except Exception as e:
+                print(f"[BiG-AMP Spreading Parallel] torch.compile failed: {e}")
+                self.use_compile = False
 
         print(f"[BiG-AMP Spreading Parallel] F distribution: {self.f_distribution}")
 
@@ -886,10 +1051,13 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         step_callback=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Train all samples in parallel using Disjoint Union.
+        Train all samples in parallel using Disjoint Union with optimized flat tensors.
 
-        This is the new high-performance training method that processes
-        all S samples simultaneously using index offsetting.
+        OPTIMIZATIONS APPLIED:
+        1. All tensors stored in flat format (A, S*N, M) - no per-iteration reshape
+        2. Pre-flattened F, Y, alpha_mask computed once
+        3. torch.compile for kernel fusion (if enabled)
+        4. Rademacher F² optimization (F²=1 skips pow(2))
 
         Args:
             spreading_data: SpreadingDataParallel with F_super, Y_super, etc.
@@ -907,6 +1075,7 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         N2 = spreading_data.supergraph.N2
         M = spreading_data.M
         C_max = spreading_data.C_max
+        SC = S * C_max
 
         # Determine which alphas to train
         if batch_alpha_indices is None:
@@ -924,32 +1093,44 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
             N1, N2
         )
 
-        # Initialize student variables: (S, B, N1, M) and (S, B, M, N2)
-        # Initialize student variables: (S, B, N1, M) and (S, B, M, N2)
-        # Mean Field Scaling: N(0,1)
-        # scale = 1.0 / math.sqrt(M)  # Removed for Mean Field
-        W_hat = torch.randn(S, B, N1, M, device=self.device) * 0.1
-        X_hat = torch.randn(S, B, M, N2, device=self.device) * 0.1
-        W_var = torch.ones(S, B, N1, M, device=self.device)
-        X_var = torch.ones(S, B, M, N2, device=self.device)
+        # ===== OPTIMIZATION 1: Pre-flatten all data (once) =====
+        F_flat = spreading_data.F_super.reshape(SC, M)  # (S*C_max, M)
+        Y_flat = spreading_data.Y_super.reshape(SC)     # (S*C_max,)
+        
+        # Expand alpha mask: (B, C_max) -> (B, S*C_max)
+        alpha_mask_exp = batch_alpha_mask.unsqueeze(1).expand(B, S, C_max).reshape(B, SC)
+
+        # ===== OPTIMIZATION 2: Initialize in FLAT format =====
+        # Shape: (B, S*N, M) instead of (S, B, N, M)
+        W_flat = torch.randn(B, S * N1, M, device=self.device) * 0.1
+        X_flat = torch.randn(B, S * N2, M, device=self.device) * 0.1
+        W_var_flat = torch.ones(B, S * N1, M, device=self.device)
+        X_var_flat = torch.ones(B, S * N2, M, device=self.device)
 
         prev_s = None
+        is_rademacher = (self.f_distribution == 'rademacher')
 
-        # BiG-AMP iterations with Disjoint Union
+        # ===== OPTIMIZATION 3: Use compiled step if available =====
+        step_fn = BiGAMPSpreadingParallel._compiled_step if self.use_compile and BiGAMPSpreadingParallel._compiled_step is not None else bigamp_step_disjoint_union_flat
+
+        # BiG-AMP iterations with optimized flat function
         for step in range(self.max_steps):
-            W_hat, X_hat, W_var, X_var, prev_s = bigamp_step_disjoint_union(
-                W_hat=W_hat,
-                X_hat=X_hat,
-                W_var=W_var,
-                X_var=X_var,
-                Y_super=spreading_data.Y_super,
-                F_super=spreading_data.F_super,
+            W_flat, X_flat, W_var_flat, X_var_flat, prev_s = step_fn(
+                W_flat=W_flat,
+                X_flat=X_flat,
+                W_var_flat=W_var_flat,
+                X_var_flat=X_var_flat,
+                Y_flat=Y_flat,
+                F_flat=F_flat,
                 i_offset=i_offset,
                 j_offset=j_offset,
-                alpha_mask=batch_alpha_mask,
+                alpha_mask_exp=alpha_mask_exp,
                 S=S,
+                N1=N1,
+                N2=N2,
                 damping=self.damping,
                 noise_var=self.noise_var,
+                is_rademacher=is_rademacher,
                 prev_s=prev_s,
             )
 
@@ -958,6 +1139,12 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
 
             if step_callback:
                 step_callback(step + 1, self.max_steps)
+
+        # ===== Only reshape at the END for output =====
+        # (B, S*N1, M) -> (B, S, N1, M) -> (S, B, N1, M)
+        W_hat = W_flat.reshape(B, S, N1, M).permute(1, 0, 2, 3)
+        # (B, S*N2, M) -> (B, S, N2, M) -> (S, B, M, N2)
+        X_hat = X_flat.reshape(B, S, N2, M).permute(1, 0, 3, 2)
 
         return W_hat, X_hat
 
