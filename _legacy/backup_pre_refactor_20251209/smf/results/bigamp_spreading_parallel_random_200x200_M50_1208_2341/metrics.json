@@ -1,0 +1,161 @@
+{
+  "config": {
+    "matrix": {
+      "N1": 200,
+      "N2": 200,
+      "M": 50
+    },
+    "alpha": {
+      "start": 0.0,
+      "stop": 0.5,
+      "step": 0.1
+    },
+    "training": {
+      "max_steps": 100,
+      "max_epochs": 20000,
+      "samples_per_alpha": 2,
+      "seed": 42,
+      "resample_mask": true
+    },
+    "algorithm": {
+      "damping": 0.5,
+      "noise_var": 1e-10,
+      "learning_rate": 0.01,
+      "early_stop": false,
+      "convergence_threshold": 1e-06,
+      "use_compile": true
+    },
+    "algorithm_key": "bigamp_spreading_parallel",
+    "graph_key": "random",
+    "teacher_key": "standard",
+    "spreading": null,
+    "execution": {
+      "metrics_to_compute": [
+        "Q_Y",
+        "Q_W",
+        "Q_X",
+        "Q_W_prime",
+        "Q_X_prime",
+        "Gen_Error"
+      ],
+      "plots": [],
+      "include_summary_plot": true,
+      "include_qy_plot": true
+    }
+  },
+  "results": {
+    "0.0": {
+      "Q_W_mean": 0.0,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.0,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.0,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.0,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.0,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.019568955525755882,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "0.1": {
+      "Q_W_mean": NaN,
+      "Q_W_std": NaN,
+      "Q_X_mean": NaN,
+      "Q_X_std": NaN,
+      "Q_W_prime_mean": 0.5031747749788804,
+      "Q_W_prime_std": 0.702616971353932,
+      "Q_X_prime_mean": 0.5046614731722152,
+      "Q_X_prime_std": 0.7005144626057624,
+      "Q_Y_mean": NaN,
+      "Q_Y_std": NaN,
+      "Gen_Error_mean": NaN,
+      "Gen_Error_std": NaN,
+      "Q_W_replica_mean": NaN,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": NaN,
+      "Q_X_replica_std": 0.0
+    },
+    "0.2": {
+      "Q_W_mean": 0.2075234353542328,
+      "Q_W_std": 0.0019773193978885936,
+      "Q_X_mean": 0.19761675596237183,
+      "Q_X_std": 0.007157209226725981,
+      "Q_W_prime_mean": 0.010389961561740421,
+      "Q_W_prime_std": 0.002469189894872723,
+      "Q_X_prime_mean": 0.0021693891850249943,
+      "Q_X_prime_std": 0.003067979607527863,
+      "Q_Y_mean": 0.005965792224742472,
+      "Q_Y_std": 0.0033710213416430906,
+      "Gen_Error_mean": 0.01990849617868662,
+      "Gen_Error_std": 2.7762919367535477e-05,
+      "Q_W_replica_mean": 0.20031370222568512,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.19475118815898895,
+      "Q_X_replica_std": 0.0
+    },
+    "0.30000000000000004": {
+      "Q_W_mean": 0.20662226527929306,
+      "Q_W_std": 0.0019957270339757264,
+      "Q_X_mean": 0.2076377123594284,
+      "Q_X_std": 0.00011276389319089698,
+      "Q_W_prime_mean": 0.00926461982636933,
+      "Q_W_prime_std": 0.002492176544911851,
+      "Q_X_prime_mean": 0.010532665682656164,
+      "Q_X_prime_std": 0.0001408146128899499,
+      "Q_Y_mean": 0.006932169897481799,
+      "Q_Y_std": 0.0035006793710056494,
+      "Gen_Error_mean": 0.02010129578411579,
+      "Gen_Error_std": 9.440894066440263e-06,
+      "Q_W_replica_mean": 0.1906549334526062,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.19852705299854279,
+      "Q_X_replica_std": 0.0
+    },
+    "0.4": {
+      "Q_W_mean": 0.2153920829296112,
+      "Q_W_std": 0.004565009455911954,
+      "Q_X_mean": 0.22125358134508133,
+      "Q_X_std": 0.005763929245364974,
+      "Q_W_prime_mean": 0.02021598415585742,
+      "Q_W_prime_std": 0.005700583947425223,
+      "Q_X_prime_mean": 0.02753556675427117,
+      "Q_X_prime_std": 0.007197742490471652,
+      "Q_Y_mean": 0.012567982543259859,
+      "Q_Y_std": 0.001911181114407381,
+      "Gen_Error_mean": 0.020261922851204872,
+      "Gen_Error_std": 1.6123803733448897e-05,
+      "Q_W_replica_mean": 0.2070145606994629,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.2024337649345398,
+      "Q_X_replica_std": 0.0
+    },
+    "0.5": {
+      "Q_W_mean": 0.10868176817893982,
+      "Q_W_std": 0.15369923054134538,
+      "Q_X_mean": 0.1075625941157341,
+      "Q_X_std": 0.15211647940250364,
+      "Q_W_prime_mean": 0.011338924442343534,
+      "Q_W_prime_std": 0.016035660729086007,
+      "Q_X_prime_mean": 0.00994134887087943,
+      "Q_X_prime_std": 0.014059190401480145,
+      "Q_Y_mean": 0.006363678257912397,
+      "Q_Y_std": 0.008999600098918504,
+      "Gen_Error_mean": Infinity,
+      "Gen_Error_std": NaN,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    }
+  },
+  "metadata": {
+    "total_time": 0.49525928497314453,
+    "device": "NVIDIA GeForce RTX 5090"
+  },
+  "timestamp": "2025-12-08T23:41:57.169953"
+}

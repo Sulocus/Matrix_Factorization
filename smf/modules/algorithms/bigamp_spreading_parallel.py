@@ -23,7 +23,7 @@ import torch
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ..graphs.supergraph import SuperGraphData, create_supergraph
-from ..teachers.random_spreading import SpreadingDataParallel
+from ..teachers import SpreadingDataParallel
 
 
 # ============================================================================
@@ -414,7 +414,7 @@ def bigamp_spreading_parallel_step(
     tau_W = tau_W.clamp(min=1e-10)
 
     # W update with prior N(0, 1)
-    W_var_new = 1.0 / (1.0 + tau_W)
+    W_var_new = 1.0 / (M + tau_W)  # M in denominator for numerical stability
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)  # Clamp r_W to prevent explosion
     W_hat_new = W_hat + W_var_new * r_W  # CRITICAL FIX: incremental update (was missing + W_hat)
 
@@ -438,15 +438,15 @@ def bigamp_spreading_parallel_step(
     tau_X.scatter_add_(2, j_idx_expanded, tau_X_contrib_T * mask_expanded_X)
     tau_X = tau_X.clamp(min=1e-10)
 
-    X_var_new = 1.0 / (1.0 + tau_X)
+    X_var_new = 1.0 / (M + tau_X)  # M in denominator for numerical stability
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)  # Clamp r_X to prevent explosion
     X_hat_new = X_hat + X_var_new * r_X  # CRITICAL FIX: incremental update (was missing + X_hat)
 
     # ===== Damping =====
     W_hat_out = damping * W_hat_new + (1 - damping) * W_hat
     X_hat_out = damping * X_hat_new + (1 - damping) * X_hat
-    W_var_out = damping * W_var_new + (1 - damping) * W_var
-    X_var_out = damping * X_var_new + (1 - damping) * X_var
+    W_var_out = torch.clamp(damping * W_var_new + (1 - damping) * W_var, min=1e-4, max=1.0)
+    X_var_out = torch.clamp(damping * X_var_new + (1 - damping) * X_var, min=1e-4, max=1.0)
 
     # Replace NaN with zero for numerical stability
     W_hat_out = torch.nan_to_num(W_hat_out, nan=0.0)
@@ -575,7 +575,7 @@ def bigamp_step_disjoint_union(
     tau_W.scatter_add_(1, idx_W, tau_W_contrib)
     tau_W = tau_W.clamp(min=1e-10)
 
-    W_var_new = 1.0 / (1.0 + tau_W)
+    W_var_new = 1.0 / (M + tau_W)  # M in denominator for numerical stability
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)
     W_hat_new = W_flat + W_var_new * r_W  # CRITICAL FIX: incremental update (was missing + W_flat)
 
@@ -590,7 +590,7 @@ def bigamp_step_disjoint_union(
     tau_X.scatter_add_(1, idx_X, tau_X_contrib)
     tau_X = tau_X.clamp(min=1e-10)
 
-    X_var_new = 1.0 / (1.0 + tau_X)
+    X_var_new = 1.0 / (M + tau_X)  # M in denominator for numerical stability
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)
     X_hat_new = X_flat + X_var_new * r_X  # CRITICAL FIX: incremental update (was missing + X_flat)
 
@@ -603,8 +603,8 @@ def bigamp_step_disjoint_union(
     # ===== 8. Damping =====
     W_hat_out = damping * W_hat_new + (1 - damping) * W_hat
     X_hat_out = damping * X_hat_new + (1 - damping) * X_hat
-    W_var_out = damping * W_var_new + (1 - damping) * W_var
-    X_var_out = damping * X_var_new + (1 - damping) * X_var
+    W_var_out = torch.clamp(damping * W_var_new + (1 - damping) * W_var, min=1e-4, max=1.0)
+    X_var_out = torch.clamp(damping * X_var_new + (1 - damping) * X_var, min=1e-4, max=1.0)
 
     # NaN protection
     W_hat_out = torch.nan_to_num(W_hat_out, nan=0.0)
@@ -715,7 +715,7 @@ def bigamp_step_disjoint_union_flat(
     tau_W.scatter_add_(1, idx_W, tau_W_contrib)
     tau_W = tau_W.clamp(min=1e-10)
     
-    W_var_new = 1.0 / (1.0 + tau_W)
+    W_var_new = 1.0 / (M + tau_W)  # M in denominator for numerical stability
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)
     W_hat_new = W_flat + W_var_new * r_W
     
@@ -733,15 +733,15 @@ def bigamp_step_disjoint_union_flat(
     tau_X.scatter_add_(1, idx_X, tau_X_contrib)
     tau_X = tau_X.clamp(min=1e-10)
     
-    X_var_new = 1.0 / (1.0 + tau_X)
+    X_var_new = 1.0 / (M + tau_X)  # M in denominator for numerical stability
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)
     X_hat_new = X_flat + X_var_new * r_X
     
     # ===== 6. Damping =====
     W_flat_out = damping * W_hat_new + (1 - damping) * W_flat
     X_flat_out = damping * X_hat_new + (1 - damping) * X_flat
-    W_var_out = damping * W_var_new + (1 - damping) * W_var_flat
-    X_var_out = damping * X_var_new + (1 - damping) * X_var_flat
+    W_var_out = torch.clamp(damping * W_var_new + (1 - damping) * W_var_flat, min=1e-4, max=1.0)
+    X_var_out = torch.clamp(damping * X_var_new + (1 - damping) * X_var_flat, min=1e-4, max=1.0)
     
     # NaN protection
     W_flat_out = torch.nan_to_num(W_flat_out, nan=0.0)

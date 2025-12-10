@@ -1,0 +1,22 @@
+algorithm:
+  convergence_threshold: 1.0e-06
+  damping: 0.5
+  early_stop: false
+  learning_rate: 0.01
+  noise_var: 1.0e-10
+algorithm_key: bigamp
+alpha:
+  start: 0.0
+  step: 0.05
+  stop: 3.0
+graph_key: random
+matrix:
+  M: 100
+  N1: 10000
+  N2: 10000
+teacher_key: standard
+training:
+  max_steps: 10000
+  resample_mask: true
+  samples_per_alpha: 1
+  seed: 42

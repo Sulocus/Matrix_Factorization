@@ -1,0 +1,127 @@
+{
+  "config": {
+    "matrix": {
+      "N1": 100,
+      "N2": 100,
+      "M": 25
+    },
+    "alpha": {
+      "start": 0.0,
+      "stop": 2.0,
+      "step": 0.5
+    },
+    "training": {
+      "max_steps": 100,
+      "samples_per_alpha": 1,
+      "seed": 42,
+      "resample_mask": true
+    },
+    "algorithm": {
+      "damping": 0.5,
+      "noise_var": 1e-10,
+      "learning_rate": 0.01,
+      "early_stop": false,
+      "convergence_threshold": 1e-06
+    },
+    "algorithm_key": "bigamp",
+    "graph_key": "random",
+    "teacher_key": "standard"
+  },
+  "results": {
+    "0.0": {
+      "Q_W_mean": 0.19222033023834229,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.19985118508338928,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.0,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.0017945477277903448,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.0031570757273584604,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.08229219913482666,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "0.5": {
+      "Q_W_mean": 0.30506885051727295,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.28401127457618713,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.13305618975405573,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.10678634254045669,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.2115999162197113,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.4419154226779938,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "1.0": {
+      "Q_W_mean": 0.40225401520729065,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.41298630833625793,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.25429708827808495,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.26768588960727496,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.3664463758468628,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.7492994666099548,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "1.5": {
+      "Q_W_mean": 0.5985835194587708,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.5888216495513916,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.4992230044726952,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.4870448301328117,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.5804517269134521,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.9769629836082458,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "2.0": {
+      "Q_W_mean": 0.8241748809814453,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.8182478547096252,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.7806538119164728,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.7732596999338154,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.8549784421920776,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.8164791464805603,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    }
+  },
+  "metadata": {
+    "total_time": 0.39470338821411133,
+    "device": "NVIDIA GeForce RTX 5090"
+  },
+  "timestamp": "2025-12-04T05:39:30.884495"
+}

@@ -1,0 +1,57 @@
+# SMF Default Preset
+# Standard BiG-AMP with spreading_parallel mode
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+alpha:
+  start: 0.0
+  stop: 4.0
+  step: 0.1
+
+algorithm:
+  mode: spreading_parallel
+  damping: 0.5
+  noise_var: 1.0e-10
+  tolerance: 1.0e-6
+  early_stop: false
+  use_compile: true
+  onsager_enabled: true
+
+teacher:
+  type: standard
+  variance_scale: 1.0
+  seed: 42
+
+graph:
+  type: random
+  loop_order: 2
+  n_sweeps: 5
+  alpha_threshold: 0.8
+
+spreading:
+  f_distribution: rademacher
+  seed: 12345
+
+training:
+  max_steps: 5000
+  samples_per_alpha: 4
+  seed: 42
+  device: cuda
+
+execution:
+  metrics_to_compute:
+    - Q_Y
+    - Q_W
+    - Q_X
+    - MSE
+  include_qy_plot: true
+  include_summary_plot: true
+
+ui:
+  language: zh
+
+experiment_name: default_experiment
+output_dir: ./outputs
