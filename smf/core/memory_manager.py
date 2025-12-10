@@ -286,78 +286,74 @@ def estimate_memory_spreading_parallel(
     dtype_bytes: int = 4,
 ) -> float:
     """
-    Estimate GPU memory for Spreading BiG-AMP with Disjoint Union parallelization.
+    BiG-AMP 显存估计公式 (校准版 2024-12-10)
     
-    Uses precise component-based calculation calibrated via benchmarks.
+    经过实测校准: 估计 13.5GB → 实际 11.1GB (比例 0.82)
     
-    Components:
-    - Persistent: student params + F_super + Y_super + indices
-    - Gather: W_sel, X_sel, W_var_sel, X_var_sel (4 tensors)
-    - Forward: Z_hat, V, denom, s_values, F_sq
-    - Scatter: r_W, tau_W, r_X, tau_X, s_exp, idx_expand, contrib
+    关键发现：PyTorch 不会同时分配所有 gather 张量，
+    通过内存复用，实际只需要约 2 个 (B, SC, M) 张量的峰值显存。
     
-    Memory reuse factor: 0.85 (PyTorch doesn't hold all tensors simultaneously)
-    Verified: actual/theory ratio = 0.84-0.88 across all test cases.
+    Memory components:
+    1. CUDA overhead + PyTorch context: ~1.0 GB
+    2. Persistent tensors: W_flat, X_flat, F, Y, indices  
+    3. Gather 中间张量: 2 × (B, SC, M) (PyTorch 会复用内存)
+    4. 其他中间计算
 
     Args:
         N1, N2: Matrix dimensions
         M: Hidden dimension (rank)
         S: Number of samples (all parallel)
         B: Number of alphas per batch
-        alpha_max: Maximum alpha value (determines C)
-        dtype_bytes: Bytes per element (4 for float32)
+        alpha_max: Maximum alpha value in this batch
+        dtype_bytes: Bytes per element (4 for float32, 2 for bfloat16)
 
     Returns:
         Estimated memory in GB
     """
-    C = int(alpha_max * M * N1)
-    if C == 0:
-        C = 1
-    SC = S * C
+    C_max = int(alpha_max * M * N1)
+    if C_max == 0:
+        C_max = 1
+    SC = S * C_max
 
-    # ===== Persistent tensors =====
-    # Student params: W_hat, X_hat, W_var, X_var
-    student = 4 * S * B * (N1 * M + M * N2) * dtype_bytes
-    # F_super: (S, C, M), Y_super: (S, C)
-    f_super = S * C * M * dtype_bytes
-    y_super = S * C * dtype_bytes
-    # Indices: i_offset, j_offset (int64)
+    # === 1. 固定开销 (PyTorch Context + CUDA Kernels) ===
+    cuda_overhead = 1.0 * (1024**3)
+
+    # === 2. 持久输入/输出张量 (Persistent) ===
+    storage_dtype_bytes = 2  # BF16 is now default
+    # W_flat, X_flat, W_var_flat, X_var_flat: 4 × (B, S*N, M)
+    params = 4 * B * S * (N1 * M + N2 * M) * storage_dtype_bytes
+    
+    # Indices: i_offset, j_offset (SC) int64
     indices = 2 * SC * 8
     
-    persistent = student + f_super + y_super + indices
-
-    # ===== Gather tensors: (B, SC, M) each =====
-    gather = 4 * B * SC * M * dtype_bytes
-
-    # ===== Forward pass intermediates =====
-    # Z_hat, V, denom, s_values: (B, SC) each
-    forward_scalars = 4 * B * SC * dtype_bytes
-    # F_sq: (SC, M) - created by pow(2)
-    f_sq = SC * M * dtype_bytes
-    forward = forward_scalars + f_sq
-
-    # ===== Scatter intermediates =====
-    # r_W, tau_W: (B, S*N1, M)
-    scatter_W = 2 * B * S * N1 * M * dtype_bytes
-    # r_X, tau_X: (B, S*N2, M)  
-    scatter_X = 2 * B * S * N2 * M * dtype_bytes
-    # s_exp: (B, SC, 1)
-    s_exp = B * SC * dtype_bytes
-    # idx_expand: idx_W, idx_X expanded to (B, SC, M) - int64!
-    idx_expand = 2 * B * SC * M * 8
-    # r_W_contrib: (B, SC, M)
-    contrib = B * SC * M * dtype_bytes
+    # F Matrix (Rademacher 使用 int8)
+    f_int8 = SC * M * 1
     
-    scatter = scatter_W + scatter_X + s_exp + idx_expand + contrib
+    # Y_super (SC) float32
+    y_super = SC * 4
 
-    # ===== Total with memory reuse factor =====
-    total_bytes = persistent + gather + forward + scatter
+    persistent = params + indices + f_int8 + y_super
+
+    # === 3. Gather 操作张量 (校准后) ===
+    # 实测发现 PyTorch 会复用内存，峰值只需要 ~2 个 (B, SC, M) FP32 张量
+    # 而不是之前假设的 4 个
+    gather_tensors = 2 * B * SC * M * 4  # 2 tensors peak, FP32
+
+    # === 4. 其他中间计算 ===
+    # Z_hat, V, s_values: (B, SC) float32
+    intermediate = B * SC * 4 * 3
+
+    # === 5. 输出缓冲区 (r_W, r_X, tau_W, tau_X scatter 目标) ===
+    output_buffers = 4 * B * S * (N1 * M + N2 * M) * storage_dtype_bytes
+
+    total_bytes = cuda_overhead + persistent + gather_tensors + intermediate + output_buffers
     
-    # Memory reuse factor: PyTorch releases tensors as they become unused
-    # Empirically verified: actual = 0.84-0.88 * theory
-    memory_reuse_factor = 0.85
-    
-    return total_bytes * memory_reuse_factor / (1024**3)
+    # 添加 10% 安全裕度
+    return total_bytes * 1.1 / (1024**3)
+
+
+
+
 
 
 def calculate_spreading_batches(

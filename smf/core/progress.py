@@ -57,6 +57,7 @@ class UnifiedProgress:
         batch_size: int = 1,
         initial_estimate: float = None,
         num_batches: int = 1,  # Number of alpha batches
+        batch_assignments: List[tuple] = None,  # Phase 4: [(start, end, alpha_max), ...] for physics-aware ETA
     ):
         self.num_alphas = num_alphas
         self.steps_per_alpha = steps_per_alpha
@@ -80,12 +81,22 @@ class UnifiedProgress:
         self._current_step = 0
         self._frame = 0
 
+        # Phase 4: Physics-aware ETA estimator
+        self._physics_eta = None
+        if batch_assignments:
+            try:
+                from .physics_eta import PhysicsAwareETA
+                self._physics_eta = PhysicsAwareETA(batch_assignments)
+            except ImportError:
+                pass  # Fall back to simple ETA
+
         if not RICH_AVAILABLE:
             self._live = None
             return
 
         self._console = Console()
         self._live = None
+
 
     def _render(self):
         """
@@ -215,9 +226,20 @@ class UnifiedProgress:
         )
 
     def _estimate_eta(self) -> float:
-        """Estimate remaining time based on batch timing."""
+        """Estimate remaining time based on batch timing.
+        
+        Phase 4 Optimization: Uses PhysicsAwareETA if available, which models
+        computational complexity as proportional to α_max in each batch.
+        Falls back to simple avg_batch_time estimation otherwise.
+        """
         if not self._total_start_time:
             return self.initial_estimate if self.initial_estimate else 0
+
+        # Phase 4: Use physics-aware ETA if available
+        if self._physics_eta and self._completed_batches > 0:
+            # Physics ETA uses α_max-weighted workload for accurate estimation
+            eta, _ = self._physics_eta.end_batch(self._completed_batches - 1)
+            return eta
 
         total_elapsed = time.time() - self._total_start_time
 
@@ -233,7 +255,7 @@ class UnifiedProgress:
                     return remaining_in_current + estimated_batch_time * remaining_batches
             return self.initial_estimate if self.initial_estimate else 0
 
-        # Use completed batch times for estimation
+        # Fallback: Use completed batch times for estimation
         if self._batch_times:
             avg_time_per_batch = sum(self._batch_times) / len(self._batch_times)
         else:
@@ -252,6 +274,7 @@ class UnifiedProgress:
                 remaining_batches -= 1  # Current batch partially counted
 
         return avg_time_per_batch * remaining_batches + remaining_in_current
+
 
     def start(self):
         """Start progress display."""
@@ -277,16 +300,25 @@ class UnifiedProgress:
         )
         self._live.start()
 
-    def start_batch(self, batch_idx: int, batch_alphas: List[float]):
+    def start_batch(self, batch_idx: int, batch_alphas: List[float], num_batches: int = None):
         """Start tracking a new batch.
 
         Args:
             batch_idx: 0-indexed batch number
             batch_alphas: List of alpha values in this batch
+            num_batches: Optional total number of batches (updates _total_batches if provided)
         """
         if not RICH_AVAILABLE or not self._live:
             return
 
+        # Update total batches if provided (dynamic batching)
+        if num_batches is not None:
+            self._total_batches = num_batches
+        
+        # Mark previous batch as complete if we're moving to a new batch
+        if batch_idx > self._current_batch_idx:
+            self._completed_batches = batch_idx
+        
         self._current_batch_idx = batch_idx
         self._current_batch_alphas = batch_alphas
         self._current_alpha = batch_alphas[0] if batch_alphas else 0.0
