@@ -8,10 +8,10 @@ Key difference from standard metrics:
 Q_W, Q_X, Q_W', Q_X' are unchanged (Gram matrix comparisons).
 """
 
-from typing import Dict, Tuple, TYPE_CHECKING
+from typing import Dict, TYPE_CHECKING
 import torch
 
-from ..teachers import SpreadingData, compute_sparse_Y, compute_sparse_Y_batched
+from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
 
 if TYPE_CHECKING:
     from ..teachers.random_spreading import SpreadingDataParallel
@@ -301,118 +301,6 @@ def compute_physical_overlap_spreading_parallel(
 
 
 @torch.no_grad()
-def compute_qy_observed_unobserved_parallel(
-    W_student: torch.Tensor,
-    X_student: torch.Tensor,
-    spreading_data: 'SpreadingDataParallel',
-    sample_idx: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute both Q_Y_observed and Q_Y_unobserved for all alphas.
-    
-    Q_Y_observed: Y overlap on edges that are in the training set (C_k edges)
-    Q_Y_unobserved: Y overlap on edges NOT in the training set (C_max - C_k edges)
-    
-    This is the KEY metric to distinguish overfitting from true learning!
-    If Q_Y_observed is high but Q_Y_unobserved is low -> overfitting
-    If both are high -> true learning
-    
-    Args:
-        W_student: (A, N1, M) student W for all alphas
-        X_student: (A, M, N2) student X for all alphas
-        spreading_data: SpreadingDataParallel
-        sample_idx: Which sample index
-    
-    Returns:
-        Q_Y_observed: (A,) Q_Y on observed edges
-        Q_Y_unobserved: (A,) Q_Y on unobserved edges
-    """
-    from ..algorithms.bigamp_spreading_parallel import forward_pass_parallel
-    
-    A = W_student.shape[0]
-    device = W_student.device
-    
-    # Get sample-specific data
-    F = spreading_data.get_F(sample_idx)  # (C_max, M)
-    Y_teacher = spreading_data.Y_super[sample_idx]  # (C_max,)
-    i_idx, j_idx = spreading_data.supergraph.get_sample_indices(sample_idx)
-    
-    C_max = F.shape[0]
-    
-    # Create full mask (all edges)
-    full_mask = torch.ones(A, C_max, device=device, dtype=torch.bool)
-    
-    # Compute student Y for ALL edges
-    Y_student = forward_pass_parallel(W_student, X_student, F, i_idx, j_idx, full_mask)  # (A, C_max)
-    
-    Q_Y_observed = torch.zeros(A, device=device)
-    Q_Y_unobserved = torch.zeros(A, device=device)
-    
-    for a in range(A):
-        C_k = spreading_data.supergraph.get_active_edges(a)
-        
-        # Observed: first C_k edges
-        if C_k > 0:
-            y_t_obs = Y_teacher[:C_k]
-            y_s_obs = Y_student[a, :C_k]
-            dot_obs = (y_t_obs * y_s_obs).sum()
-            norm_t_obs = y_t_obs.norm()
-            norm_s_obs = y_s_obs.norm()
-            Q_Y_observed[a] = dot_obs / (norm_t_obs * norm_s_obs + 1e-12)
-        
-        # Unobserved: remaining C_max - C_k edges
-        if C_k < C_max:
-            y_t_unobs = Y_teacher[C_k:C_max]
-            y_s_unobs = Y_student[a, C_k:C_max]
-            dot_unobs = (y_t_unobs * y_s_unobs).sum()
-            norm_t_unobs = y_t_unobs.norm()
-            norm_s_unobs = y_s_unobs.norm()
-            Q_Y_unobserved[a] = dot_unobs / (norm_t_unobs * norm_s_unobs + 1e-12)
-        else:
-            # No unobserved edges (C_k = C_max), set to 1.0 by convention
-            Q_Y_unobserved[a] = 1.0
-    
-    return Q_Y_observed, Q_Y_unobserved
-
-
-@torch.no_grad()
-def compute_mse_spreading_parallel(
-    W_student: torch.Tensor,
-    X_student: torch.Tensor,
-    spreading_data: 'SpreadingDataParallel',
-    sample_idx: int,
-) -> torch.Tensor:
-    """
-    Compute MSE on observed edges for all alphas.
-    """
-    from ..algorithms.bigamp_spreading_parallel import forward_pass_parallel
-    
-    A = W_student.shape[0]
-    device = W_student.device
-    
-    F = spreading_data.get_F(sample_idx)
-    Y_teacher = spreading_data.Y_super[sample_idx]
-    i_idx, j_idx = spreading_data.supergraph.get_sample_indices(sample_idx)
-    alpha_mask = spreading_data.supergraph.alpha_mask
-    
-    Y_student = forward_pass_parallel(W_student, X_student, F, i_idx, j_idx, alpha_mask)
-    
-    MSE = torch.zeros(A, device=device)
-    
-    for a in range(A):
-        C_k = spreading_data.supergraph.get_active_edges(a)
-        if C_k == 0:
-            MSE[a] = 0.0
-            continue
-        
-        y_t = Y_teacher[:C_k]
-        y_s = Y_student[a, :C_k]
-        MSE[a] = ((y_t - y_s) ** 2).mean()
-    
-    return MSE
-
-
-@torch.no_grad()
 def compute_all_metrics_spreading_parallel(
     W_students: torch.Tensor,
     X_students: torch.Tensor,
@@ -428,35 +316,26 @@ def compute_all_metrics_spreading_parallel(
 
     Returns:
         Dictionary with metrics, each value is (A,) tensor for each alpha:
-        - Q_Y_mean, Q_Y_std (observed)
-        - Q_Y_unobserved_mean, Q_Y_unobserved_std (KEY: generalization)
-        - Q_W_mean, Q_W_std
+        - Q_Y_mean, Q_Y_std
+        - Q_W_mean, Q_W_std (based on teacher comparison)
         - Q_X_mean, Q_X_std
-        - Q_W_prime_mean, Q_W_prime_std
-        - Q_X_prime_mean, Q_X_prime_std
-        - MSE_mean, MSE_std
-        - physical_overlap_Y_mean, physical_overlap_Y_std
     """
-    from .overlap import compute_cosine_similarity, gram_overlap_normalized
+    from .overlap import compute_cosine_similarity
 
     S, A = W_students.shape[:2]
     device = W_students.device
     W_teacher = spreading_data.W_teacher
     X_teacher = spreading_data.X_teacher
 
-    # Collect metrics for each (sample, alpha)
-    Q_Y_obs_all = torch.zeros(S, A, device=device)
-    Q_Y_unobs_all = torch.zeros(S, A, device=device)
+    # Collect Q_Y for each (sample, alpha)
+    Q_Y_all = torch.zeros(S, A, device=device)
     Physical_Y_all = torch.zeros(S, A, device=device)
     Q_W_all = torch.zeros(S, A, device=device)
     Q_X_all = torch.zeros(S, A, device=device)
-    Q_W_prime_all = torch.zeros(S, A, device=device)
-    Q_X_prime_all = torch.zeros(S, A, device=device)
-    MSE_all = torch.zeros(S, A, device=device)
 
     for s in range(S):
-        # Q_Y observed and unobserved
-        Q_Y_obs_all[s], Q_Y_unobs_all[s] = compute_qy_observed_unobserved_parallel(
+        # Q_Y for this sample
+        Q_Y_all[s] = compute_qy_spreading_parallel(
             W_students[s], X_students[s], spreading_data, s
         )
 
@@ -464,13 +343,9 @@ def compute_all_metrics_spreading_parallel(
         Physical_Y_all[s] = compute_physical_overlap_spreading_parallel(
             W_students[s], X_students[s], spreading_data, s
         )
-        
-        # MSE
-        MSE_all[s] = compute_mse_spreading_parallel(
-            W_students[s], X_students[s], spreading_data, s
-        )
 
-        # Q_W, Q_X, Q_W_prime, Q_X_prime for each alpha
+
+        # Q_W, Q_X for each alpha
         for a in range(A):
             Q_W_all[s, a] = compute_cosine_similarity(
                 W_students[s, a], W_teacher, use_left=True
@@ -478,33 +353,17 @@ def compute_all_metrics_spreading_parallel(
             Q_X_all[s, a] = compute_cosine_similarity(
                 X_students[s, a], X_teacher, use_left=False
             )
-            Q_W_prime_all[s, a] = gram_overlap_normalized(
-                W_students[s, a], W_teacher, use_left=True
-            )
-            Q_X_prime_all[s, a] = gram_overlap_normalized(
-                X_students[s, a], X_teacher, use_left=False
-            )
 
     # Aggregate across samples
     results = {
-        'Q_Y_mean': Q_Y_obs_all.mean(dim=0),  # (A,) - observed
-        'Q_Y_std': Q_Y_obs_all.std(dim=0),
-        'Q_Y_observed_mean': Q_Y_obs_all.mean(dim=0),
-        'Q_Y_observed_std': Q_Y_obs_all.std(dim=0),
-        'Q_Y_unobserved_mean': Q_Y_unobs_all.mean(dim=0),  # KEY METRIC
-        'Q_Y_unobserved_std': Q_Y_unobs_all.std(dim=0),
+        'Q_Y_mean': Q_Y_all.mean(dim=0),  # (A,)
+        'Q_Y_std': Q_Y_all.std(dim=0),
         'physical_overlap_Y_mean': Physical_Y_all.mean(dim=0),
         'physical_overlap_Y_std': Physical_Y_all.std(dim=0),
         'Q_W_mean': Q_W_all.mean(dim=0),
         'Q_W_std': Q_W_all.std(dim=0),
         'Q_X_mean': Q_X_all.mean(dim=0),
         'Q_X_std': Q_X_all.std(dim=0),
-        'Q_W_prime_mean': Q_W_prime_all.mean(dim=0),
-        'Q_W_prime_std': Q_W_prime_all.std(dim=0),
-        'Q_X_prime_mean': Q_X_prime_all.mean(dim=0),
-        'Q_X_prime_std': Q_X_prime_all.std(dim=0),
-        'MSE_mean': MSE_all.mean(dim=0),
-        'MSE_std': MSE_all.std(dim=0),
         'alpha_values': spreading_data.alpha_values,
     }
 

@@ -126,8 +126,15 @@ def create_supergraph(
     C_per_alpha = np.minimum(C_per_alpha, total_edges)
 
     # Generate indices for each sample
-    i_idx_all = torch.zeros((S, C_max), dtype=torch.long, device=device)
-    j_idx_all = torch.zeros((S, C_max), dtype=torch.long, device=device)
+    # Use int16 if dimensions fit (N < 32767), int32 otherwise - saves 75%/50% vs int64
+    max_dim = max(N1, N2)
+    if max_dim < 32767:
+        idx_dtype = torch.int16  # 75% memory savings vs int64
+    else:
+        idx_dtype = torch.int32  # 50% memory savings vs int64
+    
+    i_idx_all = torch.zeros((S, C_max), dtype=idx_dtype, device=device)
+    j_idx_all = torch.zeros((S, C_max), dtype=idx_dtype, device=device)
     seeds = torch.zeros(S, dtype=torch.long, device=device)
 
     for s in range(S):
@@ -139,13 +146,13 @@ def create_supergraph(
         if device.type == 'cuda':
             gen = torch.Generator(device=device).manual_seed(seed)
             perm = torch.randperm(total_edges, generator=gen, device=device)[:C_max]
-            i_idx_all[s] = perm // N2
-            j_idx_all[s] = perm % N2
+            i_idx_all[s] = (perm // N2).to(idx_dtype)
+            j_idx_all[s] = (perm % N2).to(idx_dtype)
         else:
             gen = torch.Generator(device='cpu').manual_seed(seed)
             perm = torch.randperm(total_edges, generator=gen)[:C_max]
-            i_idx_all[s] = (perm // N2).to(device)
-            j_idx_all[s] = (perm % N2).to(device)
+            i_idx_all[s] = (perm // N2).to(idx_dtype).to(device)
+            j_idx_all[s] = (perm % N2).to(idx_dtype).to(device)
 
     # Create alpha masks
     # mask[a, c] = True if c < C_per_alpha[a]
@@ -182,9 +189,9 @@ def get_memory_estimate(N1: int, N2: int, M: int, alpha_max: float, S: int, A: i
     """
     C_max = int(alpha_max * M * N1)
 
-    # Tensor sizes in bytes
-    i_idx_bytes = S * C_max * 8  # int64
-    j_idx_bytes = S * C_max * 8
+    # Tensor sizes in bytes (i_idx, j_idx now int32)
+    i_idx_bytes = S * C_max * 4  # int32
+    j_idx_bytes = S * C_max * 4
     C_per_alpha_bytes = A * 8
     alpha_mask_bytes = A * C_max * 1  # bool
     seeds_bytes = S * 8

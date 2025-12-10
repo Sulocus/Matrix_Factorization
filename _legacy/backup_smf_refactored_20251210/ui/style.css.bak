@@ -1,0 +1,169 @@
+/* SMF Premium Scientific Theme (Dark Mode) */
+
+/* Import Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* Global Font Settings */
+html,
+body,
+[class*="css"],
+[class*="st-"] {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+}
+
+code {
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* ============================================
+   CRITICAL FIX: Expander Label Overlap
+   
+   DOM Structure:
+   summary > span.nwb5ao > [span.icon + div.label]
+   
+   The icon span contains "keyboard_arrow_down" text.
+   Problem: icon and label overlap because they're inline.
+   Fix: Use flexbox to position icon on the right.
+   ============================================ */
+
+/* Make summary a flex container */
+[data-testid="stExpander"] summary {
+    display: flex !important;
+    align-items: center !important;
+    padding: 12px 16px !important;
+    color: #e0e0e0 !important;
+    cursor: pointer !important;
+    background-color: #1a1c24 !important;
+}
+
+/* The outer span wrapper */
+[data-testid="stExpander"] summary>span {
+    display: flex !important;
+    width: 100% !important;
+    flex-direction: row-reverse !important;
+    /* Icon moves to right! */
+    align-items: center !important;
+    justify-content: flex-end !important;
+}
+
+/* The Material icon span - make it not overlap */
+[data-testid="stExpander"] summary span[data-testid="stIconMaterial"] {
+    flex-shrink: 0 !important;
+    margin-left: 12px !important;
+    margin-right: 0 !important;
+    font-size: 24px !important;
+    color: #888 !important;
+    order: -1 !important;
+    /* Force to the end (right side with row-reverse) */
+}
+
+/* The label div - take remaining space */
+[data-testid="stExpander"] summary>span>div {
+    flex: 1 !important;
+    order: 1 !important;
+}
+
+/* Also hide default marker */
+[data-testid="stExpander"] summary::-webkit-details-marker,
+[data-testid="stExpander"] summary::marker {
+    display: none !important;
+}
+
+/* ============================================ */
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #0e1117;
+    border-right: 1px solid #333;
+}
+
+/* Headers */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    color: #e0e0e0 !important;
+    font-weight: 600;
+}
+
+/* Text */
+.stMarkdown,
+.stText,
+p,
+label {
+    color: #cecece !important;
+}
+
+/* Expander Container */
+[data-testid="stExpander"] {
+    border: 1px solid #333 !important;
+    border-radius: 8px !important;
+    background-color: #1a1c24 !important;
+    margin-bottom: 1rem !important;
+    overflow: visible !important;
+}
+
+/* Dropdowns */
+div[data-baseweb="select"]>div {
+    background-color: #262730;
+    border-color: #444;
+    color: white;
+}
+
+div[data-baseweb="popover"] {
+    z-index: 99999 !important;
+}
+
+div[data-baseweb="menu"] {
+    background-color: #262730 !important;
+}
+
+ul[role="listbox"] li {
+    color: #e0e0e0 !important;
+}
+
+ul[role="listbox"] li[aria-selected="true"] {
+    background-color: #0066cc !important;
+}
+
+/* Metrics */
+div[data-testid="stMetricValue"] {
+    font-family: 'JetBrains Mono', monospace;
+    color: #4da6ff !important;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    border-bottom: 1px solid #333;
+}
+
+.stTabs [aria-selected="true"] {
+    color: #4da6ff;
+    border-bottom: 2px solid #4da6ff;
+}
+
+/* Console */
+.console-window-main {
+    background-color: #000;
+    color: #0f0;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 1rem;
+    border-radius: 6px;
+    height: 400px;
+    overflow-y: auto;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    border: 1px solid #333;
+}
+
+/* Buttons */
+button[kind="primary"] {
+    background-color: #0066cc !important;
+}
+
+/* Inputs */
+input {
+    color: white !important;
+}

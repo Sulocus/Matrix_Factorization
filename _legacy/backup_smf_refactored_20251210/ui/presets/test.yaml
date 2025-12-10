@@ -1,0 +1,48 @@
+algorithm:
+  damping: 0.5
+  early_stop: false
+  mode: spreading_parallel
+  noise_var: 1.0e-10
+  onsager_enabled: false
+  tolerance: 1.0e-06
+  use_compile: true
+alpha:
+  start: 0.0
+  step: 0.05
+  stop: 4.0
+execution:
+  include_qy_plot: true
+  include_summary_plot: true
+  metrics_to_compute:
+  - Q_Y
+  - Q_W
+  - Q_X
+  - Q_W_prime
+  - Q_X_prime
+  - MSE
+experiment_name: experiment
+graph:
+  alpha_threshold: 0.8
+  loop_order: 2
+  n_sweeps: 5
+  randomize_per_sample: true
+  type: random
+matrix:
+  M: 200
+  N1: 800
+  N2: 800
+output_dir: ./outputs
+spreading:
+  f_distribution: rademacher
+  seed: 12345
+teacher:
+  seed: 42
+  type: standard
+  variance_scale: 1.0
+training:
+  device: cuda
+  max_steps: 5000
+  samples_per_alpha: 10
+  seed: 42
+ui:
+  language: zh

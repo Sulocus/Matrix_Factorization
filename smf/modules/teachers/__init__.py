@@ -10,10 +10,13 @@ Available methods:
 """
 
 from .base import TeacherBase
-from .generator import (
-    TeacherGenerator,
+from .standard import StandardTeacher
+from .scaled_variance import ScaledVarianceTeacher
+from .orthogonal import OrthogonalTeacher
+from .combined import CombinedTeacher
+from .random_spreading import (
+    RandomSpreadingTeacher,
     SpreadingData,
-    SpreadingDataParallel,
     generate_spreading_coefficients,
     compute_sparse_Y,
     compute_sparse_Y_batched,
@@ -21,9 +24,12 @@ from .generator import (
 
 __all__ = [
     'TeacherBase',
-    'TeacherGenerator',
+    'StandardTeacher',
+    'ScaledVarianceTeacher',
+    'OrthogonalTeacher',
+    'CombinedTeacher',
+    'RandomSpreadingTeacher',
     'SpreadingData',
-    'SpreadingDataParallel',
     'generate_spreading_coefficients',
     'compute_sparse_Y',
     'compute_sparse_Y_batched',

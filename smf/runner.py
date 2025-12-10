@@ -285,6 +285,10 @@ class ExperimentRunner:
     ) -> Dict[str, Any]:
         """
         Run training in parallel batches for multiple alphas.
+        
+        IMPORTANT: Pass ALL alphas to train_batch_alphas at once.
+        The algorithm handles its own internal smart batching (前密后疏).
+        Do NOT pre-split alphas here - that causes double batching.
 
         Args:
             algorithm: Algorithm instance
@@ -301,54 +305,38 @@ class ExperimentRunner:
             Dictionary of {alpha: metrics}
         """
         all_results = {}
-        batch_size = strategy.max_parallel_alphas
-
-        # Process alphas in batches
-        batch_idx = 0
-        for batch_start in range(0, len(alpha_values), batch_size):
-            batch_alphas = alpha_values[batch_start:batch_start + batch_size]
-
-            # Show batch info with all alphas in this batch
-            unified_progress.start_batch(batch_idx, batch_alphas)
-
-            # Generate masks for batch
-            masks = []
-            for alpha in batch_alphas:
-                mask_seed = seed + int(alpha * 1000)
-                mask, _ = graph.generate_mask(
-                    m.N1, m.N2, m.M, alpha, self.device, mask_seed
-                )
-                masks.append(mask)
-
-            # Stack masks: (batch_size, N1, N2)
-            masks_tensor = torch.stack(masks, dim=0)
-
-            # Train batch with step callback
-            # Note: All samples run in parallel via Disjoint Union architecture
-            batch_seed = seed + batch_start * 10000
-            W_s_batch, X_s_batch = algorithm.train_batch_alphas(
-                W_t, X_t, Y_t, masks_tensor, batch_alphas, batch_seed,
-                step_callback=unified_progress.update_step,
+        
+        # Define batch callback to update progress display with current batch info
+        def on_batch_start(batch_idx, num_batches, batch_alphas):
+            unified_progress.start_batch(batch_idx, batch_alphas, num_batches)
+        
+        # Train ALL alphas at once - algorithm does smart batching internally
+        W_s_all, X_s_all = algorithm.train_batch_alphas(
+            W_t, X_t, Y_t, 
+            None,  # masks not used - algorithm generates via SuperGraph
+            alpha_values, 
+            seed,
+            step_callback=unified_progress.update_step,
+            sample_callback=on_batch_start,  # Receives batch alpha range updates
+        )
+        # W_s_all: (num_alphas, S, N1, M), X_s_all: (num_alphas, S, M, N2)
+        
+        # Evaluate each alpha
+        for i, alpha in enumerate(alpha_values):
+            W_s = W_s_all[i]
+            X_s = X_s_all[i]
+            
+            # Generate mask for evaluation (needed for Q_Y_unobserved)
+            mask_seed = seed + int(alpha * 1000)
+            mask, _ = graph.generate_mask(
+                m.N1, m.N2, m.M, alpha, self.device, mask_seed
             )
-
-            # Evaluate each alpha in batch
-            for i, alpha in enumerate(batch_alphas):
-                # Extract this alpha's results: (S, N1, M) and (S, M, N2)
-                W_s = W_s_batch[i]
-                X_s = X_s_batch[i]
-
-                # Pass corresponding mask for Q_Y_unobserved/Q_Y_observed
-                metrics = self._evaluate(W_s, X_s, W_t, X_t, Y_t, S, mask=masks[i])
-                all_results[float(alpha)] = metrics
-
-            # Finish the entire batch at once (not per-alpha)
-            unified_progress.finish_batch(metrics)
-            batch_idx += 1
-
-            # Clear cache between batches
-            if self.device.type == 'cuda':
-                torch.cuda.empty_cache()
-
+            
+            metrics = self._evaluate(W_s, X_s, W_t, X_t, Y_t, S, mask=mask)
+            all_results[float(alpha)] = metrics
+        
+        unified_progress.finish_batch(metrics)
+        
         return all_results
 
     def _save_results(self, results: Dict, total_time: float) -> Path:

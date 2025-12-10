@@ -1,0 +1,91 @@
+{
+  "config": {
+    "matrix": {
+      "N1": 100,
+      "N2": 100,
+      "M": 20
+    },
+    "alpha": {
+      "start": 0.0,
+      "stop": 0.2,
+      "step": 0.1
+    },
+    "training": {
+      "max_steps": 100,
+      "samples_per_alpha": 1,
+      "seed": 42,
+      "resample_mask": true
+    },
+    "algorithm": {
+      "damping": 0.5,
+      "noise_var": 1e-10,
+      "learning_rate": 0.01,
+      "early_stop": false,
+      "convergence_threshold": 1e-06
+    },
+    "algorithm_key": "bigamp",
+    "graph_key": "random",
+    "teacher_key": "standard"
+  },
+  "results": {
+    "0.0": {
+      "Q_W_mean": 0.1758609563112259,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.16541877388954163,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.012665106075809899,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.00015516475875759815,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.010701279155910015,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.10142342001199722,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "0.1": {
+      "Q_W_mean": 0.17950981855392456,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.15677060186862946,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.017036515297255545,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.0,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.04989327862858772,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.1789858490228653,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    },
+    "0.2": {
+      "Q_W_mean": 0.16223767399787903,
+      "Q_W_std": 0.0,
+      "Q_X_mean": 0.1752999871969223,
+      "Q_X_std": 0.0,
+      "Q_W_prime_mean": 0.0,
+      "Q_W_prime_std": 0.0,
+      "Q_X_prime_mean": 0.011993053968575711,
+      "Q_X_prime_std": 0.0,
+      "Q_Y_mean": 0.06273245811462402,
+      "Q_Y_std": 0.0,
+      "Gen_Error_mean": 0.2524968087673187,
+      "Gen_Error_std": 0.0,
+      "Q_W_replica_mean": 0.0,
+      "Q_W_replica_std": 0.0,
+      "Q_X_replica_mean": 0.0,
+      "Q_X_replica_std": 0.0
+    }
+  },
+  "metadata": {
+    "total_time": 0.3155970573425293,
+    "device": "NVIDIA GeForce RTX 5090"
+  },
+  "timestamp": "2025-12-04T19:58:51.346113"
+}

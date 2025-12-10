@@ -1,0 +1,25 @@
+_description: Large matrix configuration for production runs (1000x1000)
+
+matrix:
+  N1: 1000
+  N2: 1000
+  M: 200
+
+alpha:
+  start: 0.0
+  stop: 4.0
+  step: 0.2
+
+training:
+  max_steps: 5000
+  samples_per_alpha: 3
+  seed: 42
+
+algorithm:
+  damping: 0.5
+  noise_var: 1.0e-10
+  use_compile: true
+
+algorithm_key: bigamp
+graph_key: random
+teacher_key: standard
