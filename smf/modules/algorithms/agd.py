@@ -140,6 +140,8 @@ class AGDAlgorithm(AlgorithmBase):
         alpha_values: list[float],
         seed: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        sample_callback: Optional[Callable] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train AGD for multiple alphas in parallel."""
         N1, M = W_teacher.shape
@@ -180,9 +182,10 @@ class AGDAlgorithm(AlgorithmBase):
 
             X = X - lr * grad_X.float()
 
-            # Report progress
-            if progress_callback:
-                progress_callback(step + 1, self.max_epochs)
+            # Report progress (step_callback is the new interface, progress_callback for backward compat)
+            callback = step_callback or progress_callback
+            if callback:
+                callback(step + 1, self.max_epochs)
 
         return W.float(), X.float()
 
