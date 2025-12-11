@@ -284,20 +284,21 @@ def estimate_memory_spreading_parallel(
     B: int,
     alpha_max: float = 4.0,
     dtype_bytes: int = 4,
+    use_compile: bool = True,
 ) -> float:
     """
-    BiG-AMP 显存估计公式 (校准版 2024-12-10)
+    BiG-AMP 显存估计公式 (校准版 2024-12-11 v2)
     
-    经过实测校准: 估计 13.5GB → 实际 11.1GB (比例 0.82)
-    
-    关键发现：PyTorch 不会同时分配所有 gather 张量，
-    通过内存复用，实际只需要约 2 个 (B, SC, M) 张量的峰值显存。
+    经过实测校准: N=600, M=150, S=2, B=29, alpha_max=2.8
+    估算应接近 26 GB (实测值)
     
     Memory components:
     1. CUDA overhead + PyTorch context: ~1.0 GB
-    2. Persistent tensors: W_flat, X_flat, F, Y, indices  
-    3. Gather 中间张量: 2 × (B, SC, M) (PyTorch 会复用内存)
-    4. 其他中间计算
+    2. torch.compile overhead (Triton kernels, compilation cache): ~2.0 GB
+    3. Persistent tensors: W_flat, X_flat, F, Y, indices  
+    4. Clone overhead: 额外 4 × (B, S*N, M) 用于clone副本
+    5. Gather 中间张量: 3.5 × (B, SC, M) 峰值 (W_sel, X_sel, F广播等)
+    6. 其他中间计算
 
     Args:
         N1, N2: Matrix dimensions
@@ -306,6 +307,7 @@ def estimate_memory_spreading_parallel(
         B: Number of alphas per batch
         alpha_max: Maximum alpha value in this batch
         dtype_bytes: Bytes per element (4 for float32, 2 for bfloat16)
+        use_compile: Whether torch.compile is enabled
 
     Returns:
         Estimated memory in GB
@@ -318,7 +320,11 @@ def estimate_memory_spreading_parallel(
     # === 1. 固定开销 (PyTorch Context + CUDA Kernels) ===
     cuda_overhead = 1.0 * (1024**3)
 
-    # === 2. 持久输入/输出张量 (Persistent) ===
+    # === 2. torch.compile 开销 (Triton 编译缓存、内核元数据) ===
+    # 实测表明 torch.compile 即使在 mode=default 也需要额外 ~2 GB
+    compile_overhead = 2.0 * (1024**3) if use_compile else 0
+
+    # === 3. 持久输入/输出张量 (Persistent) ===
     storage_dtype_bytes = 2  # BF16 is now default
     # W_flat, X_flat, W_var_flat, X_var_flat: 4 × (B, S*N, M)
     params = 4 * B * S * (N1 * M + N2 * M) * storage_dtype_bytes
@@ -334,22 +340,30 @@ def estimate_memory_spreading_parallel(
 
     persistent = params + indices + f_int8 + y_super
 
-    # === 3. Gather 操作张量 (校准后) ===
-    # 实测发现 PyTorch 会复用内存，峰值只需要 ~2 个 (B, SC, M) FP32 张量
-    # 而不是之前假设的 4 个
-    gather_tensors = 2 * B * SC * M * 4  # 2 tensors peak, FP32
+    # === 4. Clone 操作开销 (CUDA Graphs 修复) ===
+    # Clone Strategy: 每次迭代后 clone 4 个主状态张量
+    clone_overhead = 4 * B * S * (N1 * M + N2 * M) * storage_dtype_bytes
 
-    # === 4. 其他中间计算 ===
-    # Z_hat, V, s_values: (B, SC) float32
-    intermediate = B * SC * 4 * 3
+    # === 5. 中间计算张量峰值 (v3.1 校准) ===
+    # 峰值发生在scatter阶段，同时存在:
+    # - W_sel, X_sel, W_var_sel, X_var_sel: 4 × (B, SC, M) BF16
+    # - r_W_contrib, tau_W_contrib, r_X_contrib, tau_X_contrib: 4 × (B, SC, M) BF16
+    # 注意: 这些张量会被逐步释放，不会全部同时存在
+    # 实测校准: 系数 5.5 在 400x100 和 200x50 之间取得较好平衡
+    peak_compute_tensors = 5.5 * B * SC * M * 3  # 5.5 峰值张量, ~3 bytes混合精度
 
-    # === 5. 输出缓冲区 (r_W, r_X, tau_W, tau_X scatter 目标) ===
+    # === 6. 其他中间计算 ===
+    # Z_hat, V, s_values, residual 等: (B, SC) float32
+    intermediate = B * SC * 4 * 6  # 6 intermediate (B, SC) tensors
+
+    # === 7. 输出缓冲区 (r_W, r_X, tau_W, tau_X scatter 目标) ===
     output_buffers = 4 * B * S * (N1 * M + N2 * M) * storage_dtype_bytes
 
-    total_bytes = cuda_overhead + persistent + gather_tensors + intermediate + output_buffers
+    total_bytes = (cuda_overhead + compile_overhead + persistent + clone_overhead 
+                   + peak_compute_tensors + intermediate + output_buffers)
     
     # 添加 10% 安全裕度
-    return total_bytes * 1.1 / (1024**3)
+    return total_bytes * 1.10 / (1024**3)
 
 
 

@@ -238,10 +238,6 @@ def forward_pass_parallel(
     C_max = F.shape[0]
     alpha_scale = 1.0 / math.sqrt(M)
 
-    # Ensure indices are long
-    i_idx = i_idx.long()
-    j_idx = j_idx.long()
-
     # Gather: select W and X at edge positions
     # W_sel[a, c, μ] = W_hat[a, i_idx[c], μ]
     W_sel = W_hat[:, i_idx, :]  # (A, C_max, M)
@@ -431,7 +427,7 @@ def bigamp_spreading_parallel_step(
     tau_W = tau_W.clamp(min=1e-10)
 
     # W update with prior N(0, 1)
-    W_var_new = 1.0 / (M + tau_W)  # CRITICAL FIX: M in denominator for numerical stability
+    W_var_new = 1.0 / (1.0 + tau_W)  # UNIT SCALING  # CRITICAL FIX: M in denominator for numerical stability
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)  # Clamp r_W to prevent explosion
     W_hat_new = W_hat + W_var_new * r_W  # CRITICAL FIX: incremental update (was missing + W_hat)
 
@@ -455,7 +451,7 @@ def bigamp_spreading_parallel_step(
     tau_X.scatter_reduce_(2, j_idx_expanded, (tau_X_contrib_T * mask_expanded_X).contiguous(), reduce="sum", include_self=True)
     tau_X = tau_X.clamp(min=1e-10)
 
-    X_var_new = 1.0 / (M + tau_X)  # CRITICAL FIX: M in denominator for numerical stability
+    X_var_new = 1.0 / (1.0 + tau_X)  # UNIT SCALING  # CRITICAL FIX: M in denominator for numerical stability
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)  # Clamp r_X to prevent explosion
     X_hat_new = X_hat + X_var_new * r_X  # CRITICAL FIX: incremental update (was missing + X_hat)
 
@@ -592,7 +588,7 @@ def bigamp_step_disjoint_union(
     tau_W.scatter_reduce_(1, idx_W, tau_W_contrib, reduce="sum", include_self=True)
     tau_W = tau_W.clamp(min=1e-10)
 
-    W_var_new = 1.0 / (M + tau_W)  # CRITICAL FIX: M in denominator
+    W_var_new = 1.0 / (1.0 + tau_W)  # UNIT SCALING  # CRITICAL FIX: M in denominator
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)
     W_hat_new = W_flat + W_var_new * r_W  # CRITICAL FIX: incremental update (was missing + W_flat)
 
@@ -607,7 +603,7 @@ def bigamp_step_disjoint_union(
     tau_X.scatter_reduce_(1, idx_X, tau_X_contrib, reduce="sum", include_self=True)
     tau_X = tau_X.clamp(min=1e-10)
 
-    X_var_new = 1.0 / (M + tau_X)  # CRITICAL FIX: M in denominator
+    X_var_new = 1.0 / (1.0 + tau_X)  # UNIT SCALING  # CRITICAL FIX: M in denominator
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)
     X_hat_new = X_flat + X_var_new * r_X  # CRITICAL FIX: incremental update (was missing + X_flat)
 
@@ -740,7 +736,7 @@ def bigamp_step_disjoint_union_flat(
     tau_W.scatter_add_(1, idx_W, tau_W_contrib)
     tau_W = tau_W.clamp(min=1e-10)
     
-    W_var_new = 1.0 / (M + tau_W)  # CRITICAL FIX: M in denominator
+    W_var_new = 1.0 / (1.0 + tau_W)  # UNIT SCALING  # CRITICAL FIX: M in denominator
     r_W = torch.clamp(r_W, min=-1e4, max=1e4)
     W_hat_new = W_flat + W_var_new * r_W
     
@@ -758,7 +754,7 @@ def bigamp_step_disjoint_union_flat(
     tau_X.scatter_add_(1, idx_X, tau_X_contrib)
     tau_X = tau_X.clamp(min=1e-10)
     
-    X_var_new = 1.0 / (M + tau_X)  # CRITICAL FIX: M in denominator
+    X_var_new = 1.0 / (1.0 + tau_X)  # UNIT SCALING  # CRITICAL FIX: M in denominator
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)
     X_hat_new = X_flat + X_var_new * r_X
     
@@ -819,15 +815,15 @@ def compute_offset_indices(
 # ============================================================================
 
 @register_algorithm(
-    key="bigamp_spreading_parallel",
-    name="BiG-AMP Spreading (Parallel)",
+    key="bigamp_spreading_parallel_unit",
+    name="BiG-AMP Spreading (Parallel, Unit Scaling)",
     description="GPU parallel across all alphas - 30x faster for production",
     default_params={
         'damping': 0.5,
         'noise_var': 1e-10,
     },
 )
-class BiGAMPSpreadingParallel(AlgorithmBase):
+class BiGAMPSpreadingParallelUnit(AlgorithmBase):
     """
     BiG-AMP with random spreading, parallel across alpha values.
 
@@ -837,7 +833,7 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
 
     Usage:
         config = Config(
-            algorithm_key="bigamp_spreading_parallel",
+            algorithm_key="bigamp_spreading_parallel_unit",
             teacher_key="orthogonal",  # Controls W, X generation
             spreading=SpreadingConfig(f_distribution="rademacher"),
         )
@@ -883,7 +879,7 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         # NOTE: max-autotune and reduce-overhead use CUDA Graphs which can cause issues
         # For large problems, we use 'default' mode (no CUDA Graphs, still has Triton kernels)
         self.use_compile = getattr(config.algorithm, 'use_compile', True)
-        if self.use_compile and BiGAMPSpreadingParallel._compiled_step is None:
+        if self.use_compile and BiGAMPSpreadingParallelUnit._compiled_step is None:
             # Determine if problem is "large" (needs memory-safe mode)
             N1 = config.matrix.N1
             N2 = config.matrix.N2
@@ -900,7 +896,7 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
             
             for mode in compile_modes:
                 try:
-                    BiGAMPSpreadingParallel._compiled_step = torch.compile(
+                    BiGAMPSpreadingParallelUnit._compiled_step = torch.compile(
                         bigamp_step_disjoint_union_flat,
                         mode=mode,
                         fullgraph=False,  # Disable fullgraph for stability
@@ -1019,9 +1015,6 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         F = spreading_data.get_F(sample_idx)  # (C_max, M)
         Y_values = spreading_data.Y_super[sample_idx]  # (C_max,)
         i_idx, j_idx = spreading_data.supergraph.get_sample_indices(sample_idx)
-        # Ensure indices are long type for indexing
-        i_idx = i_idx.long()
-        j_idx = j_idx.long()
         alpha_mask = spreading_data.supergraph.alpha_mask  # (A, C_max)
 
         # Initialize student variables
@@ -1174,12 +1167,19 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
         is_rademacher = (self.f_distribution == 'rademacher')
 
         # ===== OPTIMIZATION 3: Use compiled step if available =====
-        step_fn = BiGAMPSpreadingParallel._compiled_step if self.use_compile and BiGAMPSpreadingParallel._compiled_step is not None else bigamp_step_disjoint_union_flat
+        step_fn = BiGAMPSpreadingParallelUnit._compiled_step if self.use_compile and BiGAMPSpreadingParallelUnit._compiled_step is not None else bigamp_step_disjoint_union_flat
+
 
         # BiG-AMP iterations with optimized flat function
         for step in range(self.max_steps):
             # CRITICAL FIX: Mark new CUDA Graph step to prevent "tensor overwritten" error
-            if self.use_compile and BiGAMPSpreadingParallel._compiled_step is not None:
+            # When using torch.compile with reduce-overhead mode (CUDA Graphs enabled),
+            # we must call cudagraph_mark_step_begin() before each iteration to tell
+            # CUDA Graphs that this is a new independent step, not a continuation.
+            # This prevents the "accessing tensor output of CUDAGraphs that has been 
+            # overwritten by a subsequent run" error.
+            # Reference: https://pytorch.org/docs/stable/torch.compiler_cudagraph_trees.html
+            if self.use_compile and BiGAMPSpreadingParallelUnit._compiled_step is not None:
                 torch.compiler.cudagraph_mark_step_begin()
             
             W_flat, X_flat, W_var_flat, X_var_flat, prev_s = step_fn(
@@ -1208,11 +1208,13 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
             # Graph thinks addresses are "polluted" and raises error:
             # "accessing tensor output of CUDAGraphs that has been overwritten"
             # Solution: Clone output tensors to allocate new memory, breaking the chain.
-            if self.use_compile and BiGAMPSpreadingParallel._compiled_step is not None:
+            # Memory overhead: ~3MB (small) to ~66MB (large), acceptable as peak increase.
+            if self.use_compile and BiGAMPSpreadingParallelUnit._compiled_step is not None:
                 W_flat = W_flat.clone()
                 X_flat = X_flat.clone()
                 W_var_flat = W_var_flat.clone()
                 X_var_flat = X_var_flat.clone()
+
 
             if verbose and (step + 1) % 100 == 0:
                 print(f"  Step {step + 1}/{self.max_steps}")
@@ -1365,22 +1367,19 @@ class BiGAMPSpreadingParallel(AlgorithmBase):
 def run_spreading_parallel(
     config,
     verbose: bool = True,
-    alpha_batch_size: int = 10,
 ) -> Dict:
     """
     Run complete spreading parallel experiment.
-    
-    Args:
-        config: Experiment configuration
-        verbose: Compute and print metrics during training
-        alpha_batch_size: Number of alphas to process in one parallel batch.
-                         Default is 10. Decrease for larger problems to avoid OOM.
 
     This is a standalone function that handles:
     1. Teacher creation (using config.teacher_key)
     2. SpreadingDataParallel creation
     3. Training all samples
     4. Metrics computation
+
+    Args:
+        config: Config object with all parameters
+        verbose: Print progress
 
     Returns:
         Dictionary with results for each alpha
@@ -1416,7 +1415,7 @@ def run_spreading_parallel(
         print(f"  Teacher type: {config.teacher_key}")
 
     # Create algorithm instance
-    algorithm = BiGAMPSpreadingParallel(config, device)
+    algorithm = BiGAMPSpreadingParallelUnit(config, device)
 
     # Create spreading data
     spreading_data = algorithm.create_spreading_data(
@@ -1427,37 +1426,13 @@ def run_spreading_parallel(
         base_seed=seed,
     )
 
-    # Train all samples (Parallel optimized with Alpha Batching)
-    # Train all samples (Parallel optimized with Alpha Batching)
-    # alpha_batch_size is passed as argument
-    W_students = torch.zeros(S, len(alpha_values), m.N1, m.M, device=device)
-    X_students = torch.zeros(S, len(alpha_values), m.M, m.N2, device=device)
-    
-    import math
-    num_batches = math.ceil(len(alpha_values) / alpha_batch_size)
-    
-    for i in range(num_batches):
-        start_idx = i * alpha_batch_size
-        end_idx = min((i + 1) * alpha_batch_size, len(alpha_values))
-        batch_indices = list(range(start_idx, end_idx))
-        
-        if verbose:
-            print(f"  Training Alpha Batch {i+1}/{num_batches} (Alphas {start_idx}-{end_idx-1})")
-        
-        # Uses Disjoint Union to process all samples in parallel for this batch of alphas
-        W_batch, X_batch = algorithm.train_full_parallel(
-            spreading_data,
-            batch_alpha_indices=batch_indices,
-            verbose=verbose
-        )
-        
-        # W_batch: (S, B, N1, M) -> assign to main storage
-        W_students[:, start_idx:end_idx] = W_batch.detach()
-        X_students[:, start_idx:end_idx] = X_batch.detach()
-        
-        # Clear cache between batches
-        del W_batch, X_batch
-        torch.cuda.empty_cache()
+    if verbose:
+        print(f"  SuperGraph created: C_max={spreading_data.C_max}")
+
+    # Train all samples
+    W_students, X_students = algorithm.train_all_samples(
+        spreading_data, verbose=verbose
+    )
 
     # Compute metrics
     metrics = compute_all_metrics_spreading_parallel(

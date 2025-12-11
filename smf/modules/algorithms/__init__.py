@@ -13,6 +13,7 @@ from .base import AlgorithmBase
 from .bigamp import BiGAMPAlgorithm
 from .bigamp_spreading import BiGAMPSpreadingAlgorithm
 from .bigamp_spreading_parallel import BiGAMPSpreadingParallel
+from .bigamp_spreading_parallel_unit import BiGAMPSpreadingParallelUnit  # Unit scaling version
 from .agd import AGDAlgorithm
 from .combined import CombinedAlgorithm
 
@@ -21,6 +22,7 @@ __all__ = [
     'BiGAMPAlgorithm',
     'BiGAMPSpreadingAlgorithm',
     'BiGAMPSpreadingParallel',
+    'BiGAMPSpreadingParallelUnit',
     'AGDAlgorithm',
     'CombinedAlgorithm',
 ]

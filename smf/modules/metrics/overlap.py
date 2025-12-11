@@ -202,6 +202,17 @@ def compute_all_metrics(
         if 'Q_Y_observed' in metrics_to_compute:
             results['Q_Y_observed'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)
 
+        # Physical overlap on observed/unobserved positions
+        if 'physical_overlap_Y_observed' in metrics_to_compute:
+            results['physical_overlap_Y_observed'] = _compute_physical_overlap_masked(
+                Y_student, Y_teacher, mask, observed=True
+            )
+
+        if 'physical_overlap_Y_unobserved' in metrics_to_compute:
+            results['physical_overlap_Y_unobserved'] = _compute_physical_overlap_masked(
+                Y_student, Y_teacher, mask, observed=False
+            )
+
     return results
 
 
@@ -238,13 +249,52 @@ def _compute_qy_masked(
     y_t = Y_teacher[selection_mask].flatten()
 
     if y_s.numel() == 0:
-        return 0.0
+        return 1.0  # 完全观测时，unobserved 位置为空，返回 1.0 表示完美泛化
 
     dot = (y_s * y_t).sum()
     norm_s = y_s.norm()
     norm_t = y_t.norm()
 
     return float(dot / (norm_s * norm_t + 1e-12))
+
+
+@torch.no_grad()
+def _compute_physical_overlap_masked(
+    Y_student: torch.Tensor,
+    Y_teacher: torch.Tensor,
+    mask: torch.Tensor,
+    observed: bool = False,
+) -> float:
+    """
+    Compute physical overlap on observed or unobserved positions.
+
+    Args:
+        Y_student: Student reconstruction
+        Y_teacher: Teacher Y matrix
+        mask: Observation mask (1 = observed, 0 = unobserved)
+        observed: If True, compute on observed positions; else unobserved
+
+    Returns:
+        Physical overlap (projection) on selected positions
+    """
+    if mask.dim() == 3:
+        mask = mask[0]
+
+    if observed:
+        selection_mask = mask > 0.5
+    else:
+        selection_mask = mask < 0.5
+
+    y_s = Y_student[selection_mask].flatten()
+    y_t = Y_teacher[selection_mask].flatten()
+
+    if y_s.numel() == 0:
+        return 1.0  # 完全观测时，unobserved 位置为空，返回 1.0 表示完美泛化
+
+    dot = (y_s * y_t).sum()
+    norm_true_sq = (y_t ** 2).sum()
+
+    return float(dot / (norm_true_sq + 1e-12))
 
 
 @torch.no_grad()
@@ -269,17 +319,25 @@ def compute_replica_overlap(W_all: torch.Tensor, X_all: torch.Tensor) -> Dict[st
         }
 
     Q_W_list, Q_X_list = [], []
+    physical_W_list, physical_X_list = [], []
 
     for i in range(S):
         for j in range(i + 1, S):
             Q_W_list.append(compute_cosine_similarity(W_all[i], W_all[j], use_left=True))
             Q_X_list.append(compute_cosine_similarity(X_all[i], X_all[j], use_left=False))
+            # Physical overlap between replicas (absolute=True for sign ambiguity)
+            physical_W_list.append(compute_physical_overlap(W_all[i], W_all[j], absolute=True))
+            physical_X_list.append(compute_physical_overlap(X_all[i], X_all[j], absolute=True))
 
     return {
-        'Q_W_replica_mean': float(np.mean(Q_W_list)),
-        'Q_W_replica_std': float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
-        'Q_X_replica_mean': float(np.mean(Q_X_list)),
-        'Q_X_replica_std': float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
+        'Q_W_replica_mean': round(float(np.mean(Q_W_list)), 6),
+        'Q_W_replica_std': round(float(np.std(Q_W_list, ddof=1)), 6) if len(Q_W_list) > 1 else 0.0,
+        'Q_X_replica_mean': round(float(np.mean(Q_X_list)), 6),
+        'Q_X_replica_std': round(float(np.std(Q_X_list, ddof=1)), 6) if len(Q_X_list) > 1 else 0.0,
+        'physical_W_replica_mean': round(float(np.mean(physical_W_list)), 6),
+        'physical_W_replica_std': round(float(np.std(physical_W_list, ddof=1)), 6) if len(physical_W_list) > 1 else 0.0,
+        'physical_X_replica_mean': round(float(np.mean(physical_X_list)), 6),
+        'physical_X_replica_std': round(float(np.std(physical_X_list, ddof=1)), 6) if len(physical_X_list) > 1 else 0.0,
     }
 
 
@@ -299,7 +357,93 @@ def aggregate_trial_metrics(trial_results: list[Dict[str, float]]) -> Dict[str, 
     aggregated = {}
     for key in trial_results[0].keys():
         vals = [r[key] for r in trial_results]
-        aggregated[f'{key}_mean'] = float(np.mean(vals))
-        aggregated[f'{key}_std'] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+        # Round to 6 decimal places for cleaner output
+        aggregated[f'{key}_mean'] = round(float(np.mean(vals)), 6)
+        aggregated[f'{key}_std'] = round(float(np.std(vals, ddof=1)), 6) if len(vals) > 1 else 0.0
 
     return aggregated
+
+
+def build_interaction_matrix(
+    samples_A: torch.Tensor,
+    teacher_A: torch.Tensor,
+    metric_fn: callable,
+    samples_B: torch.Tensor = None,
+    teacher_B: torch.Tensor = None,
+    use_left: bool = True,
+    absolute: bool = False,
+) -> np.ndarray:
+    """
+    Build (S+1)x(S+1) interaction matrix between Teacher and S Replicas.
+
+    Layout:
+        Row/Col 0: Teacher
+        Row/Col 1..S: Replicas 1..S
+
+    Args:
+        samples_A: (S, N, M) Student replicas
+        teacher_A: (N, M) Teacher matrix
+        metric_fn: Function to compute similarity (A, B) -> float
+        samples_B: Optional second matrix argument (for asymmetric metrics)
+        teacher_B: Optional second teacher argument
+        use_left: Argument for metric_fn (if supported)
+        absolute: Argument for metric_fn (if supported)
+
+    Returns:
+        (S+1, S+1) numpy array with metric values
+    """
+    S = samples_A.shape[0]
+    matrix = np.zeros((S + 1, S + 1), dtype=np.float32)
+
+    # Prepare list of (S+1) matrices [Teacher, Rep1, Rep2, ..., RepS]
+    # Note: Clone to ensure no side effects
+    all_A = [teacher_A] + [samples_A[i] for i in range(S)]
+    
+    if samples_B is not None and teacher_B is not None:
+        all_B = [teacher_B] + [samples_B[i] for i in range(S)]
+    else:
+        all_B = all_A
+
+    # Pre-compute metrics (Symmetric optimization possible depending on metric, 
+    # but for safety we compute all N^2 or N(N+1)/2)
+    # Using simple loop for clarity. Reliability > Micro-optimization here.
+    
+    import inspect
+    sig = inspect.signature(metric_fn)
+    has_use_left = 'use_left' in sig.parameters
+    has_absolute = 'absolute' in sig.parameters
+
+    kwargs = {}
+    if has_use_left:
+        kwargs['use_left'] = use_left
+    if has_absolute:
+        kwargs['absolute'] = absolute
+
+    for i in range(S + 1):
+        for j in range(S + 1):
+            if i == j:
+                # Self-overlap is usually 1.0 (normalized) or norm^2
+                # We compute it explicitly to be safe
+                val = metric_fn(all_A[i], all_B[i], **kwargs)
+            else:
+                val = metric_fn(all_A[i], all_B[j], **kwargs)
+            
+            matrix[i, j] = val
+
+    return matrix
+
+
+def get_metric_function(name: str) -> callable:
+    """Get metric function by name."""
+    name = name.lower()
+    if 'gram' in name or 'normalized' in name:
+        return gram_overlap_normalized
+    elif 'cosine' in name:
+        return compute_cosine_similarity
+    elif 'physical' in name:
+        return compute_physical_overlap
+    elif 'qy' in name:
+        return compute_qy
+    else:
+        raise ValueError(f"Unknown metric function: {name}")
+

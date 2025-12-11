@@ -13,6 +13,7 @@ from .base import TeacherBase
 from .standard import StandardTeacher
 from .scaled_variance import ScaledVarianceTeacher
 from .orthogonal import OrthogonalTeacher
+from .orthogonal_unit import OrthogonalUnitTeacher  # O(1) scaling version
 from .combined import CombinedTeacher
 from .random_spreading import (
     RandomSpreadingTeacher,
@@ -27,6 +28,7 @@ __all__ = [
     'StandardTeacher',
     'ScaledVarianceTeacher',
     'OrthogonalTeacher',
+    'OrthogonalUnitTeacher',
     'CombinedTeacher',
     'RandomSpreadingTeacher',
     'SpreadingData',

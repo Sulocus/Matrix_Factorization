@@ -180,6 +180,30 @@ class BiGAMPAlgorithm(AlgorithmBase):
         # Ensure mask has batch dimension
         A = mask.unsqueeze(0) if mask.dim() == 2 else mask
 
+        # Handle missing Y_teacher
+        if Y_teacher is None:
+            w_t_c = W_teacher.to(compute_dtype)
+            x_t_c = X_teacher.to(compute_dtype)
+            
+            # W: (N1, M) or (S, N1, M)
+            # If teacher is shared (usual case), it lacks S dim.
+            if w_t_c.dim() == 2:
+                z_t = (w_t_c @ x_t_c) * alpha_scale
+            else:
+                 # Batch matmul if teacher varies per student (unlikely here but possible)
+                z_t = torch.bmm(w_t_c, x_t_c) * alpha_scale
+                
+            # A is (S, N1, N2) or (1, N1, N2)
+            # Broadcast Z to match A's potential batch dim if needed, usually just (N1, N2)
+            if mask.dim() == 2:
+                y_raw = z_t * mask
+            else:
+                y_raw = z_t * mask # Broadcasting should work
+                
+            Y_teacher = y_raw
+            if A.dim() == 3 and Y_teacher.dim() == 2:
+                 Y_teacher = Y_teacher.unsqueeze(0)
+
         # Initialize student (stored in storage_dtype)
         torch.manual_seed(seed)
         w_hat = (torch.randn((S, N1, M), device=device) * scale).to(storage_dtype)

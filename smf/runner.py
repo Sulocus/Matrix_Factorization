@@ -17,9 +17,16 @@ from .core.checkpoint import CheckpointManager
 # Import modules package to trigger registration
 from . import modules
 from .modules.registry import get_algorithm, get_graph, get_teacher
-from .modules.metrics.overlap import compute_all_metrics, aggregate_trial_metrics, compute_replica_overlap
+from .modules.metrics.overlap import (
+    compute_all_metrics, 
+    aggregate_trial_metrics, 
+    compute_replica_overlap,
+    build_interaction_matrix,
+    get_metric_function,
+    gram_overlap_normalized
+)
 from .modules.outputs.storage import ResultStorage
-from .modules.outputs.plotting import ResultPlotter
+from smf.modules.outputs.plotting import plot_replica_heatmap, create_gif, plot_overlap_evolution
 
 
 class ExperimentRunner:
@@ -182,9 +189,55 @@ class ExperimentRunner:
 
                     # Evaluate (pass mask for Q_Y_unobserved/Q_Y_observed)
                     metrics = self._evaluate(W_s, X_s, W_t, X_t, Y_t, S, mask=mask)
+                    
+                    # === NEW: Replica Analysis & Raw Data ===
+                    # Get metric function
+                    metric_name = self.config.execution.matrix_metric or 'gram_overlap_normalized'
+                    try:
+                        metric_fn = get_metric_function(metric_name)
+                    except ValueError:
+                        metric_fn = gram_overlap_normalized
+                        
+                    # Compute matrices
+                    matrix_W = build_interaction_matrix(W_s, W_t, metric_fn, use_left=True)
+                    matrix_X = build_interaction_matrix(X_s, X_t, metric_fn, use_left=False)
+                    
+                    # Add to metrics (optional, or rely on raw_data)
+                    metrics['interaction_matrix_W'] = matrix_W.tolist()
+                    metrics['interaction_matrix_X'] = matrix_X.tolist()
+                    
                     all_results[float(alpha)] = metrics
+                    
+                    # Save Raw Data
+                    storage = ResultStorage(self.config) # Re-init inside loop usually fine, or move out
+                    raw_data = {
+                        'W_student': W_s, 'X_student': X_s, 'mask': mask,
+                        'W_teacher': W_t, 'X_teacher': X_t, 'Y_teacher': Y_t,
+                        'interaction_matrix_W': matrix_W, 'interaction_matrix_X': matrix_X
+                    }
+                    storage.save_raw_batch(float(alpha), raw_data)
+                    
+                    # Generate Heatmap
+                    plots_dir = storage.get_plots_dir()
+                    path_W = plot_replica_heatmap(
+                        matrix_W, float(alpha), plots_dir, 
+                        metric_name=f"Q_W ({metric_name})", filename_prefix="heatmap_W"
+                    )
+                    if matrix_X is not None:
+                        path_X = plot_replica_heatmap(
+                            matrix_X, float(alpha), plots_dir, 
+                            metric_name=f"Q_X ({metric_name})", filename_prefix="heatmap_X"
+                        )
+                    # Collect paths (need a list defined outside)
+                    if not hasattr(self, '_seq_heatmap_paths_W'):
+                        self._seq_heatmap_paths_W = []
+                        self._seq_heatmap_paths_X = []
+                    self._seq_heatmap_paths_W.append(path_W)
+                    if matrix_X is not None:
+                        self._seq_heatmap_paths_X.append(path_X)
+                    
                     completed_count += 1
-
+                    
                     unified_progress.finish_alpha(metrics)
 
                     # Save checkpoint periodically
@@ -203,6 +256,28 @@ class ExperimentRunner:
         result_path = None
         if save_results:
             result_path = self._save_results(all_results, total_time)
+            
+            # Generate GIFs
+            # Gather paths from either parallel or sequential storage
+            paths_W = getattr(self, '_last_heatmap_paths_W', []) or getattr(self, '_seq_heatmap_paths_W', [])
+            paths_X = getattr(self, '_last_heatmap_paths_X', []) or getattr(self, '_seq_heatmap_paths_X', [])
+            
+            if paths_W:
+                # Sort by alpha value extracted from filename or trust the order
+                # Filename format: heatmap_W_alpha_1.234567.png
+                # Python sort should handle lexicographical order of numbers correctly if fixed width, 
+                # but these are floats.
+                # Only if alphas are Monotonic. They usually are.
+                # Let's rely on list order as we append sequentially.
+                
+                storage = ResultStorage(self.config)
+                plots_dir = storage.get_plots_dir()
+                
+                gif_path_W = create_gif(paths_W, plots_dir / "animation_W.gif", duration=0.5)
+                gif_path_X = create_gif(paths_X, plots_dir / "animation_X.gif", duration=0.5)
+                
+                if gif_path_W:
+                    print(f"Generated GIF: {gif_path_W}")
 
         # Cleanup checkpoints after successful completion
         checkpoint_mgr.cleanup()
@@ -321,6 +396,21 @@ class ExperimentRunner:
         )
         # W_s_all: (num_alphas, S, N1, M), X_s_all: (num_alphas, S, M, N2)
         
+        # Arrays to store heatmap paths for GIF generation
+        heatmap_paths_W = []
+        heatmap_paths_X = []
+        
+        # Get metric function (default: gram_overlap_normalized)
+        metric_name = self.config.execution.matrix_metric or 'gram_overlap_normalized'
+        try:
+            metric_fn = get_metric_function(metric_name)
+        except ValueError:
+            print(f"Warning: Unknown metric {metric_name}, using gram_overlap_normalized")
+            metric_fn = gram_overlap_normalized
+
+        # Initialize storage access
+        storage = ResultStorage(self.config)
+
         # Evaluate each alpha
         for i, alpha in enumerate(alpha_values):
             W_s = W_s_all[i]
@@ -332,11 +422,65 @@ class ExperimentRunner:
                 m.N1, m.N2, m.M, alpha, self.device, mask_seed
             )
             
+            # 1. Compute basic metrics
             metrics = self._evaluate(W_s, X_s, W_t, X_t, Y_t, S, mask=mask)
+            
+            # 2. Compute Full Interaction Matrices (Teacher + Replicas)
+            # W Matrix
+            matrix_W = build_interaction_matrix(
+                W_s, W_t, metric_fn, use_left=True
+            )
+            metrics['interaction_matrix_W'] = matrix_W.tolist() # Save to specific field if needed, or separate
+            
+            # X Matrix
+            matrix_X = build_interaction_matrix(
+                X_s, X_t, metric_fn, use_left=False
+            )
+            metrics['interaction_matrix_X'] = matrix_X.tolist()
+
             all_results[float(alpha)] = metrics
+            
+            # 3. Save Raw Data (Incremental)
+            raw_data = {
+                'W_student': W_s,
+                'X_student': X_s,
+                'mask': mask,
+                'W_teacher': W_t,
+                'X_teacher': X_t,
+                'Y_teacher': Y_t,
+                'interaction_matrix_W': matrix_W,
+                'interaction_matrix_X': matrix_X,
+            }
+            storage.save_raw_batch(float(alpha), raw_data)
+            
+            # 4. Generate Heatmaps
+            plots_dir = storage.get_plots_dir()
+            path_W = plot_replica_heatmap(
+                matrix_W, float(alpha), plots_dir, 
+                metric_name=f"Q_W ({metric_name})", 
+                filename_prefix="heatmap_W"
+            )
+            heatmap_paths_W.append(path_W)
+            
+            if m.N1 != m.N2:
+                path_X = plot_replica_heatmap(
+                    matrix_X, float(alpha), plots_dir, 
+                    metric_name=f"Q_X ({metric_name})", 
+                    filename_prefix="heatmap_X"
+                )
+                heatmap_paths_X.append(path_X)
         
         unified_progress.finish_batch(metrics)
         
+        if heatmap_paths_W:
+            create_gif(heatmap_paths_W, storage.get_plots_dir() / "animation_W.gif", duration=0.2)
+        
+        if heatmap_paths_X:
+            create_gif(heatmap_paths_X, storage.get_plots_dir() / "animation_X.gif", duration=0.2)
+            
+        # Generate Comparison Plot
+        plot_overlap_evolution(all_results, storage.get_plots_dir())
+
         return all_results
 
     def _save_results(self, results: Dict, total_time: float) -> Path:

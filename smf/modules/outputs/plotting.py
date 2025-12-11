@@ -487,3 +487,251 @@ def plot_twin_axis(
     plt.close(fig)
 
     return output_path
+
+
+class TwoSegmentNorm(plt.Normalize):
+    """
+    Custom normalization that enhances discrimination in high-value region.
+    
+    Maps:
+        0.0 ~ breakpoint  ->  0.0 ~ color_breakpoint (compressed)
+        breakpoint ~ 1.0  ->  color_breakpoint ~ 1.0 (expanded)
+    
+    This gives more color resolution to values near 1.0.
+    """
+    def __init__(self, breakpoint=0.9, color_breakpoint=0.6, vmin=0.0, vmax=1.0):
+        super().__init__(vmin=vmin, vmax=vmax)
+        self.breakpoint = breakpoint
+        self.color_breakpoint = color_breakpoint
+    
+    def __call__(self, value, clip=None):
+        # Normalize to 0-1 first
+        x = np.asarray(value)
+        result = np.zeros_like(x, dtype=float)
+        
+        # Low segment: 0 ~ breakpoint -> 0 ~ color_breakpoint
+        low_mask = x <= self.breakpoint
+        if self.breakpoint > 0:
+            result[low_mask] = (x[low_mask] / self.breakpoint) * self.color_breakpoint
+        
+        # High segment: breakpoint ~ 1 -> color_breakpoint ~ 1
+        high_mask = x > self.breakpoint
+        if self.breakpoint < 1.0:
+            result[high_mask] = self.color_breakpoint + \
+                ((x[high_mask] - self.breakpoint) / (1.0 - self.breakpoint)) * (1.0 - self.color_breakpoint)
+        
+        return np.ma.masked_array(result)
+
+
+def plot_replica_heatmap(
+    matrix: np.ndarray,
+    alpha: float,
+    output_dir: Path,
+    metric_name: str = "Overlap",
+    filename_prefix: str = "heatmap",
+    cmap: str = "RdYlBu_r",
+    enhance_high_values: bool = True,
+    breakpoint: float = 0.9,
+    color_breakpoint: float = 0.6,
+) -> Path:
+    """
+    Plot (S+1)x(S+1) replica interaction heatmap.
+    
+    Args:
+        matrix: (S+1, S+1) interaction matrix
+        alpha: Current alpha value
+        output_dir: Directory to save plot
+        metric_name: Name of the metric (e.g., "$Q_W$")
+        filename_prefix: Prefix for filename
+        cmap: Colormap (default: RdYlBu_r where Red=1, Blue=0)
+        enhance_high_values: If True, use non-linear norm to enhance 0.9-1.0 range
+        breakpoint: Value where color mapping changes (default 0.9)
+        color_breakpoint: Position in colormap at breakpoint (default 0.6)
+        
+    Returns:
+        Path to saved PNG
+    """
+    S_plus_1 = matrix.shape[0]
+    S = S_plus_1 - 1
+    
+    # Square plot
+    fig, ax = plt.subplots(figsize=(8, 7))
+    
+    # Choose normalization
+    if enhance_high_values:
+        norm = TwoSegmentNorm(breakpoint=breakpoint, color_breakpoint=color_breakpoint)
+    else:
+        norm = plt.Normalize(vmin=0.0, vmax=1.0)
+    
+    # Plot heatmap with custom norm
+    im = ax.imshow(matrix, cmap=cmap, norm=norm, interpolation='nearest')
+    
+    # Add colorbar with explicit ticks showing actual values
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(metric_name, rotation=270, labelpad=15)
+    
+    # Set colorbar ticks to show actual data values (not normalized)
+    # Key values: 0, 0.5, 0.9, 0.95, 1.0
+    cbar_ticks = [0.0, 0.5, 0.9, 0.95, 1.0]
+    cbar.set_ticks([norm(t) for t in cbar_ticks])
+    cbar.set_ticklabels([f'{t:.2f}' for t in cbar_ticks])
+    
+    # Configure ticks
+    # 0 is Teacher, 1..S are Replicas
+    ticks = np.arange(S_plus_1)
+    
+    if S_plus_1 > 20:
+        # Sparse ticks for large matrices
+        step = max(1, S_plus_1 // 10)
+        shown_indices = [0] + list(range(step, S_plus_1, step))
+        if shown_indices[-1] != S_plus_1 - 1:
+            shown_indices.append(S_plus_1 - 1)
+            
+        tick_labels = ['T' if i == 0 else str(i) for i in shown_indices]
+        ax.set_xticks(shown_indices)
+        ax.set_xticklabels(tick_labels)
+        ax.set_yticks(shown_indices)
+        ax.set_yticklabels(tick_labels)
+    else:
+        tick_labels = ['T'] + [str(i) for i in range(1, S_plus_1)]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(tick_labels)
+        ax.set_yticks(ticks)
+        ax.set_yticklabels(tick_labels)
+        
+    ax.set_xlabel("Replicas (T=Teacher)")
+    ax.set_ylabel("Replicas (T=Teacher)")
+    ax.set_title(f"{metric_name} Map\n$\\alpha={alpha:.4f}$")
+    
+    # Ensure directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save
+    filename = f"{filename_prefix}_alpha_{alpha:.6f}.png"
+    output_path = output_dir / filename
+    plt.savefig(output_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
+
+
+def create_gif(
+    image_paths: List[Path],
+    output_path: Path,
+    duration: float = 0.5,
+    loop: int = 0,
+) -> Path:
+    """
+    Create a GIF from a list of images.
+    
+    Args:
+        image_paths: List of paths to images (sorted)
+        output_path: Path to save the GIF
+        duration: Duration of each frame in seconds
+        loop: Number of loops (0 = infinite)
+        
+    Returns:
+        Path to saved GIF
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("PIL/Pillow not installed. Skipping GIF generation.")
+        return None
+        
+    if not image_paths:
+        return None
+        
+    # Open images
+    images = []
+    for path in image_paths:
+        try:
+            img = Image.open(path)
+            images.append(img)
+        except Exception as e:
+            print(f"Failed to open image {path}: {e}")
+            
+    if not images:
+        return None
+        
+    # Save GIF (duration in PIL is milliseconds)
+    duration_ms = int(duration * 1000)
+    
+    try:
+        image_paths[0].parent.mkdir(parents=True, exist_ok=True)
+        images[0].save(
+            output_path,
+            save_all=True,
+            append_images=images[1:],
+            optimize=True,
+            duration=duration * 1000,
+            loop=0
+        )
+        return output_path
+    except Exception as e:
+        print(f"Failed to save GIF: {e}")
+        return None
+
+
+def plot_overlap_evolution(
+    results: Dict[float, Dict[str, float]],
+    output_dir: Path,
+    filename: str = "overlap_evolution.png",
+) -> Path:
+    """
+    Plot evolution of Teacher-Student and Student-Student overlaps.
+    
+    Args:
+        results: Dictionary mapping alpha to metrics
+        output_dir: Directory to save plot
+        filename: Output filename
+        
+    Returns:
+        Path to saved PNG
+    """
+    alphas = sorted([float(k) for k in results.keys()])
+    q_ts = []  # Teacher-Student (Q_W)
+    q_ss = []  # Student-Student (Q_W_replica)
+    
+    for alpha in alphas:
+        metrics = results[alpha]
+        # TS Overlap
+        if 'Q_W_mean' in metrics:
+            q_ts.append(metrics['Q_W_mean'])
+        elif 'Q_W' in metrics:
+             q_ts.append(metrics['Q_W'])
+        else:
+            q_ts.append(0.0)
+            
+        # SS Overlap
+        if 'Q_W_replica_mean' in metrics:
+            q_ss.append(metrics['Q_W_replica_mean'])
+        elif 'Q_W_replica' in metrics:
+            q_ss.append(metrics['Q_W_replica'])
+        else:
+            # Fallback for single replica case
+            q_ss.append(1.0 if 'Q_W_mean' in metrics else 0.0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot curves
+    ax.plot(alphas, q_ts, 'b-o', label='Teacher-Student ($Q_{TS}$)', linewidth=2, markersize=4)
+    ax.plot(alphas, q_ss, 'r--s', label='Student-Student ($Q_{SS}$)', linewidth=2, markersize=4)
+    
+    ax.set_xlabel(r'$\alpha$ (Measurement Density)')
+    ax.set_ylabel('Overlap (Normalized)')
+    ax.set_title('Replica Overlap Evolution')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='lower right')
+    ax.set_ylim(-0.1, 1.1)
+    
+    # Add phase transition marker if applicable
+    # (Optional: could detect jump)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
+    return output_path

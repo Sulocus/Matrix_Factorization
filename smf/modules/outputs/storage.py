@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 import json
 import numpy as np
+import torch
 
 from ..registry import register_output
 from .base import OutputBase
@@ -81,6 +82,53 @@ class ResultStorage(OutputBase):
             np.savez_compressed(npz_path, **raw_data)
 
         return self.output_dir
+
+    def save_raw_batch(
+        self,
+        alpha: float,
+        raw_data: Dict[str, torch.Tensor],
+        metadata: Dict[str, Any] = None,
+    ) -> Path:
+        """
+        Save raw data for a specific alpha batch (incremental saving).
+        
+        Optimizations:
+        1. Auto-converts to float16 to save space.
+        2. Compresses using npz.
+        3. Saves to 'raw_data' subdirectory.
+        
+        Args:
+            alpha: Current alpha value
+            raw_data: Dictionary of torch tensors (W_s, X_s, etc.)
+            metadata: Optional metadata dict
+            
+        Returns:
+            Path to saved file
+        """
+        raw_dir = self.output_dir / "raw_data"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Prepare data for saving
+        # Convert tensors to numpy float16
+        save_dict = {}
+        for k, v in raw_data.items():
+            if isinstance(v, torch.Tensor):
+                # Detach, move to cpu, cast to float16
+                save_dict[k] = v.detach().cpu().to(torch.float16).numpy()
+            elif isinstance(v, np.ndarray):
+                save_dict[k] = v.astype(np.float16)
+            else:
+                save_dict[k] = v
+                
+        if metadata:
+            save_dict['metadata'] = metadata
+            
+        # Format filename with fixed precision for sorting
+        filename = f"alpha_{alpha:.6f}.npz"
+        file_path = raw_dir / filename
+        
+        np.savez_compressed(file_path, **save_dict)
+        return file_path
 
     def _json_serializer(self, obj):
         """Custom JSON serializer for numpy types."""

@@ -86,6 +86,9 @@ class ExecutionConfig:
     # Whether to generate the default Q_Y-only plot
     include_qy_plot: bool = True
 
+    # Matrix metric for replica analysis ("gram_overlap_normalized" | "physical_overlap" | "cosine_similarity")
+    matrix_metric: str = "gram_overlap_normalized"
+
 
 @dataclass
 class Config:
@@ -133,6 +136,7 @@ class Config:
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),
+            matrix_metric=exec_data.get('matrix_metric', 'gram_overlap_normalized'),
         )
 
         # Handle spreading config (only for bigamp_spreading algorithms)
