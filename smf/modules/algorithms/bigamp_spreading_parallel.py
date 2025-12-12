@@ -1366,6 +1366,7 @@ def run_spreading_parallel(
     config,
     verbose: bool = True,
     alpha_batch_size: int = 10,
+    skip_metrics: bool = False,
 ) -> Dict:
     """
     Run complete spreading parallel experiment.
@@ -1459,10 +1460,13 @@ def run_spreading_parallel(
         del W_batch, X_batch
         torch.cuda.empty_cache()
 
-    # Compute metrics
-    metrics = compute_all_metrics_spreading_parallel(
-        W_students, X_students, spreading_data
-    )
+    # Compute metrics (skip for large problems to avoid OOM)
+    if not skip_metrics:
+        metrics = compute_all_metrics_spreading_parallel(
+            W_students, X_students, spreading_data
+        )
+    else:
+        metrics = None
 
     total_time = time.time() - start_time
 
@@ -1471,15 +1475,17 @@ def run_spreading_parallel(
 
     # Convert to standard result format
     results = {}
-    for i, alpha in enumerate(alpha_values):
-        results[float(alpha)] = {
-            'Q_Y_mean': float(metrics['Q_Y_mean'][i]),
-            'Q_Y_std': float(metrics['Q_Y_std'][i]),
-            'Q_W_mean': float(metrics['Q_W_mean'][i]),
-            'Q_W_std': float(metrics['Q_W_std'][i]),
-            'Q_X_mean': float(metrics['Q_X_mean'][i]),
-            'Q_X_std': float(metrics['Q_X_std'][i]),
-        }
+    if metrics is not None:
+        for i, alpha in enumerate(alpha_values):
+            results[float(alpha)] = {
+                'Q_Y_mean': float(metrics['Q_Y_mean'][i]),
+                'Q_Y_std': float(metrics['Q_Y_std'][i]),
+                'Q_W_mean': float(metrics['Q_W_mean'][i]),
+                'Q_W_std': float(metrics['Q_W_std'][i]),
+                'Q_X_mean': float(metrics['Q_X_mean'][i]),
+                'Q_X_std': float(metrics['Q_X_std'][i]),
+            }
+    # If skip_metrics, results will be empty and caller must compute manually
 
     return {
         'results': results,
