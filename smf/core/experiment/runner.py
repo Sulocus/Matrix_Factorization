@@ -193,7 +193,7 @@ class ExperimentRunner:
             
             # Save intermediate results
             if output_dir:
-                result.save(output_dir / f"N{N1}_M{M}")
+                result.save_unified(output_dir / f"N{N1}_M{M}.pt")
         
         return results
     
