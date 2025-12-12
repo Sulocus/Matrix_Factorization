@@ -38,6 +38,14 @@ from .spreading import (
 
 from .combined import CombinedMetrics
 
+# Replica overlap analysis (pairwise student-student overlap)
+from .replica import (
+    compute_replica_overlap as compute_replica_overlap_analysis,
+    gram_overlap_cosine,
+    gram_overlap_normalized as gram_overlap_baseline_corrected,
+    analyze_replica_results,
+)
+
 __all__ = [
     'compute_cosine_similarity',
     'compute_physical_overlap',

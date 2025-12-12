@@ -418,31 +418,56 @@ class ExperimentRunner:
         """Compute evaluation metrics."""
         # Import metrics computation
         try:
-            from ...modules.metrics.overlaps import (
-                compute_Q_W_mean_field,
-                compute_Q_X_mean_field,
-                compute_Q_Y_observed,
+            from ...modules.metrics.overlap import (
+                gram_overlap_normalized,
+                compute_qy,
             )
             
             # Handle different tensor shapes
             # W_students could be (A, S, N1, M) or (S, N1, M)
             if W_students.dim() == 4:
-                # Average over alpha dimension
-                W_students = W_students.mean(dim=0)
-                X_students = X_students.mean(dim=0)
+                # Average over alpha dimension for metrics
+                W_for_metrics = W_students.mean(dim=0)
+                X_for_metrics = X_students.mean(dim=0)
+            else:
+                W_for_metrics = W_students
+                X_for_metrics = X_students
             
-            Q_W = compute_Q_W_mean_field(W_students, data.W_teacher)
-            Q_X = compute_Q_X_mean_field(X_students, data.X_teacher)
+            # Compute Q_W and Q_X for each sample
+            S = W_for_metrics.shape[0]
+            Q_W_list = []
+            Q_X_list = []
+            Q_Y_list = []
             
+            Y_teacher = data.W_teacher @ data.X_teacher
+            
+            for s in range(S):
+                # Q_W' (Gram overlap with baseline correction)
+                Q_W = gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True)
+                Q_W_list.append(Q_W)
+                
+                # Q_X' (Gram overlap with baseline correction)
+                Q_X = gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False)
+                Q_X_list.append(Q_X)
+                
+                # Q_Y (cosine similarity)
+                Y_student = W_for_metrics[s] @ X_for_metrics[s]
+                Q_Y = compute_qy(Y_student, Y_teacher)
+                Q_Y_list.append(Q_Y)
+            
+            import numpy as np
             return {
-                'Q_W_mean': float(Q_W.mean().item()),
-                'Q_W_std': float(Q_W.std().item()) if Q_W.numel() > 1 else 0.0,
-                'Q_X_mean': float(Q_X.mean().item()),
-                'Q_X_std': float(Q_X.std().item()) if Q_X.numel() > 1 else 0.0,
+                'Q_W_mean': float(np.mean(Q_W_list)),
+                'Q_W_std': float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
+                'Q_X_mean': float(np.mean(Q_X_list)),
+                'Q_X_std': float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
+                'Q_Y_mean': float(np.mean(Q_Y_list)),
+                'Q_Y_std': float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
             }
-        except ImportError:
+        except ImportError as e:
             # Fallback if metrics module not available
-            return {'Q_W_mean': 0.0, 'Q_X_mean': 0.0}
+            print(f"Warning: metrics import failed: {e}")
+            return {'Q_W_mean': 0.0, 'Q_X_mean': 0.0, 'Q_Y_mean': 0.0}
     
     def _get_algorithm(self, config: ExperimentConfig) -> 'AlgorithmBase':
         """Get or create algorithm instance."""

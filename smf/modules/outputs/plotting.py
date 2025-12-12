@@ -861,3 +861,234 @@ def plot_overlap_evolution(
     plt.close(fig)
     
     return output_path
+
+
+def plot_replica_analysis(
+    replica_results: Dict[float, Dict[str, float]],
+    output_path: Path,
+    title: str = None,
+    N1: int = None,
+    N2: int = None,
+    M: int = None,
+    S: int = None,
+    show_teacher: bool = True,
+    dpi: int = None,
+) -> Path:
+    """
+    Generate publication-quality replica overlap analysis plot.
+    
+    Creates a 2x2 subplot figure:
+    1. Q_Y: Replica vs Teacher
+    2. Q_W and Q_X replica overlap
+    3. Q_Y replica main result
+    4. Standard deviation across pairs
+    
+    Uses publication_style for Nature/Science quality.
+    
+    Args:
+        replica_results: Dict mapping alpha -> replica metrics
+            Required keys: Q_Y_replica_mean, Q_W_replica_mean, etc.
+        output_path: Where to save the plot
+        title: Optional custom title
+        N1, N2, M: Matrix dimensions for subtitle
+        S: Number of replicas
+        show_teacher: Whether to show teacher overlap comparison
+        dpi: Output DPI (default: publication quality)
+        
+    Returns:
+        Path to saved plot
+    """
+    # Apply publication style
+    apply_publication_style()
+    
+    alphas = sorted([float(a) for a in replica_results.keys()])
+    
+    # Extract metrics
+    qy_replica = [replica_results[a].get('Q_Y_replica_mean', 0) for a in alphas]
+    qy_replica_std = [replica_results[a].get('Q_Y_replica_std', 0) for a in alphas]
+    qw_replica = [replica_results[a].get('Q_W_replica_norm_mean', 
+                  replica_results[a].get('Q_W_replica_mean', 0)) for a in alphas]
+    qx_replica = [replica_results[a].get('Q_X_replica_norm_mean',
+                  replica_results[a].get('Q_X_replica_mean', 0)) for a in alphas]
+    
+    # Teacher overlap if available
+    qy_teacher = [replica_results[a].get('Q_Y_teacher_mean', 0) for a in alphas]
+    qy_teacher_std = [replica_results[a].get('Q_Y_teacher_std', 0) for a in alphas]
+    
+    # Colors - using colorblind-safe palette
+    REPLICA_COLOR = COLORBLIND_PALETTE[0]  # Blue
+    TEACHER_COLOR = COLORBLIND_PALETTE[1]  # Orange
+    W_COLOR = COLORBLIND_PALETTE[2]        # Green
+    X_COLOR = COLORBLIND_PALETTE[3]        # Pink
+    
+    # Create figure with 2x2 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    
+    # ========== Plot 1: Q_Y Replica vs Teacher ==========
+    ax1 = axes[0, 0]
+    plot_with_error(ax1, np.array(alphas), np.array(qy_replica), 
+                    yerr=np.array(qy_replica_std),
+                    color=REPLICA_COLOR, label='$Q_Y$ (replica)',
+                    marker='o', linewidth=STYLE['linewidth'])
+    
+    if show_teacher and any(q > 0 for q in qy_teacher):
+        plot_with_error(ax1, np.array(alphas), np.array(qy_teacher),
+                        yerr=np.array(qy_teacher_std),
+                        color=TEACHER_COLOR, label='$Q_Y$ (teacher)',
+                        marker='s', linestyle='--', linewidth=STYLE['linewidth'] * 0.8)
+    
+    ax1.set_xlabel(r'$\tilde{\alpha}$')
+    ax1.set_ylabel('$Q_Y$')
+    ax1.set_title('Y Overlap: Replica vs Teacher', fontweight='bold')
+    ax1.legend(loc='lower right', fontsize=STYLE['fontsize']['legend'])
+    ax1.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    ax1.set_ylim(-0.05, 1.05)
+    
+    # ========== Plot 2: Q_W and Q_X Replica ==========
+    ax2 = axes[0, 1]
+    ax2.plot(alphas, qw_replica, 'o-', color=W_COLOR, 
+             label="$Q'_W$ (replica)", linewidth=STYLE['linewidth'],
+             markersize=STYLE['markersize'])
+    ax2.plot(alphas, qx_replica, 's-', color=X_COLOR,
+             label="$Q'_X$ (replica)", linewidth=STYLE['linewidth'],
+             markersize=STYLE['markersize'])
+    
+    ax2.set_xlabel(r'$\tilde{\alpha}$')
+    ax2.set_ylabel('Overlap (normalized)')
+    ax2.set_title('W and X Replica Overlap', fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=STYLE['fontsize']['legend'])
+    ax2.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    ax2.set_ylim(-0.05, 1.05)
+    
+    # ========== Plot 3: Q_Y Replica Main Result ==========
+    ax3 = axes[1, 0]
+    plot_with_error(ax3, np.array(alphas), np.array(qy_replica),
+                    yerr=np.array(qy_replica_std),
+                    color=REPLICA_COLOR, 
+                    marker='o', linewidth=STYLE['linewidth'] * 1.3,
+                    markersize=STYLE['markersize'] * 1.2)
+    ax3.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, 
+                label='Perfect consistency')
+    
+    ax3.set_xlabel(r'$\tilde{\alpha}$')
+    ax3.set_ylabel('$Q_Y$ (replica)')
+    ax3.set_title('Replica Consistency (Main Result)', fontweight='bold')
+    ax3.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    ax3.set_ylim(-0.05, 1.05)
+    
+    # ========== Plot 4: Standard Deviation ==========
+    ax4 = axes[1, 1]
+    ax4.plot(alphas, qy_replica_std, 'o-', color=REPLICA_COLOR,
+             label='$Q_Y$ std', linewidth=STYLE['linewidth'],
+             markersize=STYLE['markersize'])
+    
+    qw_std = [replica_results[a].get('Q_W_replica_std', 0) for a in alphas]
+    qx_std = [replica_results[a].get('Q_X_replica_std', 0) for a in alphas]
+    ax4.plot(alphas, qw_std, 's-', color=W_COLOR, alpha=0.7,
+             label='$Q_W$ std', linewidth=STYLE['linewidth'] * 0.8)
+    ax4.plot(alphas, qx_std, '^-', color=X_COLOR, alpha=0.7,
+             label='$Q_X$ std', linewidth=STYLE['linewidth'] * 0.8)
+    
+    ax4.set_xlabel(r'$\tilde{\alpha}$')
+    ax4.set_ylabel('Standard Deviation')
+    ax4.set_title('Overlap Variance Across Pairs', fontweight='bold')
+    ax4.legend(loc='upper right', fontsize=STYLE['fontsize']['legend'])
+    ax4.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    
+    # ========== Suptitle ==========
+    if title:
+        suptitle = title
+    else:
+        parts = []
+        if N1 is not None and N2 is not None:
+            parts.append(f'{N1}×{N2}')
+        if M is not None:
+            parts.append(f'M={M}')
+        if S is not None:
+            n_pairs = S * (S - 1) // 2
+            parts.append(f'S={S} replicas ({n_pairs} pairs)')
+        suptitle = 'Replica Overlap Analysis'
+        if parts:
+            suptitle += f': {", ".join(parts)}'
+    
+    plt.suptitle(suptitle, fontsize=STYLE['fontsize']['title'], 
+                 fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    # Save
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=dpi or DEFAULT_DPI, bbox_inches='tight',
+                facecolor='white')
+    plt.close(fig)
+    
+    return output_path
+
+
+def plot_replica_comparison(
+    replica_results: Dict[float, Dict[str, float]],
+    output_path: Path,
+    dpi: int = None,
+) -> Path:
+    """
+    Generate Teacher-Student vs Replica-Replica comparison plot.
+    
+    Shows both overlap types on same axes for direct comparison.
+    Uses normalized (baseline-corrected) overlap for fair comparison.
+    
+    Args:
+        replica_results: Dict mapping alpha -> replica metrics
+        output_path: Where to save
+        dpi: Output DPI
+        
+    Returns:
+        Path to saved plot
+    """
+    apply_publication_style()
+    
+    alphas = sorted([float(a) for a in replica_results.keys()])
+    
+    # Teacher-Student overlap (normalized)
+    qw_teacher = [replica_results[a].get('Q_W_teacher_mean', 0) for a in alphas]
+    qx_teacher = [replica_results[a].get('Q_X_teacher_mean', 0) for a in alphas]
+    
+    # Replica-Replica overlap (normalized)
+    qw_replica = [replica_results[a].get('Q_W_replica_norm_mean', 
+                  replica_results[a].get('Q_W_replica_mean', 0)) for a in alphas]
+    qx_replica = [replica_results[a].get('Q_X_replica_norm_mean',
+                  replica_results[a].get('Q_X_replica_mean', 0)) for a in alphas]
+    
+    fig, ax = plt.subplots(figsize=(10, 7))
+    
+    # Teacher-Student curves
+    ax.plot(alphas, qw_teacher, 'o-', color=COLORBLIND_PALETTE[4], 
+            label="$Q'_W$ (teacher-student)", linewidth=STYLE['linewidth'],
+            markersize=STYLE['markersize'], alpha=0.8)
+    ax.plot(alphas, qx_teacher, 'v-', color=COLORBLIND_PALETTE[5],
+            label="$Q'_X$ (teacher-student)", linewidth=STYLE['linewidth'],
+            markersize=STYLE['markersize'], alpha=0.8)
+    
+    # Replica-Replica curves
+    ax.plot(alphas, qw_replica, 's--', color=COLORBLIND_PALETTE[2],
+            label="$Q'_W$ (replica-replica)", linewidth=STYLE['linewidth'],
+            markersize=STYLE['markersize'], alpha=0.8)
+    ax.plot(alphas, qx_replica, '^--', color=COLORBLIND_PALETTE[3],
+            label="$Q'_X$ (replica-replica)", linewidth=STYLE['linewidth'],
+            markersize=STYLE['markersize'], alpha=0.8)
+    
+    ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
+    ax.set_ylabel('Overlap (normalized)', fontsize=STYLE['fontsize']['label'])
+    ax.set_title('Teacher-Student vs Replica-Replica Overlap\n(Both using baseline correction)',
+                 fontsize=STYLE['fontsize']['title'], fontweight='bold')
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    ax.legend(fontsize=STYLE['fontsize']['legend'], loc='lower right')
+    
+    plt.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=dpi or DEFAULT_DPI, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
+
