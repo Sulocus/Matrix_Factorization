@@ -19,6 +19,7 @@ from ..registry import register_output
 from .base import OutputBase
 from .plotting import ResultPlotter, COLORS, STYLE
 from .storage import ResultStorage
+from .publication_style import PUB_CONFIG, apply_publication_style
 from ...core.config import Config
 
 
@@ -62,7 +63,7 @@ class CombinedOutput(OutputBase):
         storage_format: str = "json",
         show_error_bars: bool = True,
         figure_size: tuple = (10, 6),
-        dpi: int = 150,
+        dpi: int = None,  # None means use PUB_CONFIG.dpi
         title_suffix: str = "",
     ):
         """
@@ -90,7 +91,7 @@ class CombinedOutput(OutputBase):
         self.storage_format = storage_format.lower()
         self.show_error_bars = show_error_bars
         self.figure_size = figure_size
-        self.dpi = dpi
+        self.dpi = dpi if dpi is not None else PUB_CONFIG.dpi
         self.title_suffix = title_suffix
 
         # Create sub-handlers
@@ -206,7 +207,7 @@ class CombinedOutput(OutputBase):
         ax.set_title(title, fontsize=STYLE["fontsize"]["title"])
 
         ax.legend(fontsize=STYLE["fontsize"]["legend"])
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
         ax.set_xlim(left=0)
         ax.set_ylim(0, 1.05)
 

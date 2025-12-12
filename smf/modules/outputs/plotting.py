@@ -1,5 +1,8 @@
 """
 Result plotting module with unified styles.
+
+This module provides publication-quality plotting for SMF experiment results.
+Supports Nature/Science journal formatting with proper fonts, sizing, and error bars.
 """
 
 from pathlib import Path
@@ -12,8 +15,20 @@ from ..registry import register_output
 from .base import OutputBase
 from ...core.config import Config
 
+# Import publication style system
+from .publication_style import (
+    apply_publication_style,
+    PUB_CONFIG,
+    ERROR_CONFIG,
+    StyleCycler,
+    plot_with_error,
+    auto_legend,
+    get_figure_size,
+    COLORBLIND_PALETTE,
+)
 
-# Unified color scheme
+
+# Unified color scheme (kept for backward compatibility and fixed metrics)
 COLORS = {
     'Q_Y': '#d62728',           # Red
     'Q_Y_unobserved': '#17becf', # Cyan
@@ -25,19 +40,23 @@ COLORS = {
     'Gen_Error': '#2ca02c',     # Green
 }
 
-# Unified style settings
+# Unified style settings - now uses publication config values
+# Kept for backward compatibility with existing code
 STYLE = {
-    'linewidth': 1.5,
-    'markersize': 4,
+    'linewidth': PUB_CONFIG.linewidth_plot,
+    'markersize': PUB_CONFIG.markersize,
     'marker': 'o',
-    'capsize': 2,
+    'capsize': ERROR_CONFIG.capsize,
     'fontsize': {
-        'title': 12,
-        'label': 10,
-        'tick': 9,
-        'legend': 9,
+        'title': PUB_CONFIG.font_size_title,
+        'label': PUB_CONFIG.font_size_axis_label,
+        'tick': PUB_CONFIG.font_size_tick,
+        'legend': PUB_CONFIG.font_size_legend,
     }
 }
+
+# Default DPI for publication quality
+DEFAULT_DPI = PUB_CONFIG.dpi
 
 
 @register_output(
@@ -50,10 +69,13 @@ class ResultPlotter(OutputBase):
     Unified result plotting with consistent styles.
     """
 
-    def __init__(self, config: Config, output_dir: Path):
+    def __init__(self, config: Config, output_dir: Path, use_publication_style: bool = True):
         super().__init__(config, output_dir)
-        plt.style.use('default')
-        plt.rcParams['font.size'] = STYLE['fontsize']['tick']
+        if use_publication_style:
+            apply_publication_style()
+        else:
+            plt.style.use('default')
+            plt.rcParams['font.size'] = STYLE['fontsize']['tick']
 
     def save(self, results: Dict[str, Any], **kwargs) -> Path:
         """Save standard result plot."""
@@ -65,6 +87,8 @@ class ResultPlotter(OutputBase):
         title: str = None,
         filename: str = "summary.png",
         show_params: bool = True,
+        show_error_bar: bool = True,
+        error_style: str = 'bar',
     ) -> Path:
         """
         Create summary plot with Q_Y, Q_W', Q_X' vs alpha.
@@ -74,6 +98,8 @@ class ResultPlotter(OutputBase):
             title: Plot title (optional)
             filename: Output filename
             show_params: Whether to show parameter table
+            show_error_bar: Whether to show error bars (default: True)
+            error_style: Error bar style - 'bar' or 'band' (default: 'bar')
 
         Returns:
             Path to saved plot
@@ -90,21 +116,53 @@ class ResultPlotter(OutputBase):
         # Create figure
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Plot curves with unified style
-        ax.errorbar(alphas, qy_mean, yerr=None,  # No error bars
-                    color=COLORS['Q_Y'], label='$Q_Y$',
-                    linewidth=STYLE['linewidth'], marker=STYLE['marker'],
-                    markersize=STYLE['markersize'], capsize=STYLE['capsize'])
+        # Determine if error bars should be shown for each metric
+        def _get_yerr(std_list):
+            if show_error_bar and any(s > 0 for s in std_list):
+                return std_list
+            return None
+        
+        # Common plot kwargs
+        plot_kwargs = {
+            'linewidth': STYLE['linewidth'],
+            'marker': STYLE['marker'],
+            'markersize': STYLE['markersize'],
+            'capsize': STYLE['capsize'] if show_error_bar else 0,
+        }
+        
+        # Plot curves with unified style and optional error bars
+        if error_style == 'band' and show_error_bar:
+            # Band style - use fill_between
+            ax.plot(alphas, qy_mean, color=COLORS['Q_Y'], label='$Q_Y$', **plot_kwargs)
+            if any(s > 0 for s in qy_std):
+                ax.fill_between(alphas, 
+                               [m - s for m, s in zip(qy_mean, qy_std)],
+                               [m + s for m, s in zip(qy_mean, qy_std)],
+                               color=COLORS['Q_Y'], alpha=ERROR_CONFIG.band_alpha)
+            
+            ax.plot(alphas, qw_prime_mean, color=COLORS['Q_W_prime'], label="$Q'_W$", **plot_kwargs)
+            if any(s > 0 for s in qw_prime_std):
+                ax.fill_between(alphas,
+                               [m - s for m, s in zip(qw_prime_mean, qw_prime_std)],
+                               [m + s for m, s in zip(qw_prime_mean, qw_prime_std)],
+                               color=COLORS['Q_W_prime'], alpha=ERROR_CONFIG.band_alpha)
+            
+            ax.plot(alphas, qx_prime_mean, color=COLORS['Q_X_prime'], label="$Q'_X$", **plot_kwargs)
+            if any(s > 0 for s in qx_prime_std):
+                ax.fill_between(alphas,
+                               [m - s for m, s in zip(qx_prime_mean, qx_prime_std)],
+                               [m + s for m, s in zip(qx_prime_mean, qx_prime_std)],
+                               color=COLORS['Q_X_prime'], alpha=ERROR_CONFIG.band_alpha)
+        else:
+            # Bar style - traditional error bars
+            ax.errorbar(alphas, qy_mean, yerr=_get_yerr(qy_std),
+                        color=COLORS['Q_Y'], label='$Q_Y$', **plot_kwargs)
 
-        ax.errorbar(alphas, qw_prime_mean, yerr=None,  # No error bars
-                    color=COLORS['Q_W_prime'], label="$Q'_W$",
-                    linewidth=STYLE['linewidth'], marker=STYLE['marker'],
-                    markersize=STYLE['markersize'], capsize=STYLE['capsize'])
+            ax.errorbar(alphas, qw_prime_mean, yerr=_get_yerr(qw_prime_std),
+                        color=COLORS['Q_W_prime'], label="$Q'_W$", **plot_kwargs)
 
-        ax.errorbar(alphas, qx_prime_mean, yerr=None,  # No error bars
-                    color=COLORS['Q_X_prime'], label="$Q'_X$",
-                    linewidth=STYLE['linewidth'], marker=STYLE['marker'],
-                    markersize=STYLE['markersize'], capsize=STYLE['capsize'])
+            ax.errorbar(alphas, qx_prime_mean, yerr=_get_yerr(qx_prime_std),
+                        color=COLORS['Q_X_prime'], label="$Q'_X$", **plot_kwargs)
 
         # Formatting
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
@@ -131,7 +189,7 @@ class ResultPlotter(OutputBase):
 
         # Save
         output_path = self.output_dir / filename
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
 
         return output_path
@@ -161,24 +219,53 @@ class ResultPlotter(OutputBase):
         self,
         results: Dict[float, Dict[str, float]],
         filename: str = "qy_vs_alpha.png",
+        show_error_bar: bool = True,
+        error_style: str = 'bar',
     ) -> Path:
-        """Create Q_Y only plot."""
+        """
+        Create Q_Y only plot.
+        
+        Args:
+            results: Dict mapping alpha -> metrics dict
+            filename: Output filename
+            show_error_bar: Whether to show error bars (default: True)
+            error_style: Error bar style - 'bar' or 'band' (default: 'bar')
+            
+        Returns:
+            Path to saved plot
+        """
         alphas = sorted([float(a) for a in results.keys()])
         qy_mean = [results[a]['Q_Y_mean'] for a in alphas]
         qy_std = [results[a].get('Q_Y_std', 0) for a in alphas]
 
         fig, ax = plt.subplots(figsize=(8, 5))
-
-        ax.errorbar(alphas, qy_mean, yerr=None,  # No error bars
-                    color=COLORS['Q_Y'], label='$Q_Y$',
-                    linewidth=STYLE['linewidth'] * 1.2,
-                    marker=STYLE['marker'], markersize=STYLE['markersize'] * 1.2,
-                    capsize=STYLE['capsize'])
+        
+        # Determine if error bars should be shown
+        yerr = qy_std if (show_error_bar and any(s > 0 for s in qy_std)) else None
+        
+        plot_kwargs = {
+            'color': COLORS['Q_Y'],
+            'label': '$Q_Y$',
+            'linewidth': STYLE['linewidth'] * 1.2,
+            'marker': STYLE['marker'],
+            'markersize': STYLE['markersize'] * 1.2,
+        }
+        
+        if error_style == 'band' and yerr is not None:
+            ax.plot(alphas, qy_mean, **plot_kwargs)
+            ax.fill_between(alphas,
+                           [m - s for m, s in zip(qy_mean, qy_std)],
+                           [m + s for m, s in zip(qy_mean, qy_std)],
+                           color=COLORS['Q_Y'], alpha=ERROR_CONFIG.band_alpha)
+        else:
+            ax.errorbar(alphas, qy_mean, yerr=yerr,
+                        capsize=STYLE['capsize'] if yerr else 0,
+                        **plot_kwargs)
 
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
         ax.set_ylabel('$Q_Y$', fontsize=STYLE['fontsize']['label'])
         ax.set_ylim(-0.05, 1.05)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
 
         m = self.config.matrix
         ax.set_title(f"$Q_Y$ vs $\\alpha$: {m.N1}×{m.N2}, M={m.M}",
@@ -186,7 +273,7 @@ class ResultPlotter(OutputBase):
 
         plt.tight_layout()
         output_path = self.output_dir / filename
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
 
         return output_path
@@ -196,6 +283,8 @@ class ResultPlotter(OutputBase):
         results: Dict[float, Dict[str, float]],
         metrics: List[str] = None,
         filename: str = "qy_comparison.png",
+        show_error_bar: bool = True,
+        error_style: str = 'bar',
     ) -> Path:
         """
         Create comparison plot for multiple Q_Y-related metrics.
@@ -206,6 +295,8 @@ class ResultPlotter(OutputBase):
             results: Dict mapping alpha -> metrics dict
             metrics: List of metrics to plot, e.g., ['Q_Y', 'Q_Y_unobserved']
             filename: Output filename
+            show_error_bar: Whether to show error bars (default: True)
+            error_style: Error bar style - 'bar' or 'band' (default: 'bar')
 
         Returns:
             Path to saved plot
@@ -242,20 +333,32 @@ class ResultPlotter(OutputBase):
 
             color = COLORS.get(metric, '#333333')
             label = METRIC_LABELS.get(metric, metric)
-
-            ax.errorbar(
-                alphas, values, yerr=stds,
-                color=color, label=label,
-                linewidth=STYLE['linewidth'],
-                marker=STYLE['marker'],
-                markersize=STYLE['markersize'],
-                capsize=STYLE['capsize'],
-            )
+            
+            # Determine if error bars should be shown
+            yerr = stds if (show_error_bar and any(s > 0 for s in stds)) else None
+            
+            if error_style == 'band' and yerr is not None:
+                ax.plot(alphas, values, color=color, label=label,
+                       linewidth=STYLE['linewidth'], marker=STYLE['marker'],
+                       markersize=STYLE['markersize'])
+                ax.fill_between(alphas,
+                               [v - s for v, s in zip(values, stds)],
+                               [v + s for v, s in zip(values, stds)],
+                               color=color, alpha=ERROR_CONFIG.band_alpha)
+            else:
+                ax.errorbar(
+                    alphas, values, yerr=yerr,
+                    color=color, label=label,
+                    linewidth=STYLE['linewidth'],
+                    marker=STYLE['marker'],
+                    markersize=STYLE['markersize'],
+                    capsize=STYLE['capsize'] if yerr else 0,
+                )
 
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
         ax.set_ylabel('Overlap', fontsize=STYLE['fontsize']['label'])
         ax.set_ylim(-0.05, 1.05)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
         ax.legend(fontsize=STYLE['fontsize']['legend'], loc='lower right')
 
         m = self.config.matrix
@@ -266,7 +369,7 @@ class ResultPlotter(OutputBase):
 
         plt.tight_layout()
         output_path = self.output_dir / filename
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
 
         return output_path
@@ -282,9 +385,10 @@ def plot_comparison(
     ylim: tuple = None,
     legend_loc: str = 'best',
     format: str = 'png',
-    dpi: int = 150,
+    dpi: int = None,  # None means use DEFAULT_DPI
     error_style: str = 'bar',  # 'bar' or 'band'
     colormap: str = None,
+    palette: str = 'colorblind',  # For StyleCycler
 ) -> Path:
     """
     Plot comparison of multiple experiment results with flexible options.
@@ -298,43 +402,64 @@ def plot_comparison(
         ylim: (ymin, ymax) or None for auto
         legend_loc: Legend position ('best', 'upper right', 'outside right', etc.)
         format: Output format ('png', 'pdf', 'svg')
-        dpi: Resolution (150 for screen, 300 for publication)
+        dpi: Resolution (None for DEFAULT_DPI, 150 for screen, 300 for publication)
         error_style: 'bar' for error bars, 'band' for fill_between
-        colormap: Color scheme name (None for tab10)
+        colormap: Matplotlib colormap name (deprecated, use palette instead)
+        palette: Color palette for StyleCycler ('colorblind', 'tab10', 'extended')
 
     Returns:
         Path to saved plot
     """
+    # Use publication DPI by default
+    if dpi is None:
+        dpi = DEFAULT_DPI
+        
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Choose colormap
+    # Use StyleCycler for scalable color/linestyle handling
+    n_curves = len(results_list)
     if colormap:
-        colors = plt.cm.get_cmap(colormap)(np.linspace(0, 1, len(results_list)))
+        # Legacy colormap support (deprecated)
+        colors = plt.cm.get_cmap(colormap)(np.linspace(0, 1, n_curves))
+        cycler = None
     else:
-        colors = plt.cm.tab10(np.linspace(0, 1, len(results_list)))
+        cycler = StyleCycler(n_curves, palette=palette)
+        colors = None
 
     for i, (results, label) in enumerate(zip(results_list, labels)):
         alphas = sorted([float(a) for a in results.keys()])
         values = [results[a][metric] for a in alphas]
         stds = [results[a].get(metric.replace('_mean', '_std'), 0) for a in alphas]
+        
+        # Get style from cycler or colormap
+        if cycler:
+            style = cycler.get_style(i)
+            color = style['color']
+            linestyle = style.get('linestyle', '-')
+            marker = style.get('marker', 'o')
+        else:
+            color = colors[i]
+            linestyle = '-'
+            marker = STYLE['marker']
 
         if error_style == 'band' and any(s > 0 for s in stds):
             # Fill between for error band
-            ax.plot(alphas, values, color=colors[i], label=label,
-                    linewidth=STYLE['linewidth'])
+            ax.plot(alphas, values, color=color, label=label,
+                    linewidth=STYLE['linewidth'], linestyle=linestyle, marker=marker,
+                    markersize=STYLE['markersize'])
             ax.fill_between(alphas,
                            [v - s for v, s in zip(values, stds)],
                            [v + s for v, s in zip(values, stds)],
-                           color=colors[i], alpha=0.2)
+                           color=color, alpha=ERROR_CONFIG.band_alpha)
         else:
             ax.errorbar(alphas, values, yerr=stds if any(s > 0 for s in stds) else None,
-                       color=colors[i], label=label,
-                       linewidth=STYLE['linewidth'], marker=STYLE['marker'],
-                       markersize=STYLE['markersize'], capsize=STYLE['capsize'])
+                       color=color, label=label, linestyle=linestyle, marker=marker,
+                       linewidth=STYLE['linewidth'], markersize=STYLE['markersize'],
+                       capsize=STYLE['capsize'])
 
     ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
     ax.set_ylabel(metric.replace('_', ' '), fontsize=STYLE['fontsize']['label'])
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
 
     # Flexible axis limits
     if xlim:
@@ -342,10 +467,12 @@ def plot_comparison(
     if ylim:
         ax.set_ylim(ylim)
 
-    # Flexible legend position
+    # Smart legend positioning based on number of curves
     if legend_loc == 'outside right':
         ax.legend(fontsize=STYLE['fontsize']['legend'],
                  bbox_to_anchor=(1.05, 1), loc='upper left')
+    elif legend_loc == 'auto':
+        auto_legend(ax, n_curves)
     else:
         ax.legend(fontsize=STYLE['fontsize']['legend'], loc=legend_loc)
 
@@ -367,7 +494,7 @@ def plot_with_inset(
     inset_ylim: tuple = None,
     inset_position: str = 'upper right',
     metric: str = 'Q_Y_mean',
-    dpi: int = 150,
+    dpi: int = None,
     format: str = 'png',
 ) -> Path:
     """
@@ -399,7 +526,7 @@ def plot_with_inset(
 
     ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
     ax.set_ylabel(metric.replace('_', ' '), fontsize=STYLE['fontsize']['label'])
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
 
     # Create inset
     pos_map = {
@@ -418,12 +545,12 @@ def plot_with_inset(
     axins.set_xlim(inset_xlim)
     if inset_ylim:
         axins.set_ylim(inset_ylim)
-    axins.grid(True, alpha=0.3)
+    axins.grid(True, alpha=PUB_CONFIG.grid_alpha)
 
     plt.tight_layout()
     if format != 'png':
         output_path = output_path.with_suffix(f'.{format}')
-    plt.savefig(output_path, dpi=dpi, bbox_inches='tight', format=format)
+    plt.savefig(output_path, dpi=dpi or DEFAULT_DPI, bbox_inches='tight', format=format)
     plt.close(fig)
 
     return output_path
@@ -434,7 +561,7 @@ def plot_twin_axis(
     output_path: Path,
     left_metric: str = 'Q_Y_mean',
     right_metric: str = 'slope',
-    dpi: int = 150,
+    dpi: int = None,
     format: str = 'png',
 ) -> Path:
     """
@@ -478,12 +605,12 @@ def plot_twin_axis(
     labels = [l.get_label() for l in lines]
     ax1.legend(lines, labels, loc='best', fontsize=STYLE['fontsize']['legend'])
 
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, alpha=PUB_CONFIG.grid_alpha)
 
     plt.tight_layout()
     if format != 'png':
         output_path = output_path.with_suffix(f'.{format}')
-    plt.savefig(output_path, dpi=dpi, bbox_inches='tight', format=format)
+    plt.savefig(output_path, dpi=dpi or DEFAULT_DPI, bbox_inches='tight', format=format)
     plt.close(fig)
 
     return output_path
@@ -609,7 +736,7 @@ def plot_replica_heatmap(
     # Save
     filename = f"{filename_prefix}_alpha_{alpha:.6f}.png"
     output_path = output_dir / filename
-    plt.savefig(output_path, dpi=100, bbox_inches='tight')
+    plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
     plt.close(fig)
     
     return output_path
@@ -721,7 +848,7 @@ def plot_overlap_evolution(
     ax.set_xlabel(r'$\alpha$ (Measurement Density)')
     ax.set_ylabel('Overlap (Normalized)')
     ax.set_title('Replica Overlap Evolution')
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
     ax.legend(loc='lower right')
     ax.set_ylim(-0.1, 1.1)
     
@@ -730,8 +857,7 @@ def plot_overlap_evolution(
     
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / filename
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
     plt.close(fig)
     
-    return output_path
     return output_path

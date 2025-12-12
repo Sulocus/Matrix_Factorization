@@ -23,7 +23,14 @@ from smf.modules.outputs.plotting import create_gif
 from smf.core.config import Config
 from smf.modules.registry import get_teacher
 from smf.modules.metrics.overlap import compute_physical_overlap
+from smf.modules.outputs.publication_style import apply_publication_style, PUB_CONFIG
 import re
+
+# Apply publication-quality style globally
+apply_publication_style()
+
+# Default DPI for publication quality
+DEFAULT_DPI = PUB_CONFIG.dpi
 
 
 def recreate_teacher(config_dict):
@@ -168,10 +175,10 @@ def process_experiment(result_dir: Path):
     ax.set_xlabel('Alpha (Measurement Ratio)')
     ax.set_ylabel('Overlap (Gram Normalized)')
     ax.set_title(f'Overlap Evolution (Gram)\n{result_dir.name}')
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
     ax.legend()
     ax.set_ylim(-0.1, 1.1)
-    plt.savefig(result_dir / "overlap_evolution_gram.png", dpi=150, bbox_inches='tight')
+    plt.savefig(result_dir / "overlap_evolution_gram.png", dpi=DEFAULT_DPI, bbox_inches='tight')
     plt.close(fig)
     print("  Generated: overlap_evolution_gram.png")
     
@@ -184,10 +191,10 @@ def process_experiment(result_dir: Path):
         ax.set_xlabel('Alpha (Measurement Ratio)')
         ax.set_ylabel('Overlap (Physical / Dot Product)')
         ax.set_title(f'Overlap Evolution (Physical)\n{result_dir.name}')
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
         ax.legend()
         ax.set_ylim(-0.1, 1.1)
-        plt.savefig(result_dir / "overlap_evolution_physical.png", dpi=150, bbox_inches='tight')
+        plt.savefig(result_dir / "overlap_evolution_physical.png", dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
         print("  Generated: overlap_evolution_physical.png")
     else:
@@ -230,10 +237,10 @@ def process_experiment(result_dir: Path):
         ax.set_xlabel('Alpha (Measurement Ratio)')
         ax.set_ylabel('Q_Y Overlap')
         ax.set_title(f'Q_Y Evolution\n{result_dir.name}')
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
         ax.legend()
         ax.set_ylim(-0.1, 1.1)
-        plt.savefig(result_dir / "qy_evolution.png", dpi=150, bbox_inches='tight')
+        plt.savefig(result_dir / "qy_evolution.png", dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
         print("  Generated: qy_evolution.png")
     else:

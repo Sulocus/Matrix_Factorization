@@ -10,6 +10,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from .plotting import COLORS, STYLE
+from .publication_style import (
+    apply_publication_style,
+    PUB_CONFIG,
+    ERROR_CONFIG,
+    StyleCycler,
+    auto_legend,
+)
+
+# Default DPI for publication quality
+DEFAULT_DPI = PUB_CONFIG.dpi
 
 
 class ResultComparison:
@@ -29,6 +39,8 @@ class ResultComparison:
         filename: str = "qy_comparison.png",
         show_std: bool = True,
         metric: str = "Q_Y",
+        error_style: str = 'bar',
+        palette: str = 'colorblind',
     ) -> Path:
         """
         Plot metric curves from multiple experiments on the same figure.
@@ -40,14 +52,17 @@ class ResultComparison:
             filename: Output filename
             show_std: Whether to show error bars
             metric: Metric to plot (default: Q_Y, can be Q_W, Q_X, Q_W_prime, etc.)
+            error_style: Error bar style - 'bar' or 'band' (default: 'bar')
+            palette: Color palette for StyleCycler ('colorblind', 'tab10', etc.)
 
         Returns:
             Path to saved plot
         """
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Use colormap for multiple curves
-        colors = plt.cm.tab10(np.linspace(0, 1, len(results_list)))
+        # Use StyleCycler for scalable color/linestyle handling
+        n_curves = len(results_list)
+        cycler = StyleCycler(n_curves, palette=palette)
 
         # Determine metric keys
         metric_mean = f"{metric}_mean"
@@ -58,23 +73,38 @@ class ResultComparison:
             alpha_keys = sorted(results.keys(), key=float)
             alphas = [float(a) for a in alpha_keys]
             values_mean = [results[a].get(metric_mean, results[a].get(metric, 0)) for a in alpha_keys]
+            
+            # Get style from cycler
+            style = cycler.get_style(i)
+            color = style['color']
+            linestyle = style.get('linestyle', '-')
+            marker = style.get('marker', 'o')
 
             if show_std:
                 values_std = [results[a].get(metric_std, 0) for a in alpha_keys]
-                ax.errorbar(
-                    alphas, values_mean, yerr=values_std,
-                    color=colors[i], label=label,
-                    linewidth=STYLE['linewidth'],
-                    marker=STYLE['marker'],
-                    markersize=STYLE['markersize'],
-                    capsize=STYLE['capsize'],
-                )
+                yerr = values_std if any(s > 0 for s in values_std) else None
+                
+                if error_style == 'band' and yerr is not None:
+                    ax.plot(alphas, values_mean, color=color, label=label,
+                           linewidth=STYLE['linewidth'], linestyle=linestyle, marker=marker,
+                           markersize=STYLE['markersize'])
+                    ax.fill_between(alphas,
+                                   [v - s for v, s in zip(values_mean, values_std)],
+                                   [v + s for v, s in zip(values_mean, values_std)],
+                                   color=color, alpha=ERROR_CONFIG.band_alpha)
+                else:
+                    ax.errorbar(
+                        alphas, values_mean, yerr=yerr,
+                        color=color, label=label, linestyle=linestyle, marker=marker,
+                        linewidth=STYLE['linewidth'],
+                        markersize=STYLE['markersize'],
+                        capsize=STYLE['capsize'] if yerr else 0,
+                    )
             else:
                 ax.plot(
                     alphas, values_mean,
-                    color=colors[i], label=label,
+                    color=color, label=label, linestyle=linestyle, marker=marker,
                     linewidth=STYLE['linewidth'],
-                    marker=STYLE['marker'],
                     markersize=STYLE['markersize'],
                 )
 
@@ -84,13 +114,15 @@ class ResultComparison:
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
         ax.set_ylabel(ylabel, fontsize=STYLE['fontsize']['label'])
         ax.set_ylim(-0.05, 1.05)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=STYLE['fontsize']['legend'], loc='best')
+        ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+        
+        # Smart legend positioning
+        auto_legend(ax, n_curves)
         ax.set_title(title, fontsize=STYLE['fontsize']['title'])
 
         plt.tight_layout()
         output_path = self.output_dir / filename
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
 
         return output_path
@@ -101,6 +133,7 @@ class ResultComparison:
         labels: List[str],
         metrics: List[str] = None,
         filename: str = "multi_metric_comparison.png",
+        palette: str = 'colorblind',
     ) -> Path:
         """
         Plot multiple metrics from multiple experiments.
@@ -110,6 +143,7 @@ class ResultComparison:
             labels: Labels for each result set
             metrics: Metrics to compare (default: Q_Y, Q_W', Q_X')
             filename: Output filename
+            palette: Color palette for StyleCycler
 
         Returns:
             Path to saved plot
@@ -123,7 +157,9 @@ class ResultComparison:
         if num_metrics == 1:
             axes = [axes]
 
-        colors = plt.cm.tab10(np.linspace(0, 1, len(results_list)))
+        # Use StyleCycler for scalable colors
+        n_curves = len(results_list)
+        cycler = StyleCycler(n_curves, palette=palette)
 
         for ax, metric in zip(axes, metrics):
             for i, (results, label) in enumerate(zip(results_list, labels)):
@@ -131,12 +167,15 @@ class ResultComparison:
                 alpha_keys = sorted(results.keys(), key=float)
                 alphas = [float(a) for a in alpha_keys]
                 values = [results[a].get(metric, 0) for a in alpha_keys]
+                
+                style = cycler.get_style(i)
 
                 ax.plot(
                     alphas, values,
-                    color=colors[i], label=label,
+                    color=style['color'], label=label,
+                    linestyle=style.get('linestyle', '-'),
+                    marker=style.get('marker', 'o'),
                     linewidth=STYLE['linewidth'],
-                    marker=STYLE['marker'],
                     markersize=STYLE['markersize'],
                 )
 
@@ -144,13 +183,13 @@ class ResultComparison:
             ax.set_xlabel(r'$\tilde{\alpha}$')
             ax.set_ylabel(metric_name)
             ax.set_ylim(-0.05, 1.05)
-            ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=8)
+            ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+            auto_legend(ax, n_curves)
             ax.set_title(metric_name)
 
         plt.tight_layout()
         output_path = self.output_dir / filename
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DEFAULT_DPI, bbox_inches='tight')
         plt.close(fig)
 
         return output_path

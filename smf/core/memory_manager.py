@@ -1,6 +1,18 @@
 """
 GPU Memory Management for SMF.
 
+.. deprecated:: 2025.12
+    This module is deprecated. Please use the new smart parallel module instead:
+    
+    from smf.core.parallel import (
+        MemoryEstimator,
+        ParallelCoordinator,
+        AllocationPresets,
+        EstimationParams,
+    )
+    
+    See smf/core/parallel/ for the new unified memory management system.
+
 Provides intelligent memory mode selection based on matrix size and available GPU memory.
 Migrated from Wang/bigamp/train.py with enhancements for modular integration.
 
