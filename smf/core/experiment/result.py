@@ -66,18 +66,29 @@ class SingleRunResult:
     """
     Result from a single algorithm run.
     
-    Contains metrics and optionally the full student matrices.
+    Contains:
+    - metrics: computed overlaps (Q_W, Q_X, Q_Y, etc.)
+    - student matrices: trained W, X
+    - raw data: mask, observation indices (for Q_Y_unobserved)
     """
     # Scan point identifier
     scan_value: Any  # e.g., alpha=1.5 or steps=1000
     
     # Core metrics
     metrics: Dict[str, float] = field(default_factory=dict)
-    # Expected keys: Q_W_mean, Q_W_std, Q_X_mean, Q_X_std, Q_Y_mean, Q_Y_std
+    # Expected keys: Q_W_mean, Q_W_std, Q_X_mean, Q_X_std, Q_Y_mean, Q_Y_std, Q_Y_unobserved
     
-    # Optional: full student matrices (can be large)
+    # Student matrices (trained results)
     W_students: Optional[torch.Tensor] = None  # (S, N1, M)
     X_students: Optional[torch.Tensor] = None  # (S, M, N2)
+    
+    # ========== RAW DATA (for post-hoc analysis) ==========
+    # Observation mask (for Q_Y_unobserved computation)
+    mask: Optional[torch.Tensor] = None  # (N1, N2) or (S, N1, N2)
+    
+    # Spreading-specific: observation indices
+    observation_indices: Optional[Dict[str, torch.Tensor]] = None
+    # Keys: 'i_idx', 'j_idx', 'edge_counts' (per alpha)
     
     # Optional: convergence history
     history: Optional[List[Dict[str, float]]] = None
@@ -181,6 +192,19 @@ class ExperimentResult:
     
     # Metadata
     metadata: ExperimentMetadata = field(default_factory=ExperimentMetadata)
+    
+    # ========== RAW DATA (for post-hoc analysis) ==========
+    # Teacher matrices (ground truth)
+    W_teacher: Optional[torch.Tensor] = None  # (N1, M)
+    X_teacher: Optional[torch.Tensor] = None  # (M, N2)
+    Y_teacher: Optional[torch.Tensor] = None  # (N1, N2)
+    
+    # All masks (for multi-alpha experiments)
+    all_masks: Optional[torch.Tensor] = None  # (num_alphas, N1, N2)
+    
+    # Spreading-specific: SuperGraph data
+    supergraph_data: Optional[Dict[str, Any]] = None
+    # Keys: 'i_idx', 'j_idx', 'edge_counts', 'F_super' (if needed)
     
     def add_result(self, scan_value: Any, result: SingleRunResult):
         """Add a single run result."""
@@ -334,6 +358,13 @@ class ExperimentResult:
             'metadata': dict,
             'scan_dimension': str,
             'scan_values': list,
+            'raw_data': {
+                'W_teacher': tensor,
+                'X_teacher': tensor,
+                'Y_teacher': tensor,
+                'all_masks': tensor or None,
+                'supergraph_data': dict or None,
+            },
             'results': {
                 scan_value: {
                     'metrics': dict,
@@ -341,6 +372,8 @@ class ExperimentResult:
                     'history': list or None,
                     'W_students': tensor or None,
                     'X_students': tensor or None,
+                    'mask': tensor or None,
+                    'observation_indices': dict or None,
                 }
             }
         }
@@ -362,17 +395,27 @@ class ExperimentResult:
             'metadata': self.metadata.to_dict(),
             'scan_dimension': self.scan_dimension,
             'scan_values': self.scan_values,
+            # RAW DATA - for post-hoc analysis
+            'raw_data': {
+                'W_teacher': self.W_teacher,
+                'X_teacher': self.X_teacher,
+                'Y_teacher': self.Y_teacher,
+                'all_masks': self.all_masks,
+                'supergraph_data': self.supergraph_data,
+            },
             'results': {},
         }
         
-        # Add all results (including tensors)
+        # Add all results (including tensors and raw data)
         for v, r in self.results.items():
             data['results'][v] = {
                 'metrics': r.metrics,
                 'duration_seconds': r.duration_seconds,
                 'history': r.history,
-                'W_students': r.W_students,  # Can be None
-                'X_students': r.X_students,  # Can be None
+                'W_students': r.W_students,
+                'X_students': r.X_students,
+                'mask': r.mask,
+                'observation_indices': r.observation_indices,
             }
         
         # Save as single file
@@ -417,6 +460,9 @@ class ExperimentResult:
         # Reconstruct metadata
         metadata = ExperimentMetadata(**data['metadata'])
         
+        # Load raw data
+        raw_data = data.get('raw_data', {})
+        
         # Create result object
         result = cls(
             experiment_id=data['experiment_id'],
@@ -424,6 +470,12 @@ class ExperimentResult:
             scan_dimension=data['scan_dimension'],
             scan_values=data['scan_values'],
             metadata=metadata,
+            # Raw data
+            W_teacher=raw_data.get('W_teacher'),
+            X_teacher=raw_data.get('X_teacher'),
+            Y_teacher=raw_data.get('Y_teacher'),
+            all_masks=raw_data.get('all_masks'),
+            supergraph_data=raw_data.get('supergraph_data'),
         )
         
         # Load individual results
@@ -435,6 +487,8 @@ class ExperimentResult:
                 history=r_dict.get('history'),
                 W_students=r_dict.get('W_students'),
                 X_students=r_dict.get('X_students'),
+                mask=r_dict.get('mask'),
+                observation_indices=r_dict.get('observation_indices'),
             )
             result.results[v] = single_result
         

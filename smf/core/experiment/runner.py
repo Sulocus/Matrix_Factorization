@@ -111,13 +111,26 @@ class ExperimentRunner:
             print(f"  Matrix: {config.N1}x{config.N2}, M={config.M}")
             print(f"  Scan: {config.scan.dimension} with {config.scan.num_points} points")
         
-        # Create result container
+        # Create Teacher data (shared across all scan points)
+        W_teacher, X_teacher, Y_teacher = self.data_factory.create_teacher(
+            N1=config.N1,
+            N2=config.N2,
+            M=config.M,
+            teacher_key=config.teacher_key,
+            seed=config.seeds.teacher_seed,
+        )
+        
+        # Create result container with raw data
         result = ExperimentResult(
             experiment_id=config.experiment_name,
             config=config,
             scan_dimension=config.scan.dimension,
             scan_values=config.scan.values,
             metadata=ExperimentMetadata.create_now(),
+            # Raw data for post-hoc analysis
+            W_teacher=W_teacher,
+            X_teacher=X_teacher,
+            Y_teacher=Y_teacher,
         )
         
         # Get algorithm
@@ -229,12 +242,28 @@ class ExperimentRunner:
                 data=data,
             )
             
-            # Store result
+            # Extract mask for saving (for Q_Y_unobserved computation)
+            mask_to_save = None
+            observation_indices = None
+            if data.masks is not None:
+                mask_to_save = data.masks[0] if data.masks.dim() == 3 else data.masks
+            if data.spreading_data is not None:
+                # Extract observation indices from SuperGraph
+                sg = data.spreading_data.supergraph
+                observation_indices = {
+                    'i_idx': sg.i_idx.cpu() if hasattr(sg, 'i_idx') else None,
+                    'j_idx': sg.j_idx.cpu() if hasattr(sg, 'j_idx') else None,
+                    'edge_counts': sg.edge_counts.cpu() if hasattr(sg, 'edge_counts') else None,
+                }
+            
+            # Store result with raw data
             single_result = SingleRunResult(
                 scan_value=scan_value,
                 metrics=metrics,
-                W_students=W_students if config.scan.num_points <= 10 else None,  # Save only for small scans
+                W_students=W_students if config.scan.num_points <= 10 else None,
                 X_students=X_students if config.scan.num_points <= 10 else None,
+                mask=mask_to_save,
+                observation_indices=observation_indices,
                 duration_seconds=time.time() - start_time,
             )
             result.add_result(scan_value, single_result)

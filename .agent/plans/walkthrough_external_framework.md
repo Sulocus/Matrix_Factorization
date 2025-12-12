@@ -4,119 +4,96 @@
 
 **目标**：将算法变成纯净的计算单元——只负责计算，不负责数据创建、保存、调度。
 
-**核心思想**：
-- 外部框架负责：实验逻辑、参数控制、数据创建、并行调度、结果保存
-- 算法只负责：接收数据，执行计算，返回结果
-
 ---
 
 ## 已完成工作
 
-### 阶段 1：创建外部实验框架 ✅
+### 阶段 1-3：核心框架 ✅
 
-**创建文件**：
-- [config.py](file:///home/sucia/Sparse-Matrix/smf/core/experiment/config.py) - 所有配置数据结构
+- [config.py](file:///home/sucia/Sparse-Matrix/smf/core/experiment/config.py) - 配置数据结构
 - [result.py](file:///home/sucia/Sparse-Matrix/smf/core/experiment/result.py) - 统一结果保存
 - [data_factory.py](file:///home/sucia/Sparse-Matrix/smf/core/experiment/data_factory.py) - 数据创建工厂
 - [runner.py](file:///home/sucia/Sparse-Matrix/smf/core/experiment/runner.py) - 实验执行器
+- [base.py](file:///home/sucia/Sparse-Matrix/smf/modules/algorithms/base.py) - `run_single()` 接口
 
-**测试结果**：✅ 所有导入和保存/加载测试通过
+### 数据保存扩展 ✅
 
----
+**问题**：之前保存不完整，无法计算 Q_Y_unobserved（缺少 mask）
 
-### 阶段 2：简化算法接口 ✅
+**解决**：扩展 `.pt` 文件包含所有原始数据：
 
-**修改文件**：
-- [base.py](file:///home/sucia/Sparse-Matrix/smf/modules/algorithms/base.py) - 添加 `run_single()` 统一接口
-
-**新接口**：
 ```python
-# 算法只做计算，不知道实验目的
-W, X, checkpoint = algorithm.run_single(data, max_steps=50)
+{
+    # 配置（完整可重现）
+    'config': {...},
+    'metadata': {...},
+    
+    # 原始数据（用于后续分析）
+    'raw_data': {
+        'W_teacher': tensor,    # 教师 W
+        'X_teacher': tensor,    # 教师 X
+        'Y_teacher': tensor,    # 教师 Y = W @ X
+        'all_masks': tensor,    # 所有 alpha 的 mask
+        'supergraph_data': dict, # Spreading 图结构
+    },
+    
+    # 每个扫描点的结果
+    'results': {
+        0.5: {
+            'metrics': {'Q_W_mean': 0.9, 'Q_Y_unobserved': 0.7},
+            'W_students': tensor,
+            'X_students': tensor,
+            'mask': tensor,            # 这个 alpha 的 mask
+            'observation_indices': {   # Spreading 观测索引
+                'i_idx': tensor,
+                'j_idx': tensor,
+                'edge_counts': tensor,
+            },
+        },
+        1.0: {...},
+    }
+}
 ```
 
-**测试结果**：✅ 所有算法正确继承 AlgorithmBase
+**测试结果**：
+```
+✓ W_teacher: torch.Size([50, 10])
+✓ mask: torch.Size([50, 50])
+✓ observation_indices: keys=['i_idx', 'j_idx']
+```
 
 ---
 
-### 阶段 3：集成测试 ✅
+## 使用示例
 
-**完整流程测试**：
-```
-ExperimentConfig → DataFactory → Algorithm.run_single()
-```
-
-**测试输出**：
-```
-✓ 配置: 100x100, M=25
-✓ Runner
-✓ 算法: BiGAMPSpreading
-✓ 数据: W=torch.Size([100, 25])
-✓ 计算: W=torch.Size([2, 4, 100, 25])
-集成测试通过！
-```
-
----
-
-## 支持的功能
-
-### 扫描维度
-- `alpha` - 观测密度扫描 ✅
-- `steps` - 步数扫描（收敛曲线）✅
-- `N` / `M` - 矩阵规模扫描（外层循环）✅
-
-### 嵌套扫描
 ```python
-runner.run_scaling_sweep(
-    base_config=config,
-    matrix_sizes=[(200, 200, 50), (400, 400, 100), (600, 600, 150)],
+from smf.core.experiment import ExperimentConfig, ExperimentRunner, ExperimentResult
+
+# 1. 配置
+config = ExperimentConfig(
+    matrix=MatrixParams(N1=600, N2=600, M=150),
+    scan=ScanConfig(dimension='alpha', values=[0.5, 1.0, 1.5, 2.0]),
+    ...
 )
-```
 
----
+# 2. 运行
+runner = ExperimentRunner()
+result = runner.run(config)
 
-## 架构图
+# 3. 保存（单文件！）
+result.save_unified('results/my_exp.pt')
 
-```
-┌─────────────────────────────────────────┐
-│  ExperimentConfig (参数表)              │
-│  - matrix: N1, N2, M                    │
-│  - training: S, max_steps               │
-│  - scan: dimension, values              │
-│  - seeds: base_seed, spreading_seed     │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│  ExperimentRunner (执行控制)            │
-│  - 路由扫描模式                         │
-│  - 内存管理                             │
-│  - 收集结果                             │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│  DataFactory (数据准备)                 │
-│  - 创建 Teacher                         │
-│  - 创建 Mask / SpreadingData            │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│  Algorithm.run_single() (纯计算)        │
-│  - 接收准备好的数据                     │
-│  - 执行计算                             │
-│  - 返回结果                             │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│  ExperimentResult (统一保存)            │
-│  - config.json                          │
-│  - results.json                         │
-│  - tensors/ (可选)                      │
-└─────────────────────────────────────────┘
+# 4. 加载和后续分析
+loaded = ExperimentResult.load_unified('results/my_exp.pt')
+
+# 现在可以计算 Q_Y_unobserved：
+mask = loaded.results[0.5].mask
+W_teacher = loaded.W_teacher
+# ... 计算
 ```
 
 ---
 
 ## 文档位置
 
-- 详细设计方案：[.agent/plans/external_control_framework.md](file:///home/sucia/Sparse-Matrix/.agent/plans/external_control_framework.md)
-- 本工作记录：[.agent/plans/walkthrough_external_framework.md](file:///home/sucia/Sparse-Matrix/.agent/plans/walkthrough_external_framework.md)
+- 详细设计：[.agent/plans/external_control_framework.md](file:///home/sucia/Sparse-Matrix/.agent/plans/external_control_framework.md)
