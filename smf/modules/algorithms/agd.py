@@ -139,6 +139,7 @@ class AGDAlgorithm(AlgorithmBase):
         masks: torch.Tensor,
         alpha_values: list[float],
         seed: int,
+        max_steps: Optional[int] = None,  # Allow override for step scanning
         progress_callback: Optional[Callable[[int, int], None]] = None,
         step_callback: Optional[Callable[[int, int], None]] = None,
         sample_callback: Optional[Callable] = None,
@@ -150,6 +151,9 @@ class AGDAlgorithm(AlgorithmBase):
         device = self.device
         lr = self.lr
         num_alphas = len(alpha_values)
+        
+        # Use provided max_steps or fall back to config
+        steps = max_steps if max_steps is not None else self.max_epochs
 
         alpha_scale = 1.0 / (M ** 0.5)
         scale = 1.0 / (M ** 0.5)
@@ -163,7 +167,7 @@ class AGDAlgorithm(AlgorithmBase):
         W = torch.randn((num_alphas, S, N1, M), device=device, dtype=torch.float32) * scale
         X = torch.randn((num_alphas, S, M, N2), device=device, dtype=torch.float32) * scale
 
-        for step in range(self.max_epochs):
+        for step in range(steps):
             with torch.autocast(device_type=device.type, dtype=self.compute_dtype,
                                 enabled=self.use_bf16):
                 # W update
@@ -185,7 +189,7 @@ class AGDAlgorithm(AlgorithmBase):
             # Report progress (step_callback is the new interface, progress_callback for backward compat)
             callback = step_callback or progress_callback
             if callback:
-                callback(step + 1, self.max_epochs)
+                callback(step + 1, steps)
 
         return W.float(), X.float()
 

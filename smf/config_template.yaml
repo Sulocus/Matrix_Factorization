@@ -1,0 +1,74 @@
+# SMF Experiment Configuration Template
+# =====================================
+# 运行: python smf/cli.py config_template.yaml
+
+# ===== 算法 (选一个数字) =====
+# 1 = bigamp
+# 2 = bigamp_spreading  
+# 3 = agd
+algorithm: 2
+
+# ===== Teacher (选一个数字) =====
+# 1 = orthogonal
+# 2 = standard
+teacher: 1
+
+# ===== 矩阵尺寸 =====
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+# ===== 扫描模式 (选一个数字) =====
+# 1 = alpha 扫描 (固定 steps，扫描 alpha)
+# 2 = steps 扫描 (固定 alpha，扫描 steps)
+# 3 = nested 嵌套扫描 (外层 N/M，内层 alpha)
+scan_mode: 2
+
+# --- Alpha 扫描配置 (scan_mode = 1) ---
+alpha_scan:
+  start: 0.0
+  stop: 4.0
+  step: 0.05             # 81 个点
+
+# --- Steps 扫描配置 (scan_mode = 2) ---
+steps_scan:
+  alpha: 3.38             # 固定的 alpha 值
+  step_values: [100, 200, 500, 1000, 2000, 3000, 5000,10000,20000,30000, 50000, 60000,70000, 80000, 100000, 120000, 150000, 200000]
+  multiplier: 1           # 倍数: BiGAMP=1, AGD=10-20
+
+# --- 嵌套扫描配置 (scan_mode = 3) ---
+nested_scan:
+  sizes:                 # [N, M] 列表
+    - [200, 50]
+#    - [400, 100]
+#    - [600, 150]
+  alpha:
+    start: 0.0
+    stop: 4.0
+    step: 0.05
+
+# ===== 训练参数 =====
+training:
+  samples: 100            # 样本数 (S)
+  max_steps: 2000        # 训练步数
+  seed: 42
+
+# ===== 算法参数 =====
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-10
+  use_compile: true
+
+# ===== Spreading 专用 (algorithm = 2) =====
+# f_distribution: 1 = rademacher, 2 = gaussian
+spreading:
+  f_distribution: 1
+  seed: 12345
+
+# ===== 输出 =====
+output:
+  name: ""               # 留空自动生成
+  save_tensors: true
+  rsb_ordering: True     # 热力图 RSB 排序 (层次聚类)
+  uniform_colormap: True # true=均匀颜色, false=增强高值区域(0.9-1.0)

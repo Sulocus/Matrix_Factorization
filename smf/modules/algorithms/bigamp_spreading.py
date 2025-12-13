@@ -1110,6 +1110,7 @@ class BiGAMPSpreading(AlgorithmBase):
         batch_alpha_indices: Optional[List[int]] = None,
         verbose: bool = False,
         step_callback=None,
+        max_steps: Optional[int] = None,  # Allow override for step scanning
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Train all samples in parallel using Disjoint Union with optimized flat tensors.
@@ -1176,8 +1177,11 @@ class BiGAMPSpreading(AlgorithmBase):
         # ===== OPTIMIZATION 3: Use compiled step if available =====
         step_fn = BiGAMPSpreading._compiled_step if self.use_compile and BiGAMPSpreading._compiled_step is not None else bigamp_step_disjoint_union_flat
 
+        # Use provided max_steps or fall back to config
+        steps = max_steps if max_steps is not None else self.max_steps
+
         # BiG-AMP iterations with optimized flat function
-        for step in range(self.max_steps):
+        for step in range(steps):
             # CRITICAL FIX: Mark new CUDA Graph step to prevent "tensor overwritten" error
             if self.use_compile and BiGAMPSpreading._compiled_step is not None:
                 torch.compiler.cudagraph_mark_step_begin()
@@ -1215,10 +1219,10 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_var_flat = X_var_flat.clone()
 
             if verbose and (step + 1) % 100 == 0:
-                print(f"  Step {step + 1}/{self.max_steps}")
+                print(f"  Step {step + 1}/{steps}")
 
             if step_callback:
-                step_callback(step + 1, self.max_steps)
+                step_callback(step + 1, steps)
 
         # ===== Only reshape at the END for output =====
         # (B, S*N1, M) -> (B, S, N1, M) -> (S, B, N1, M)
@@ -1240,6 +1244,7 @@ class BiGAMPSpreading(AlgorithmBase):
         masks: torch.Tensor,  # Not used - Super-Graph generates its own
         alpha_values: List[float],
         seed: int,
+        max_steps: Optional[int] = None,  # Allow override for step scanning
         step_callback=None,  # Optional step-level callback
         sample_callback=None,  # Optional sample-level callback (now batch_callback)
         max_memory_gb: float = 24.0,  # Maximum GPU memory to use (default 24GB for safety)
@@ -1327,6 +1332,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 batch_alpha_indices=batch_alpha_indices,  # Select which alphas to train
                 verbose=False,
                 step_callback=step_callback,
+                max_steps=max_steps,  # Pass through max_steps override
             )
             # W_batch: (S, B, N1, M), X_batch: (S, B, M, N2)
 
