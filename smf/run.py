@@ -39,6 +39,27 @@ def main():
             browser = ResultBrowser()
             browser.browse()
             return
+        elif sys.argv[1] == 'conf':
+            # smf conf - 打开配置模板
+            import subprocess
+            import shutil
+            import os
+            template_path = Path(__file__).parent / 'config_template.yaml'
+            if not template_path.exists():
+                print(f"❌ 模板文件不存在: {template_path}")
+                return
+            editor = os.environ.get('EDITOR')
+            if not editor:
+                for cmd in ['code', 'vim', 'nano', 'vi']:
+                    if shutil.which(cmd):
+                        editor = cmd
+                        break
+            if editor:
+                print(f"📝 打开配置模板: {template_path}")
+                subprocess.run([editor, str(template_path)])
+            else:
+                print(f"配置模板路径: {template_path}")
+            return
 
     menu = MainMenu()
 
@@ -188,7 +209,8 @@ def quick_run():
     print(f"Steps: {config.training.max_steps} (quick test)")
 
     result = run_experiment(config)
-    print(f"\nComplete! Results: {result['result_path']}")
+    result_path = result.get('result_path', 'memory (not saved)')
+    print(f"\nComplete! Results: {result_path}")
 
 
 def run_init_scale_cli():

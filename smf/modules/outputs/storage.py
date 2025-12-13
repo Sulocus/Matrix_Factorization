@@ -64,9 +64,20 @@ class ResultStorage(OutputBase):
         self.config.to_yaml(self.output_dir / "config.yaml")
 
         # Prepare metrics for JSON
+        # Handle ExperimentResult object
+        if hasattr(results, 'to_metrics_dict'):
+            metrics_dict = results.to_metrics_dict()
+        elif hasattr(results, 'metrics'): # Fallback
+             metrics_dict = results.metrics
+        elif isinstance(results, dict):
+            metrics_dict = results
+        else:
+            # Try to serialize whatever it is, or empty
+            metrics_dict = {}
+
         metrics_data = {
             "config": self.config.to_dict(),
-            "results": results,
+            "results": metrics_dict,
             "metadata": metadata or {},
             "timestamp": datetime.now().isoformat(),
         }

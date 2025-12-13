@@ -97,7 +97,21 @@ class UnifiedProgress:
         self._console = Console()
         self._live = None
 
-
+    def set_plan(self, batch_assignments: List[tuple], total_batches: int = None):
+        """Update execution plan and initialize physics-aware ETA."""
+        if total_batches:
+            self._total_batches = total_batches
+            
+        if batch_assignments:
+            try:
+                from .physics_eta import PhysicsAwareETA
+                self._physics_eta = PhysicsAwareETA(batch_assignments)
+                # Recalculate processed workload for any already-completed batches
+                if self._completed_batches > 0:
+                     # This is rare if set_plan is called at start, but good for safety
+                     pass
+            except ImportError:
+                pass
     def _render(self):
         """
         Render the Dynamic Capsule panel - Style A (Clean Cyan).
@@ -621,3 +635,123 @@ def get_progress_manager() -> ProgressManager:
     if _progress_manager is None:
         _progress_manager = ProgressManager()
     return _progress_manager
+
+
+class ProgressBridge:
+    """
+    Bridge between ExperimentRunner events and UnifiedProgress UI.
+    
+    Transforms robust ProgressEvents into specific UI calls.
+    """
+    
+    def __init__(self, use_rich: bool = True):
+        self.use_rich = use_rich and RICH_AVAILABLE
+        self.progress: Optional[UnifiedProgress] = None
+        self.console = Console() if self.use_rich else None
+    
+    def on_event(self, event):
+        """Handle progress event (duck typing for ProgressEvent)."""
+        if not self.use_rich:
+            # Fallback for non-rich environments
+            self._handle_legacy_event(event)
+            return
+
+        type_name = event.type.name if hasattr(event.type, 'name') else str(event.type)
+        p = event.payload
+        
+        if type_name == 'EXPERIMENT_START':
+            self._handle_start(p)
+        elif type_name == 'BATCH_START':
+            self._handle_batch_start(p)
+        elif type_name == 'EXECUTION_PLAN':
+            if self.progress:
+                self.progress.set_plan(
+                    batch_assignments=p.get('batches'),
+                    total_batches=p.get('total_batches')
+                )
+        elif type_name == 'STEP_UPDATE':
+            if self.progress:
+                self.progress.update_step(p.get('step', 0), p.get('total'))
+        elif type_name == 'POINT_START':
+             # Maybe show point progress?
+             pass
+        elif type_name == 'POINT_COMPLETE':
+            # Could update a "points completed" counter if UI supported it
+            pass
+        elif type_name == 'BATCH_END':
+            if self.progress:
+                self.progress.finish_batch()
+        elif type_name == 'EXPERIMENT_END':
+            if self.progress:
+                self.progress.stop()
+            self._print_success(p.get('result'))
+        elif type_name == 'ERROR':
+            if self.progress:
+                self.progress.stop()
+            if self.console:
+                self.console.print(f"[bold red]Error:[/bold red] {p.get('error')}")
+
+    def _handle_start(self, p: Dict):
+        """Initialize progress bar on start."""
+        # We need to guess or calculate total steps for initialization
+        # But UnifiedProgress is dynamic, so we just need initial structure
+        if self.console:
+            self.console.print(Panel(
+                f"[bold cyan]Running {p.get('experiment_name', 'Experiment')}[/bold cyan]\n"
+                f"[dim]{p.get('matrix')}, {p.get('scan')}[/dim]",
+                border_style="cyan",
+                expand=False  # 收紧到文字右侧，不展开到终端宽度
+            ))
+            
+        # Defer creation to first batch or assume standard defaults
+        # We create a placeholder here
+        self.progress = UnifiedProgress(
+            num_alphas=1, # Will update on batch start
+            steps_per_alpha=1000, # Will update
+            num_batches=1
+        )
+        self.progress.start()
+
+    def _handle_batch_start(self, p: Dict):
+        """Update UI for new batch."""
+        if not self.progress:
+            return
+            
+        alphas = p.get('alpha_values', [])
+        # Update progress tracking
+        self.progress.start_batch(
+            batch_idx=p.get('batch_idx', 0),
+            batch_alphas=alphas,
+            num_batches=p.get('total_batches', 1)
+        )
+        
+        # If we have memory info, we could update it (UnifiedProgress reads GPU directly)
+        
+        # Update steps expectation (important for Step Scan)
+        steps = p.get('steps_per_alpha')
+        if steps:
+            self.progress.steps_per_alpha = steps
+
+    def _handle_legacy_event(self, event):
+        """Simple print fallback."""
+        type_name = str(event.type)
+        p = event.payload
+        
+        if 'START' in type_name and 'BATCH' in type_name:
+            n = p.get('batch_idx', 0) + 1
+            total = p.get('total_batches', 1)
+            print(f"Batch {n}/{total} started...")
+        elif 'STEP' in type_name:
+            step = p.get('step', 0)
+            total = p.get('total', 100)
+            if step % max(1, total // 10) == 0:
+                print(f"  Step {step}/{total}")
+        elif 'ERROR' in type_name:
+             print(f"Error: {p.get('error')}")
+
+    def _print_success(self, result):
+        if self.console and result:
+             path = getattr(result, 'result_path', 'memory')
+             self.console.print(f"\n[bold green]Experiment Complete![/bold green]")
+             self.console.print(f"Results saved to: [cyan]{path}[/cyan]\n")
+

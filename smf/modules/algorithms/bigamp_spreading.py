@@ -1218,6 +1218,18 @@ class BiGAMPSpreading(AlgorithmBase):
                 W_var_flat = W_var_flat.clone()
                 X_var_flat = X_var_flat.clone()
 
+            # [Memory Calibration] Check actual usage early in the run
+            if (step + 1) == 10 and torch.cuda.is_available():
+                 peak_bytes = torch.cuda.max_memory_allocated()
+                 peak_gb = peak_bytes / (1024**3)
+                 # Reset peak stats to track steady state separately if needed, but cumulative is safer
+                 # print(f"[BiG-AMP Calibration] Step 10 Peak Memory: {peak_gb:.2f} GB") 
+                 # We don't want to spam stdout if verbose=False, but it's important for calibration.
+                 # We'll log it if verbose or if it's the first batch (we can't easily tell here).
+                 # Let's just log it if verbose.
+                 if verbose:
+                     print(f"  [Memory Calibration] Peak VRAM: {peak_gb:.2f} GB")
+
             if verbose and (step + 1) % 100 == 0:
                 print(f"  Step {step + 1}/{steps}")
 
@@ -1307,11 +1319,9 @@ class BiGAMPSpreading(AlgorithmBase):
                 for i in range(num_batches)
             ]
 
-        # ===== Create GLOBAL SuperGraph once (original efficient approach) =====
-        # This avoids per-batch overhead of regenerating F_super, Y_super, indices
-        spreading_data = self.create_spreading_data(
-            W_teacher, X_teacher, alpha_values, S, seed
-        )
+        # ===== Global SuperGraph Removed =====
+        # Refactored to per-batch creation to prevent OOM on large problems.
+        # See loop below.
 
         # Allocate result tensors
         W_result = torch.zeros(A, S, N1, M, device=self.device)
@@ -1326,14 +1336,26 @@ class BiGAMPSpreading(AlgorithmBase):
             if sample_callback:
                 sample_callback(batch_idx, num_batches, batch_alpha_list)
 
-            # Train this batch using GLOBAL spreading_data with batch_alpha_indices
+            # Create per-batch spreading_data to optimize memory (C_max tailored to batch max)
+            # This ensures we don't allocate massive tensors for small alphas.
+            # We offset seed by batch_idx to avoid identical random streams for different batches if safe
+            # but usually base_seed is fine if alphas differ. We'll use base_seed + batch_idx for safety.
+            batch_spreading_data = self.create_spreading_data(
+                W_teacher, X_teacher, batch_alpha_list, S, seed + batch_idx
+            )
+
+            # Train this batch using LOCAL spreading_data
+            # Note: batch_alpha_indices=None because spreading_data ONLY contains this batch's alphas
             W_batch, X_batch = self.train_full_parallel(
-                spreading_data,
-                batch_alpha_indices=batch_alpha_indices,  # Select which alphas to train
+                batch_spreading_data,
+                batch_alpha_indices=None,  # All alphas in this partial data
                 verbose=False,
                 step_callback=step_callback,
-                max_steps=max_steps,  # Pass through max_steps override
+                max_steps=max_steps,
             )
+            
+            # free memory
+            del batch_spreading_data
             # W_batch: (S, B, N1, M), X_batch: (S, B, M, N2)
 
             # Store results: transpose (S, B, ...) -> (B, S, ...)

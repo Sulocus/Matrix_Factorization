@@ -6,15 +6,17 @@ Responsibilities:
 2. Handle scan modes (alpha, steps, etc.)
 3. Manage memory and batching
 4. Collect and save results
+5. Broadcast execution events (Progress Bridge)
 
 Supports nested scans:
 - Outer loop: N, M (different matrix sizes)
 - Inner loop: alpha, steps (within each size)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 from pathlib import Path
+from enum import Enum
 import time
 import logging
 import torch
@@ -23,10 +25,47 @@ from .config import ExperimentConfig, ScanConfig, ScanDimension, MatrixParams
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
 
+# Parallel execution support
+from ..parallel import (
+    get_parallel_coordinator,
+    get_memory_estimator,
+    EstimationParams,
+    AllocationPresets,
+)
+
 if TYPE_CHECKING:
     from ...modules.algorithms.base import AlgorithmBase
 
 logger = logging.getLogger(__name__)
+
+
+class ProgressEventType(Enum):
+    """Types of progress events."""
+    EXPERIMENT_START = "experiment_start"
+    EXPERIMENT_END = "experiment_end"
+    BATCH_START = "batch_start"
+    BATCH_END = "batch_end"
+    STEP_UPDATE = "step_update"
+    POINT_START = "point_start"
+    POINT_COMPLETE = "point_complete"
+    POINT_COMPLETE = "point_complete"
+    EXECUTION_PLAN = "execution_plan"
+    ERROR = "error"
+
+
+@dataclass
+class ProgressEvent:
+    """Event payload for progress updates."""
+    type: ProgressEventType
+    payload: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def batch_idx(self) -> Optional[int]:
+        return self.payload.get('batch_idx')
+        
+    @property
+    def step(self) -> Optional[int]:
+        return self.payload.get('step')
 
 
 @dataclass
@@ -47,18 +86,11 @@ class ExperimentRunner:
     2. Automatic memory-based batching
     3. Support for nested scans (N/M outer, alpha/steps inner)
     4. Checkpoint support for step scans
-    5. Progress callbacks
+    5. Event-driven progress reporting (Progress Bridge)
     
     Usage:
         runner = ExperimentRunner()
-        result = runner.run(config)
-        result.save('results/my_experiment/')
-        
-        # Nested scan (multiple matrix sizes)
-        results = runner.run_scaling_sweep(
-            base_config=config,
-            matrix_sizes=[(200, 200, 50), (400, 400, 100), (600, 600, 150)],
-        )
+        result = runner.run(config, observer=my_observer)
     """
     
     def __init__(
@@ -73,7 +105,7 @@ class ExperimentRunner:
         Args:
             device: Target device (default: CUDA if available)
             max_memory_gb: Maximum GPU memory to use (default: auto-detect)
-            verbose: Print progress information
+            verbose: Print progress information (legacy console output)
         """
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose = verbose
@@ -87,10 +119,20 @@ class ExperimentRunner:
         
         self.data_factory = DataFactory(self.device)
         self._algorithm_cache = {}
+        
+        # Initialize parallel coordinator for intelligent batching
+        ParallelCoordinator = get_parallel_coordinator()
+        MemoryEstimator = get_memory_estimator()
+        self.parallel_coordinator = ParallelCoordinator(
+            estimator=MemoryEstimator(),
+            config=AllocationPresets.CONSERVATIVE,
+        )
     
     def run(
         self,
         config: ExperimentConfig,
+        observer: Optional[Callable[[ProgressEvent], None]] = None,
+        # Legacy callbacks (mapped to observer internally or ignored if observer present)
         step_callback: Optional[Callable[[int, int], None]] = None,
         point_callback: Optional[Callable[[int, int, Any], None]] = None,
     ) -> ExperimentResult:
@@ -99,71 +141,120 @@ class ExperimentRunner:
         
         Args:
             config: Experiment configuration
-            step_callback: Called after each training step (step, max_steps)
-            point_callback: Called after each scan point (idx, total, value)
+            observer: Callback for ProgressEvents (recommended)
+            step_callback: Legacy callback (step, max_steps)
+            point_callback: Legacy callback (idx, total, value)
             
         Returns:
             ExperimentResult with all results
         """
+        # Adapter for legacy callbacks if no observer provided
+        if observer is None and (step_callback or point_callback):
+            observer = self._create_legacy_observer(step_callback, point_callback)
+
+        # Normalize config (handle legacy Config object)
+        if not hasattr(config, 'scan'):
+            # Construct synthetic ScanConfig from legacy AlphaConfig
+            from .config import ScanConfig
+            vals = config.alpha.get_values()
+            # If quick run or default, it's usually an alpha scan
+            # But wait, does legacy support steps scan? 
+            # Legacy Runner decided based on config.scan? No, legacy Config has alpha.
+            # We assume alpha scan for legacy config unless specified otherwise
+            # create a mock object if ScanConfig import fails or for simplicity
+            class MockScan:
+                dimension = 'alpha'
+                values = vals
+                num_points = len(vals)
+                is_steps_scan = False
+                is_alpha_scan = True
+            
+            # Monkey-patch config for this run scope (or wrapper)
+            # Since we can't easily modify the object's class, we'll just set the attribute
+            # This is safe in python given we just need it for reading
+            config.scan = MockScan()
+            
+            # Also ensure matrix shortcut exists if we accessed it (we fixed that though)
+            # But let's check spreading
+            if not hasattr(config, 'spreading') and hasattr(config, 'algorithm_key'):
+                 if 'spreading' in config.algorithm_key:
+                      # Legacy might have spreading config elsewhere or default?
+                      # We'll assume None/Default if missing
+                      config.spreading = None
+
+            # Patch seeds
+            if not hasattr(config, 'seeds'):
+                class MockSeeds:
+                    base_seed = getattr(config.training, 'seed', 42)
+                    teacher_seed = 12345
+                    spreading_seed = 99999
+                    student_seed = 0
+                config.seeds = MockSeeds()
+
+            # Patch algorithm_params -> algorithm
+            if not hasattr(config, 'algorithm_params') and hasattr(config, 'algorithm'):
+                config.algorithm_params = config.algorithm
+
+        self._emit(observer, ProgressEventType.EXPERIMENT_START, {
+            'experiment_name': getattr(config, 'experiment_name', 'unnamed_experiment'),
+            'config': config,
+            'matrix': f"{config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}",
+            'scan': f"{config.scan.dimension} ({len(config.scan.values)} points)"
+        })
+        
         if self.verbose:
-            print(f"Starting experiment: {config.experiment_name}")
+            print(f"Starting experiment: {getattr(config, 'experiment_name', 'unnamed_experiment')}")
             print(f"  Algorithm: {config.algorithm_key}")
-            print(f"  Matrix: {config.N1}x{config.N2}, M={config.M}")
-            print(f"  Scan: {config.scan.dimension} with {config.scan.num_points} points")
+            print(f"  Matrix: {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
         
-        # Create Teacher data (shared across all scan points)
-        W_teacher, X_teacher, Y_teacher = self.data_factory.create_teacher(
-            N1=config.N1,
-            N2=config.N2,
-            M=config.M,
-            teacher_key=config.teacher_key,
-            seed=config.seeds.teacher_seed,
-        )
-        
-        # Create result container with raw data
-        result = ExperimentResult(
-            experiment_id=config.experiment_name,
-            config=config,
-            scan_dimension=config.scan.dimension,
-            scan_values=config.scan.values,
-            metadata=ExperimentMetadata.create_now(),
-            # Raw data for post-hoc analysis
-            W_teacher=W_teacher,
-            X_teacher=X_teacher,
-            Y_teacher=Y_teacher,
-        )
-        
-        # Get algorithm
-        algorithm = self._get_algorithm(config)
-        
-        # Route to appropriate scan handler
-        if config.scan.is_steps_scan:
-            self._run_steps_scan(config, algorithm, result, step_callback, point_callback)
-        else:
-            self._run_standard_scan(config, algorithm, result, step_callback, point_callback)
-        
-        return result
+        try:
+            # Create Teacher data (shared across all scan points)
+            W_teacher, X_teacher, Y_teacher = self.data_factory.create_teacher(
+                N1=config.matrix.N1,
+                N2=config.matrix.N2,
+                M=config.matrix.M,
+                teacher_key=getattr(config, 'teacher_key', 'standard'),
+                seed=config.seeds.teacher_seed,
+            )
+            
+            # Create result container with raw data
+            result = ExperimentResult(
+                experiment_id=getattr(config, 'experiment_name', 'unnamed_experiment'),
+                config=config,
+                scan_dimension=config.scan.dimension,
+                scan_values=config.scan.values,
+                metadata=ExperimentMetadata.create_now(),
+                # Raw data for post-hoc analysis
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                Y_teacher=Y_teacher,
+            )
+            
+            # Get algorithm
+            algorithm = self._get_algorithm(config)
+            
+            # Route to appropriate scan handler
+            if getattr(config.scan, 'is_steps_scan', config.scan.dimension == 'steps'):
+                self._run_steps_scan(config, algorithm, result, observer)
+            else:
+                self._run_standard_scan(config, algorithm, result, observer)
+            
+            self._emit(observer, ProgressEventType.EXPERIMENT_END, {'result': result})
+            return result
+
+        except Exception as e:
+            self._emit(observer, ProgressEventType.ERROR, {'error': str(e)})
+            raise e
     
     def run_scaling_sweep(
         self,
         base_config: ExperimentConfig,
         matrix_sizes: List[tuple],  # [(N1, N2, M), ...]
         output_dir: Optional[Path] = None,
-        step_callback: Optional[Callable] = None,
+        observer: Optional[Callable[[ProgressEvent], None]] = None,
     ) -> Dict[tuple, ExperimentResult]:
         """
         Run nested scan: outer loop over matrix sizes, inner loop over alpha/steps.
-        
-        This is for scaling analysis (how does behavior change with N, M).
-        
-        Args:
-            base_config: Base configuration (scan config will be reused)
-            matrix_sizes: List of (N1, N2, M) tuples to sweep
-            output_dir: Optional directory to save results
-            step_callback: Progress callback
-            
-        Returns:
-            Dict mapping (N1, N2, M) to ExperimentResult
         """
         results = {}
         
@@ -171,7 +262,6 @@ class ExperimentRunner:
             if self.verbose:
                 print(f"\n{'='*60}")
                 print(f"Scaling sweep {i+1}/{len(matrix_sizes)}: N={N1}, M={M}")
-                print(f"{'='*60}")
             
             # Create config for this size
             config = ExperimentConfig(
@@ -188,7 +278,7 @@ class ExperimentRunner:
             )
             
             # Run experiment
-            result = self.run(config, step_callback=step_callback)
+            result = self.run(config, observer=observer)
             results[(N1, N2, M)] = result
             
             # Save intermediate results
@@ -202,76 +292,159 @@ class ExperimentRunner:
         config: ExperimentConfig,
         algorithm: 'AlgorithmBase',
         result: ExperimentResult,
-        step_callback: Optional[Callable],
-        point_callback: Optional[Callable],
+        observer: Optional[Callable[[ProgressEvent], None]],
     ):
         """
         Run standard scan (alpha, samples, seed).
-        
-        Each scan point is independent - data is recreated for each.
+        Uses ParallelCoordinator and emits detailed Batch events.
         """
         scan_values = config.scan.values
         total_points = len(scan_values)
         
-        for idx, scan_value in enumerate(scan_values):
-            start_time = time.time()
+        # Create estimation params for batch planning
+        f_dist = 'rademacher'
+        if config.spreading:
+            f_dist = config.spreading.f_distribution
+        
+        params = EstimationParams(
+            N1=config.matrix.N1,
+            N2=config.matrix.N2,
+            M=config.matrix.M,
+            S=config.training.samples_per_alpha,
+            alpha_values=[float(v) for v in scan_values],
+            algorithm_key=config.algorithm_key,
+            use_compile=config.algorithm_params.use_compile,
+            f_distribution=f_dist,
+        )
+        
+        # Get execution plan from ParallelCoordinator
+        plan = self.parallel_coordinator.plan_execution(params)
+        
+        # Calculate max_alpha for Physics-Aware ETA in UI
+        # Pass batch structure to UI so it can predict time accurately
+        batch_assignments = []
+        for b in plan.batches:
+            if b.alpha_values:
+                # (start_index, end_index, alpha_max)
+                # Note: indices are cumulative points, but for ETA we just need relative weight (alpha_max)
+                # We'll use dummy expected indices for now, matching the list order
+                start = 0 
+                end = len(b.alpha_values)
+                alpha_max = max(b.alpha_values) if b.alpha_values else 1.0
+                batch_assignments.append((start, end, alpha_max))
+
+        # Emit Execution Plan immediately so the UI knows total batches and workload
+        self._emit(observer, ProgressEventType.EXECUTION_PLAN, {
+            'batches': batch_assignments,
+            'total_batches': plan.num_batches,
+            'mode': plan.mode.name
+        })
+
+        if self.verbose:
+            print(f"  Execution plan: {plan.mode.name}, {plan.num_batches} batch(es)")
+        
+        total_batches = plan.num_batches
+        
+        # Execute batches according to plan
+        global_point_idx = 0
+        
+        for batch_idx, batch in enumerate(plan.batches):
+            batch_alpha_values = batch.alpha_values
+            
+            # Emit Batch Start Event
+            self._emit(observer, ProgressEventType.BATCH_START, {
+                'batch_idx': batch_idx,
+                'total_batches': total_batches,
+                'alpha_values': batch_alpha_values,
+                'estimated_memory_gb': batch.estimated_memory_gb,
+                'steps_per_alpha': config.training.max_steps,
+            })
             
             if self.verbose:
-                print(f"  Point {idx+1}/{total_points}: {config.scan.dimension}={scan_value}")
+                alpha_range = f"{min(batch_alpha_values):.2f}-{max(batch_alpha_values):.2f}"
+                print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
             
-            # Create data for this scan point
-            if config.scan.is_alpha_scan:
-                alpha_values = [scan_value]
-            else:
-                alpha_values = config.alpha_values
+            # Create data for this batch
+            data = self.data_factory.create(config, alpha_values=batch_alpha_values)
             
-            data = self.data_factory.create(config, alpha_values=alpha_values)
-            
-            # Run algorithm
+            # Create a localized step callback for this batch
+            def internal_step_callback(step, total, metrics=None):
+                self._emit(observer, ProgressEventType.STEP_UPDATE, {
+                    'step': step, 
+                    'total': total,
+                    'batch_idx': batch_idx,
+                    'metrics': metrics
+                })
+
+            # Run algorithm for this batch
             W_students, X_students = self._run_algorithm(
                 algorithm=algorithm,
                 config=config,
                 data=data,
-                step_callback=step_callback,
+                step_callback=internal_step_callback,
             )
             
-            # Compute metrics
-            metrics = self._compute_metrics(
-                W_students=W_students,
-                X_students=X_students,
-                data=data,
-            )
+            # Process each alpha in the batch
+            for alpha_idx, alpha in enumerate(batch_alpha_values):
+                start_time = time.time()
+                
+                # Report Point Start (for granular UI)
+                self._emit(observer, ProgressEventType.POINT_START, {
+                    'point_idx': global_point_idx + 1,
+                    'total_points': total_points,
+                    'value': alpha
+                })
+                
+                # Extract results (same as before)
+                if W_students.dim() == 4:
+                    W_single = W_students[alpha_idx]
+                    X_single = X_students[alpha_idx]
+                else:
+                    W_single = W_students
+                    X_single = X_students
+                
+                # Create single-alpha data for metrics
+                single_data = ExperimentData(
+                    W_teacher=data.W_teacher,
+                    X_teacher=data.X_teacher,
+                    Y_teacher=data.Y_teacher,
+                    masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
+                    alpha_values=[alpha],
+                )
+                
+                # Compute metrics
+                metrics = self._compute_metrics(
+                    W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
+                    X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
+                    data=single_data,
+                )
+                
+                # Store result
+                single_result = SingleRunResult(
+                    scan_value=alpha,
+                    metrics=metrics,
+                    W_students=W_single,
+                    X_students=X_single,
+                    mask=None, # Optimization: Don't save masks to save space unless needed
+                    duration_seconds=time.time() - start_time,
+                )
+                result.add_result(alpha, single_result)
+                
+                global_point_idx += 1
+                self._emit(observer, ProgressEventType.POINT_COMPLETE, {
+                    'point_idx': global_point_idx,
+                    'total_points': total_points,
+                    'value': alpha,
+                    'metrics': metrics
+                })
             
-            # Extract mask for saving (for Q_Y_unobserved computation)
-            mask_to_save = None
-            observation_indices = None
-            if data.masks is not None:
-                mask_to_save = data.masks[0] if data.masks.dim() == 3 else data.masks
-            if data.spreading_data is not None:
-                # Extract observation indices from SuperGraph
-                sg = data.spreading_data.supergraph
-                observation_indices = {
-                    'i_idx': sg.i_idx.cpu() if hasattr(sg, 'i_idx') else None,
-                    'j_idx': sg.j_idx.cpu() if hasattr(sg, 'j_idx') else None,
-                    'edge_counts': sg.edge_counts.cpu() if hasattr(sg, 'edge_counts') else None,
-                }
+            # Emit Batch End Event
+            self._emit(observer, ProgressEventType.BATCH_END, {
+                'batch_idx': batch_idx, 
+                'duration': 0.0 # TODO: Track actual duration
+            })
             
-            # Store result with raw data
-            single_result = SingleRunResult(
-                scan_value=scan_value,
-                metrics=metrics,
-                W_students=W_students if config.scan.num_points <= 10 else None,
-                X_students=X_students if config.scan.num_points <= 10 else None,
-                mask=mask_to_save,
-                observation_indices=observation_indices,
-                duration_seconds=time.time() - start_time,
-            )
-            result.add_result(scan_value, single_result)
-            
-            if point_callback:
-                point_callback(idx + 1, total_points, scan_value)
-            
-            # Clear cache between points
+            # Clear cache between batches
             torch.cuda.empty_cache()
     
     def _run_steps_scan(
@@ -279,68 +452,90 @@ class ExperimentRunner:
         config: ExperimentConfig,
         algorithm: 'AlgorithmBase',
         result: ExperimentResult,
-        step_callback: Optional[Callable],
-        point_callback: Optional[Callable],
+        observer: Optional[Callable[[ProgressEvent], None]],
     ):
         """
         Run steps scan (convergence curve).
-        
-        Uses checkpointing to efficiently scan multiple step counts.
-        Data is created once and reused.
+        Emits events simulating a single batch with multiple checkpoints.
         """
-        step_values = sorted(config.scan.values)  # Must be sorted ascending
+        step_values = sorted(config.scan.values)
         total_points = len(step_values)
         
-        # Create data once (reused across all step counts)
-        # For steps scan, use a single alpha (typically specified elsewhere)
-        default_alpha = config.algorithm_params.__dict__.get('default_alpha', 1.0)
-        data = self.data_factory.create(config, alpha_values=[default_alpha])
+        # Treat the entire steps scan as one "Logical Batch" for UI consistency
+        # Or maybe separate batches? No, one batch is better for continuity.
+        # Let's say it's Batch 0/1.
         
-        # Initialize student once
+        default_alpha = config.algorithm_params.__dict__.get('default_alpha', 1.0)
+        
+        self._emit(observer, ProgressEventType.BATCH_START, {
+            'batch_idx': 0,
+            'total_batches': 1,
+            'alpha_values': [default_alpha],
+            'estimated_memory_gb': 0.0, # TODO: Estimate
+            'steps_per_alpha': max(step_values), # Max steps is the final target
+            'mode': 'steps_scan'
+        })
+
+        data = self.data_factory.create(config, alpha_values=[default_alpha])
         checkpoint = None
         prev_steps = 0
         
+        # Step callback wrapper
+        def internal_step_callback(step, total, metrics=None):
+            self._emit(observer, ProgressEventType.STEP_UPDATE, {
+                'step': step, 
+                'total': total,
+                'batch_idx': 0,
+                'metrics': metrics
+            })
+        
         for idx, max_steps in enumerate(step_values):
             start_time = time.time()
-            
-            if self.verbose:
-                print(f"  Point {idx+1}/{total_points}: steps={max_steps}")
-            
-            # Calculate additional steps needed
             additional_steps = max_steps - prev_steps
             
-            # Run algorithm (continue from checkpoint)
+            self._emit(observer, ProgressEventType.POINT_START, {
+                'point_idx': idx + 1,
+                'total_points': total_points,
+                'value': max_steps
+            })
+            
+            # Run algorithm
             W_students, X_students, new_checkpoint = self._run_algorithm_with_checkpoint(
                 algorithm=algorithm,
                 config=config,
                 data=data,
                 additional_steps=additional_steps,
                 checkpoint=checkpoint,
-                step_callback=step_callback,
+                step_callback=internal_step_callback,
             )
             
-            # Update checkpoint for next iteration
             checkpoint = new_checkpoint
             prev_steps = max_steps
             
-            # Compute metrics
             metrics = self._compute_metrics(
                 W_students=W_students,
                 X_students=X_students,
                 data=data,
             )
             
-            # Store result
             single_result = SingleRunResult(
                 scan_value=max_steps,
                 metrics=metrics,
+                W_students=W_students,
+                X_students=X_students,
                 duration_seconds=time.time() - start_time,
             )
             result.add_result(max_steps, single_result)
             
-            if point_callback:
-                point_callback(idx + 1, total_points, max_steps)
-    
+            self._emit(observer, ProgressEventType.POINT_COMPLETE, {
+                'point_idx': idx + 1,
+                'total_points': total_points,
+                'value': max_steps,
+                'metrics': metrics
+            })
+            
+        self._emit(observer, ProgressEventType.BATCH_END, {'batch_idx': 0})
+
     def _run_algorithm(
         self,
         algorithm: 'AlgorithmBase',
@@ -349,22 +544,17 @@ class ExperimentRunner:
         step_callback: Optional[Callable],
     ) -> tuple:
         """Run algorithm and return (W_students, X_students)."""
-        # For now, use existing train_batch_alphas interface
-        # TODO: Migrate to new run_single() interface
-        
-        if config.is_spreading_algorithm:
-            # Spreading algorithm
+        if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
             W_students, X_students = algorithm.train_batch_alphas(
                 W_teacher=data.W_teacher,
                 X_teacher=data.X_teacher,
                 Y_teacher=data.Y_teacher,
-                masks=None,  # Not used for spreading
+                masks=None,
                 alpha_values=data.alpha_values,
                 seed=config.seeds.base_seed,
                 step_callback=step_callback,
             )
         else:
-            # Dense algorithm (AGD, BiGAMP)
             W_students, X_students = algorithm.train_batch_alphas(
                 W_teacher=data.W_teacher,
                 X_teacher=data.X_teacher,
@@ -374,7 +564,6 @@ class ExperimentRunner:
                 seed=config.seeds.base_seed,
                 progress_callback=step_callback,
             )
-        
         return W_students, X_students
     
     def _run_algorithm_with_checkpoint(
@@ -386,25 +575,42 @@ class ExperimentRunner:
         checkpoint: Optional[Checkpoint],
         step_callback: Optional[Callable],
     ) -> tuple:
-        """
-        Run algorithm with checkpoint support for step scanning.
+        """Run algorithm for step scanning."""
+        if checkpoint is not None:
+            total_steps = checkpoint.step + additional_steps
+        else:
+            total_steps = additional_steps
         
-        TODO: Implement proper checkpoint support in algorithms.
-        For now, this is a placeholder that re-runs from scratch.
-        """
-        # Temporarily run full training (proper checkpoint support TBD)
-        W_students, X_students = self._run_algorithm(
-            algorithm=algorithm,
-            config=config,
-            data=data,
-            step_callback=step_callback,
-        )
+        # Note: We pass total_steps as max_steps, so callbacks will show e.g. 2000/3000
+        # If we wanted purely incremental, we'd need to adjust the callback logic.
         
-        # Create checkpoint for next iteration
+        if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
+            W_students, X_students = algorithm.train_batch_alphas(
+                W_teacher=data.W_teacher,
+                X_teacher=data.X_teacher,
+                Y_teacher=data.Y_teacher,
+                masks=None,
+                alpha_values=data.alpha_values,
+                seed=config.seeds.base_seed,
+                max_steps=total_steps,
+                step_callback=step_callback,
+            )
+        else:
+            W_students, X_students = algorithm.train_batch_alphas(
+                W_teacher=data.W_teacher,
+                X_teacher=data.X_teacher,
+                Y_teacher=data.Y_teacher,
+                masks=data.masks,
+                alpha_values=data.alpha_values,
+                seed=config.seeds.base_seed,
+                max_steps=total_steps,
+                progress_callback=step_callback,
+            )
+        
         new_checkpoint = Checkpoint(
-            step=additional_steps,
-            W_state=W_students,
-            X_state=X_students,
+            step=total_steps,
+            W_state=W_students.clone() if W_students is not None else None,
+            X_state=X_students.clone() if X_students is not None else None,
         )
         
         return W_students, X_students, new_checkpoint
@@ -416,24 +622,19 @@ class ExperimentRunner:
         data: ExperimentData,
     ) -> Dict[str, float]:
         """Compute evaluation metrics."""
-        # Import metrics computation
         try:
             from ...modules.metrics.overlap import (
                 gram_overlap_normalized,
                 compute_qy,
             )
             
-            # Handle different tensor shapes
-            # W_students could be (A, S, N1, M) or (S, N1, M)
             if W_students.dim() == 4:
-                # Average over alpha dimension for metrics
                 W_for_metrics = W_students.mean(dim=0)
                 X_for_metrics = X_students.mean(dim=0)
             else:
                 W_for_metrics = W_students
                 X_for_metrics = X_students
             
-            # Compute Q_W and Q_X for each sample
             S = W_for_metrics.shape[0]
             Q_W_list = []
             Q_X_list = []
@@ -442,15 +643,10 @@ class ExperimentRunner:
             Y_teacher = data.W_teacher @ data.X_teacher
             
             for s in range(S):
-                # Q_W' (Gram overlap with baseline correction)
                 Q_W = gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True)
                 Q_W_list.append(Q_W)
-                
-                # Q_X' (Gram overlap with baseline correction)
                 Q_X = gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False)
                 Q_X_list.append(Q_X)
-                
-                # Q_Y (cosine similarity)
                 Y_student = W_for_metrics[s] @ X_for_metrics[s]
                 Q_Y = compute_qy(Y_student, Y_teacher)
                 Q_Y_list.append(Q_Y)
@@ -465,30 +661,21 @@ class ExperimentRunner:
                 'Q_Y_std': float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
             }
         except ImportError as e:
-            # Fallback if metrics module not available
             print(f"Warning: metrics import failed: {e}")
             return {'Q_W_mean': 0.0, 'Q_X_mean': 0.0, 'Q_Y_mean': 0.0}
-    
+
     def _get_algorithm(self, config: ExperimentConfig) -> 'AlgorithmBase':
         """Get or create algorithm instance."""
         key = config.algorithm_key
-        
         if key not in self._algorithm_cache:
-            # Create algorithm using registry
             from ...modules.registry import get_algorithm
-            
-            # Build config-compatible object for algorithm
             algo_config = self._build_algorithm_config(config)
-            
-            # get_algorithm returns ModuleInfo, need to instantiate
             module_info = get_algorithm(key)
             algorithm = module_info.cls(algo_config, self.device)
             self._algorithm_cache[key] = algorithm
-        
         return self._algorithm_cache[key]
     
     def _build_algorithm_config(self, config: ExperimentConfig) -> Any:
-        """Build config object for algorithm initialization."""
         # Create a mock config object that algorithms expect
         from dataclasses import dataclass as dc
         
@@ -525,3 +712,26 @@ class ExperimentRunner:
             spreading = SpreadConfig()
         
         return MockConfig()
+
+    def _emit(self, observer: Optional[Callable[[ProgressEvent], None]], type: ProgressEventType, payload: Dict[str, Any]):
+        """Emit a progress event safely."""
+        if observer:
+            try:
+                observer(ProgressEvent(type=type, payload=payload))
+            except Exception as e:
+                # Don't let UI errors crash the experiment
+                logger.error(f"Error in progress observer: {e}")
+
+    def _create_legacy_observer(self, step_cb, point_cb):
+        """Create an observer that forwards to legacy callbacks."""
+        def observer(event: ProgressEvent):
+            if event.type == ProgressEventType.STEP_UPDATE and step_cb:
+                step = event.payload.get('step', 0)
+                total = event.payload.get('total', 1)
+                step_cb(step, total)
+            elif event.type == ProgressEventType.POINT_COMPLETE and point_cb:
+                idx = event.payload.get('point_idx', 0)
+                total = event.payload.get('total_points', 1)
+                val = event.payload.get('value')
+                point_cb(idx, total, val)
+        return observer

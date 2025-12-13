@@ -148,10 +148,13 @@ def select_memory_mode(
         if available_gb == 0:
             available_gb = 8.0  # Default assumption for CPU
 
-    # Cap at 32GB and reserve 3GB for system
-    MAX_GPU_MEMORY_GB = min(available_gb, 32.0)
-    RESERVED_MEMORY_GB = 3.0
-    effective_available = MAX_GPU_MEMORY_GB - RESERVED_MEMORY_GB
+    # Dynamic memory reservation (90% usable, no hard cap)
+    # Reserve 5% or 2GB (whichever is larger) for system overhead
+    reserved_gb = max(2.0, available_gb * 0.05)
+    effective_available = available_gb - reserved_gb
+    
+    # MAX_GPU_MEMORY_GB deprecated, using full available
+    # effective_available = MAX_GPU_MEMORY_GB - RESERVED_MEMORY_GB
 
     # Memory estimates
     per_alpha_mem = estimate_memory_per_alpha(N1, N2, M, S)
@@ -265,9 +268,9 @@ def calculate_smart_parallelism(
             return 1
 
     # Cap and reserve
-    MAX_GPU_MEMORY_GB = min(available_gb, 32.0)
-    RESERVED_MEMORY_GB = 3.0
-    available = MAX_GPU_MEMORY_GB - RESERVED_MEMORY_GB
+    # Dynamic: reserve 5% or 2GB
+    reserved_gb = max(2.0, available_gb * 0.05)
+    available = available_gb - reserved_gb
 
     per_alpha_mem = estimate_memory_per_alpha(N1, N2, M, S)
     teacher_mem = (N1 * M + M * N2 + N1 * N2) * 4 / (1024**3)
@@ -532,8 +535,12 @@ def get_spreading_memory_strategy(
         if available_gb == 0:
             available_gb = 8.0
 
-    # Reserve 3GB for system, use 90% of remaining
-    effective_gb = (min(available_gb, 32.0) - 3.0) * 0.90
+    # Dynamic memory reservation (no hard 32GB cap)
+    # Use 90% of available memory directly
+    reserved_gb = max(2.0, available_gb * 0.05)
+    effective_gb = (available_gb - reserved_gb) * 0.95  # Slightly safer for Spreading
+    
+    # effective_gb = (min(available_gb, 32.0) - 3.0) * 0.90
 
     # Dynamic batching if alpha_values provided
     if alpha_values is not None and len(alpha_values) > 0:

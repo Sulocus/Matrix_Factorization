@@ -86,15 +86,15 @@ class DataFactory:
         
         # Create teacher
         W_teacher, X_teacher, Y_teacher = self.create_teacher(
-            N1=config.N1,
-            N2=config.N2,
-            M=config.M,
-            teacher_key=config.teacher_key,
+            N1=config.matrix.N1,
+            N2=config.matrix.N2,
+            M=config.matrix.M,
+            teacher_key=getattr(config, 'teacher_key', 'standard'),
             seed=config.seeds.teacher_seed,
         )
         
         # Create algorithm-specific data
-        if config.is_spreading_algorithm:
+        if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
             spreading_data = self.create_spreading_data(
                 config=config,
                 W_teacher=W_teacher,
@@ -111,8 +111,9 @@ class DataFactory:
             )
         else:
             masks = self.create_masks(
-                N1=config.N1,
-                N2=config.N2,
+                N1=config.matrix.N1,
+                N2=config.matrix.N2,
+                M=config.matrix.M,
                 alpha_values=alpha_values,
                 seed=config.seeds.base_seed,
             )
@@ -172,15 +173,20 @@ class DataFactory:
         self,
         N1: int,
         N2: int,
+        M: int,
         alpha_values: List[float],
         seed: int = 42,
     ) -> torch.Tensor:
         """
         Create observation masks for dense algorithms.
         
+        Uses the standard definition: num_observed = alpha * M * N1
+        This means alpha represents the average degree per row divided by M.
+        
         Args:
             N1, N2: Matrix dimensions
-            alpha_values: Observation densities
+            M: Hidden dimension (used for alpha scaling)
+            alpha_values: Observation density parameters
             seed: Random seed
             
         Returns:
@@ -189,11 +195,15 @@ class DataFactory:
         num_alphas = len(alpha_values)
         masks = torch.zeros(num_alphas, N1, N2, dtype=torch.bool, device=self.device)
         
-        torch.manual_seed(seed)
-        
         for a, alpha in enumerate(alpha_values):
-            # Number of observed entries
-            num_observed = int(alpha * N1 * N2)
+            # Use alpha-specific seed (consistent with reference implementation)
+            alpha_seed = seed + int(alpha * 1000)
+            torch.manual_seed(alpha_seed)
+            
+            # Number of observed entries: alpha * M * N1
+            # This gives average degree per row = alpha * M
+            num_observed = int(alpha * M * N1)
+            num_observed = min(num_observed, N1 * N2)  # Cap at total elements
             
             # Random permutation for observation positions
             perm = torch.randperm(N1 * N2, device=self.device)[:num_observed]
@@ -235,7 +245,7 @@ class DataFactory:
         
         N1, M = W_teacher.shape
         _, N2 = X_teacher.shape
-        S = config.S
+        S = config.training.samples_per_alpha
         
         # Create SuperGraph (graph structure)
         supergraph = create_supergraph(
@@ -294,10 +304,10 @@ class DataFactory:
             SpreadingDataParallel with single alpha
         """
         W_teacher, X_teacher, _ = self.create_teacher(
-            N1=config.N1,
-            N2=config.N2,
-            M=config.M,
-            teacher_key=config.teacher_key,
+            N1=config.matrix.N1,
+            N2=config.matrix.N2,
+            M=config.matrix.M,
+            teacher_key=getattr(config, 'teacher_key', 'standard'),
             seed=config.seeds.teacher_seed,
         )
         

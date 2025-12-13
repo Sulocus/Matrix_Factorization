@@ -11,25 +11,25 @@ algorithm: 2
 # ===== Teacher (选一个数字) =====
 # 1 = orthogonal
 # 2 = standard
-teacher: 1
+teacher: 2
 
 # ===== 矩阵尺寸 =====
 matrix:
-  N1: 200
-  N2: 200
-  M: 50
+  N1: 1000
+  N2: 1000
+  M: 250
 
 # ===== 扫描模式 (选一个数字) =====
 # 1 = alpha 扫描 (固定 steps，扫描 alpha)
 # 2 = steps 扫描 (固定 alpha，扫描 steps)
 # 3 = nested 嵌套扫描 (外层 N/M，内层 alpha)
-scan_mode: 2
+scan_mode: 1
 
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
   start: 0.0
   stop: 4.0
-  step: 0.05             # 81 个点
+  step: 0.1             # 41 个点
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
 steps_scan:
@@ -40,7 +40,7 @@ steps_scan:
 # --- 嵌套扫描配置 (scan_mode = 3) ---
 nested_scan:
   sizes:                 # [N, M] 列表
-    - [200, 50]
+    - [1000, 250]
 #    - [400, 100]
 #    - [600, 150]
   alpha:
@@ -50,8 +50,8 @@ nested_scan:
 
 # ===== 训练参数 =====
 training:
-  samples: 100            # 样本数 (S)
-  max_steps: 2000        # 训练步数
+  samples: 5            # 样本数 (S)
+  max_steps: 5000        # 训练步数
   seed: 42
 
 # ===== 算法参数 =====

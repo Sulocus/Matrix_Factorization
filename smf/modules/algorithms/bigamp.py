@@ -249,6 +249,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
         masks: torch.Tensor,
         alpha_values: list[float],
         seed: int,
+        max_steps: Optional[int] = None,  # Allow override for step scanning
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train BiG-AMP for multiple alphas in parallel."""
@@ -257,6 +258,9 @@ class BiGAMPAlgorithm(AlgorithmBase):
         S = self.S
         device = self.device
         num_alphas = len(alpha_values)
+        
+        # Use provided max_steps or fall back to config
+        steps = max_steps if max_steps is not None else self.max_steps
 
         alpha_scale = 1.0 / (M ** 0.5)
         scale = 1.0 / (M ** 0.5)
@@ -276,7 +280,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
         # Get step function (compiled or eager)
         step_fn = BiGAMPAlgorithm._compiled_step if self.use_compile else _bigamp_step
 
-        for step in range(self.max_steps):
+        for step in range(steps):
             # Execute BiG-AMP step (possibly compiled)
             w_hat, x_hat, w_var, x_var = step_fn(
                 w_hat, x_hat, w_var, x_var,
@@ -286,7 +290,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
 
             # Report progress
             if progress_callback:
-                progress_callback(step + 1, self.max_steps)
+                progress_callback(step + 1, steps)
 
         return w_hat, x_hat
 

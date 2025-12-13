@@ -232,18 +232,29 @@ class ExperimentResult:
             for v, r in sorted(self.results.items())
         }
     
-    def save(self, path: Union[str, Path], save_tensors: bool = False):
+    def save(self, path: Union[str, Path], save_tensors: bool = True, rsb_ordering: bool = False, uniform_colormap: bool = False):
         """
         Save result to directory.
+        
+        Args:
+            path: Output directory
+            save_tensors: Whether to save raw tensors to results.pt
+            rsb_ordering: Whether to use hierarchical clustering for RSB heatmap ordering
+            uniform_colormap: If True, use linear colormap; if False, enhance 0.9-1.0 range
         
         Creates:
         - config.json: Full experiment configuration
         - metadata.json: Run metadata
-        - results.json: Metrics for all scan points
-        - tensors/ (optional): Student matrices if save_tensors=True
+        - results.pt: Single unified tensor file (all alphas combined)
+        - plots/: Evolution plots and heatmaps
         """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+        plots_dir = path / 'plots'
+        plots_dir.mkdir(exist_ok=True)
         
         # Save config
         if hasattr(self.config, 'save'):
@@ -259,29 +270,121 @@ class ExperimentResult:
         with open(path / 'metadata.json', 'w') as f:
             json.dump(self.metadata.to_dict(), f, indent=2)
         
-        # Save results summary
-        results_summary = {
-            'experiment_id': self.experiment_id,
-            'scan_dimension': self.scan_dimension,
-            'scan_values': [str(v) for v in self.scan_values],
-            'results': {
-                str(v): r.to_dict(include_tensors=save_tensors)
-                for v, r in self.results.items()
-            },
+        # Prepare metrics dict for results.pt
+        metrics_dict = {
+            str(v): r.metrics for v, r in self.results.items()
         }
-        with open(path / 'results.json', 'w') as f:
-            json.dump(results_summary, f, indent=2)
         
-        # Save tensors if requested
+        # Collect all tensors into unified structure
         if save_tensors:
-            tensors_dir = path / 'tensors'
-            tensors_dir.mkdir(exist_ok=True)
-            for v, r in self.results.items():
-                if r.W_students is not None and r.X_students is not None:
-                    torch.save({
-                        'W_students': r.W_students,
-                        'X_students': r.X_students,
-                    }, tensors_dir / f'scan_{v}.pt')
+            sorted_values = sorted(self.results.keys(), key=lambda x: float(x) if isinstance(x, (int, float)) else x)
+            
+            # Stack all W_students and X_students across scan values
+            all_W = []
+            all_X = []
+            for v in sorted_values:
+                r = self.results[v]
+                if r.W_students is not None:
+                    all_W.append(r.W_students.cpu().to(torch.float16))
+                if r.X_students is not None:
+                    all_X.append(r.X_students.cpu().to(torch.float16))
+            
+            # Create unified results.pt
+            results_data = {
+                'alpha_values': [float(v) for v in sorted_values],
+                'metrics': metrics_dict,
+            }
+            
+            if all_W:
+                # Stack: (num_alphas, S, N1, M)
+                results_data['W_students'] = torch.stack(all_W, dim=0)
+            if all_X:
+                # Stack: (num_alphas, S, M, N2)
+                results_data['X_students'] = torch.stack(all_X, dim=0)
+            
+            # Add teacher matrices
+            if self.W_teacher is not None:
+                results_data['W_teacher'] = self.W_teacher.cpu().to(torch.float16)
+            if self.X_teacher is not None:
+                results_data['X_teacher'] = self.X_teacher.cpu().to(torch.float16)
+            
+            torch.save(results_data, path / 'results.pt')
+        
+        # Generate evolution plots
+        sorted_values = sorted(self.results.keys(), key=lambda x: float(x) if isinstance(x, (int, float)) else x)
+        
+        # Determine x-axis label based on scan dimension
+        x_label = 'Alpha' if self.scan_dimension == 'alpha' else 'Steps'
+        
+        # Extract metrics for plotting
+        x_values = [float(v) for v in sorted_values]
+        q_w_means = [self.results[v].metrics.get('Q_W_mean', 0) for v in sorted_values]
+        q_y_means = [self.results[v].metrics.get('Q_Y_mean', 0) for v in sorted_values]
+        
+        # Plot Q_W and Q_Y evolution
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(x_values, q_w_means, 'r-', label='Q_W', linewidth=2, marker='o', markersize=3)
+        ax.plot(x_values, q_y_means, 'g-', label='Q_Y', linewidth=2, marker='s', markersize=3)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Overlap')
+        ax.set_title(f'{self.experiment_id}')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.set_ylim(-0.1, 1.1)
+        plt.savefig(plots_dir / 'qy_evolution.png', dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        # Plot Q_W only (convergence curve for steps scan)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(x_values, q_w_means, 'r-', linewidth=2, marker='o', markersize=4)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Q_W (Gram Overlap Normalized)')
+        ax.set_title(f'Q_W Evolution - {self.experiment_id}')
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(-0.1, 1.1)
+        plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        # Generate heatmaps and GIF (if we have W_students)
+        try:
+            from smf.modules.outputs.plotting import plot_replica_heatmap, create_gif
+            from smf.modules.metrics.overlap import build_interaction_matrix, gram_overlap_normalized
+            
+            heatmap_paths = []
+            W_teacher = self.W_teacher
+            
+            for v in sorted_values:
+                r = self.results[v]
+                if r.W_students is not None and W_teacher is not None:
+                    # Handle shape: W_students might be (1, S, N1, M) or (S, N1, M)
+                    W_s = r.W_students
+                    while W_s.dim() > 3:
+                        W_s = W_s.squeeze(0)  # Remove leading dims until (S, N1, M)
+                    
+                    # Build interaction matrix
+                    matrix_W = build_interaction_matrix(
+                        W_s, W_teacher, gram_overlap_normalized, use_left=True
+                    )
+                    
+                    # Save heatmap
+                    heatmap_path = plot_replica_heatmap(
+                        matrix_W, float(v), plots_dir,
+                        metric_name="Q_W", filename_prefix="heatmap_W",
+                        rsb_ordering=rsb_ordering,
+                        enhance_high_values=not uniform_colormap,  # uniform = no enhancement
+                    )
+                    if heatmap_path:
+                        heatmap_paths.append(heatmap_path)
+            
+            # Create GIF from heatmaps
+            if heatmap_paths:
+                gif_path = create_gif(heatmap_paths, plots_dir / "animation_W.gif", duration=0.2)
+                if gif_path:
+                    print(f"Generated GIF: {gif_path}")
+        except Exception as e:
+            import traceback
+            print(f"Warning: Could not generate heatmaps/GIF: {e}")
+            traceback.print_exc()
     
     @classmethod
     def load(cls, path: Union[str, Path]) -> 'ExperimentResult':

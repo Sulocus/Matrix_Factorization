@@ -15,6 +15,7 @@ SMF Experiment CLI - 简洁版
 
 import argparse
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
 import numpy as np
@@ -26,6 +27,7 @@ from smf.core.experiment import (
     MatrixParams, TrainingParams, SeedConfig, ScanConfig, 
     AlgorithmParams, SpreadingConfig
 )
+from smf.core.progress import ProgressBridge
 
 
 def load_yaml_config(yaml_path: Path):
@@ -183,11 +185,36 @@ def build_config(args) -> ExperimentConfig:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='SMF Experiment CLI', formatter_class=argparse.RawDescriptionHelpFormatter)
+    # 特殊处理: smf conf 子命令 (在argparse之前)
+    if len(sys.argv) >= 2 and sys.argv[1] == 'conf':
+        import subprocess
+        import shutil
+        config_path = Path(__file__).parent / 'config.yaml'
+        if not config_path.exists():
+            print(f"❌ 配置文件不存在: {config_path}")
+            sys.exit(1)
+        editor = os.environ.get('EDITOR')
+        if not editor:
+            for cmd in ['code', 'vim', 'nano', 'vi']:
+                if shutil.which(cmd):
+                    editor = cmd
+                    break
+        if editor:
+            print(f"📝 编辑配置: {config_path}")
+            subprocess.run([editor, str(config_path)])
+        else:
+            print(f"配置文件路径: {config_path}")
+        return
+    
+    parser = argparse.ArgumentParser(
+        description='SMF Experiment CLI\n\n用法:\n  smf          运行实验 (使用 smf/config.yaml)\n  smf conf     编辑配置文件',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     
     # 配置文件
-    parser.add_argument('config', nargs='?', help='YAML 配置文件')
+    parser.add_argument('config', nargs='?', help='YAML 配置文件 (默认: smf/config.yaml)')
     parser.add_argument('--quick', action='store_true', help='快速运行 (默认参数)')
+    parser.add_argument('-c', '--conf', action='store_true', help='编辑配置文件')
     
     # 参数
     parser.add_argument('--N', type=int, default=200, help='矩阵尺寸')
@@ -207,6 +234,16 @@ def main():
     
     args = parser.parse_args()
     
+    # 无参数时默认使用 config.yaml 运行
+    if args.config is None and not args.quick and not args.conf:
+        default_config = Path(__file__).parent / 'config.yaml'
+        if default_config.exists():
+            args.config = str(default_config)
+            print(f"📄 使用默认配置: {default_config}")
+        else:
+            parser.print_help()
+            return
+    
     # 加载配置
     output_options = {'rsb_ordering': False, 'save_tensors': True}  # defaults
     if args.config:
@@ -220,7 +257,8 @@ def main():
     else:
         config = build_config(args)
     
-    runner = ExperimentRunner()
+    runner = ExperimentRunner(verbose=False)  # 由ProgressBridge处理输出
+    bridge = ProgressBridge(use_rich=True)
     timestamp = datetime.now().strftime('%m%d_%H%M')
     
     # 检查是否为嵌套扫描模式
@@ -254,6 +292,7 @@ def main():
             base_config=base_config,
             matrix_sizes=config['sizes'],
             output_dir=output_path,
+            observer=bridge.on_event,
         )
         
         print()
@@ -277,7 +316,7 @@ def main():
         print()
         
         # 运行
-        result = runner.run(config)
+        result = runner.run(config, observer=bridge.on_event)
         
         # 保存 - 按扫描类型分类
         scan_type_dir = "steps_scan" if config.scan.dimension == 'steps' else "alpha_scan"

@@ -660,6 +660,7 @@ def plot_replica_heatmap(
     enhance_high_values: bool = True,
     breakpoint: float = 0.9,
     color_breakpoint: float = 0.6,
+    rsb_ordering: bool = False,
 ) -> Path:
     """
     Plot (S+1)x(S+1) replica interaction heatmap.
@@ -674,12 +675,37 @@ def plot_replica_heatmap(
         enhance_high_values: If True, use non-linear norm to enhance 0.9-1.0 range
         breakpoint: Value where color mapping changes (default 0.9)
         color_breakpoint: Position in colormap at breakpoint (default 0.6)
+        rsb_ordering: If True, reorder replicas using hierarchical clustering 
+                      to reveal RSB structure (block diagonal pattern)
         
     Returns:
         Path to saved PNG
     """
     S_plus_1 = matrix.shape[0]
     S = S_plus_1 - 1
+    
+    # RSB ordering: use hierarchical clustering to reorder replicas
+    if rsb_ordering and S > 2:
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import squareform
+        
+        # Extract replica-replica submatrix (exclude Teacher row/column 0)
+        replica_matrix = matrix[1:, 1:]
+        
+        # Convert similarity to distance (1 - overlap)
+        distance_matrix = 1 - replica_matrix
+        np.fill_diagonal(distance_matrix, 0)  # Ensure diagonal is 0
+        
+        # Use condensed form for linkage
+        condensed = squareform(distance_matrix, checks=False)
+        
+        # Hierarchical clustering
+        Z = linkage(condensed, method='average')
+        order = leaves_list(Z)
+        
+        # Reorder: Teacher stays at position 0, replicas reordered
+        full_order = [0] + [i + 1 for i in order]
+        matrix = matrix[np.ix_(full_order, full_order)]
     
     # Square plot
     fig, ax = plt.subplots(figsize=(8, 7))

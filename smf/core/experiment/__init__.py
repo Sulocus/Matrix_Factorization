@@ -32,6 +32,7 @@ from .config import (
     SeedConfig,
     ScanConfig,
     SpreadingConfig,
+    AlgorithmParams,
 )
 
 from .result import (
@@ -52,6 +53,7 @@ __all__ = [
     'SeedConfig',
     'ScanConfig',
     'SpreadingConfig',
+    'AlgorithmParams',
     # Result
     'ExperimentResult',
     'SingleRunResult',

@@ -155,6 +155,9 @@ class AlgorithmParams:
     use_early_stop: bool = False
     target_loss_threshold: float = 1e-8
     
+    # Step scanning: fixed alpha value when scanning steps
+    default_alpha: float = 1.0
+    
     def to_dict(self) -> Dict:
         return asdict(self)
 
