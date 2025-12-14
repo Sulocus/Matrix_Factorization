@@ -15,9 +15,9 @@ teacher: 2
 
 # ===== 矩阵尺寸 =====
 matrix:
-  N1: 1000
-  N2: 1000
-  M: 250
+  N1: 2500
+  N2: 2500
+  M: 50
 
 # ===== 扫描模式 (选一个数字) =====
 # 1 = alpha 扫描 (固定 steps，扫描 alpha)
@@ -27,9 +27,9 @@ scan_mode: 1
 
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
-  start: 0.0
+  start: 3.2
   stop: 4.0
-  step: 0.1             # 41 个点
+  step: 0.02             # 41 个点
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
 steps_scan:
@@ -44,15 +44,16 @@ nested_scan:
 #    - [400, 100]
 #    - [600, 150]
   alpha:
-    start: 0.0
+    start: 0
     stop: 4.0
     step: 0.05
 
 # ===== 训练参数 =====
 training:
-  samples: 5            # 样本数 (S)
+  samples: 50            # 样本数 (S)
   max_steps: 5000        # 训练步数
   seed: 42
+  num_workers: 24        # 并行生成 Worker 数 (CPU)
 
 # ===== 算法参数 =====
 algorithm_params:

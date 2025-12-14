@@ -298,17 +298,4 @@ class BiGAMPAlgorithm(AlgorithmBase):
         """BiG-AMP supports efficient batch training."""
         return True
 
-    def estimate_memory_per_alpha(self, N1: int, N2: int, M: int, S: int) -> float:
-        """
-        Estimate GPU memory needed per alpha value.
 
-        BiG-AMP creates intermediate tensors of shape (batch, S, N1, N2):
-        - W update: z_hat, p_var, V, residual, s = 5 tensors
-        - X update: z_hat2, p_var2, V2, residual2, s2 = 5 tensors
-
-        With torch.compile: kernel fusion reduces peak to ~5 tensors.
-        PyTorch overhead: ~50% for fragmentation and allocator pools.
-        """
-        # Use centralized memory estimation
-        from smf.core.memory_manager import estimate_memory_per_alpha
-        return estimate_memory_per_alpha(N1, N2, M, S, use_compile=self.use_compile)

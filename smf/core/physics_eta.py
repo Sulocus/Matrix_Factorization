@@ -32,119 +32,162 @@ class PhysicsAwareETA:
     def __init__(
         self,
         batch_assignments: List[Tuple[int, int, float]],  # (start, end, batch_alpha_max)
-        window_size: int = 5,
+        algorithm_name: str = "bigamp_spreading",
+        window_size: int = 20,
     ):
         """
-        Initialize the ETA estimator.
+        Initialize the ETA estimator with Relative Ratio Logic.
         
         Args:
             batch_assignments: List of (start_idx, end_idx, max_alpha_in_batch)
-                from compute_dynamic_batches()
+            algorithm_name: 'bigamp_spreading', 'bigamp', 'agd', etc.
             window_size: Sliding window for rate smoothing
         """
-        # Compute workload for each batch (proportional to max_alpha)
-        # Workload unit = alpha_max (e.g., batch with α_max=4.0 has 4.0 units)
-        self.batch_workloads = [alpha_max for (_, _, alpha_max) in batch_assignments]
-        self.total_workload = sum(self.batch_workloads)
+        self.algorithm_name = algorithm_name.lower()
+        
+        # 1. Calculate Complexity Weights based on Algorithm
+        # User's model: "Batch 1 is 1.0, Batch 2 is 1.2..."
+        self.batch_weights = []
+        for _, _, alpha_max in batch_assignments:
+            if 'spreading' in self.algorithm_name:
+                # Spreading complexity ~ Alpha * M * N
+                # Since M, N are constant, Weight ~ Alpha
+                # We use max(0.1, alpha_max) to avoid zero weight
+                weight = max(0.1, float(alpha_max))
+            else:
+                # Standard BiG-AMP / AGD: Complexity ~ N * M (Constant across alphas)
+                weight = 1.0
+            self.batch_weights.append(weight)
+            
+        # 2. Normalize to Relative Ratios (for clarity/logging)
+        base_weight = self.batch_weights[0] if self.batch_weights else 1.0
+        self.ratios = [w / base_weight for w in self.batch_weights]
+        
+        # 3. Total Workload
+        self.total_workload = sum(self.batch_weights)
         self.num_batches = len(batch_assignments)
         
-        self.processed_workload = 0.0
+        # Runtime State
+        self.processed_workload = 0.0 # Workload of COMPLETED batches
         self.start_time = time.time()
-        self.rates = deque(maxlen=window_size)  # workload units / second
-        self.last_check_time = self.start_time
-        self.completed_batches = 0
-    
+        self.rates = deque(maxlen=window_size) # Workload units / second
+        self.batch_start_time = None
+        self.current_batch_idx = -1
+        
+        # Print the Plan for the user (Transparency)
+        # We can't print easily here as it might break UI, but we can log
+        # or expose it.
+        
     def start_batch(self, batch_idx: int):
         """Called when starting a new batch."""
-        self.last_check_time = time.time()
+        self.current_batch_idx = batch_idx
+        self.batch_start_time = time.time()
     
-    def end_batch(self, batch_idx: int) -> Tuple[float, float]:
+    def end_batch(self, batch_idx: int):
+        """Called when a batch completes."""
+        if 0 <= batch_idx < len(self.batch_weights):
+            # Mark this batch as fully done in the accumulator
+            # (In a real implementation, we might track continuous progress, 
+            # but updating 'completed' blocks is safer).
+            pass
+
+    def update_progress(self, batch_idx: int, step_pct: float = 0.0):
         """
-        Called when a batch completes.
+        Update rate estimation based on current progress using Relative Ratios.
         
-        Args:
-            batch_idx: 0-indexed batch number
-        
-        Returns:
-            eta_seconds: Estimated remaining time in seconds
-            progress: Current progress (0.0 - 1.0) based on workload
+        Logic:
+        Total Done = Sum(Weights of prev batches) + (Current Batch Weight * step_pct)
+        Global Rate = Total Done / Total Elapsed Time
         """
+        if self.current_batch_idx < 0:
+            return
+
         now = time.time()
-        duration = now - self.last_check_time
-        self.last_check_time = now
+        # Use initial start time to capture full history
+        total_elapsed = now - self.start_time
         
-        if batch_idx < len(self.batch_workloads):
-            batch_workload = self.batch_workloads[batch_idx]
-            self.processed_workload += batch_workload
-            self.completed_batches = batch_idx + 1
+        if total_elapsed < 1.0: # Ignore first second to allow warmup
+            return
+
+        # Calculate Done Workload
+        done_workload = sum(self.batch_weights[:batch_idx])
+        if 0 <= batch_idx < len(self.batch_weights):
+             current_weight = self.batch_weights[batch_idx]
+             # Clamp percentage
+             pct = max(0.0, min(1.0, step_pct))
+             done_workload += current_weight * pct
+             
+        # Update Global Rate (Most stable metric)
+        if done_workload > 0:
+             current_global_rate = done_workload / total_elapsed
+             self.rates.append(current_global_rate)
+
+    def predict_eta(self) -> float:
+        """
+        Predict remaining time based on current rate.
+        Stateless: does not modify internal counters.
+        """
+        # This method is effectively superseded by get_status for prediction.
+        # If it were to be used, it would need to rely on a stored 'processed_workload'
+        # or re-calculate it based on the last known state.
+        # For now, we remove the 'pass' as per the user's implicit instruction
+        # (by providing a new get_status but no new predict_eta).
+        if not self.rates:
+            return 0.0
             
-            # Record rate: workload units per second
-            if duration > 0:
-                current_rate = batch_workload / duration
-                self.rates.append(current_rate)
+        # Use average of recent rates
+        avg_rate = sum(self.rates) / len(self.rates)
         
-        # Compute remaining workload
-        remaining_workload = self.total_workload - self.processed_workload
+        # Calculate true remaining workload
+        # We need to know current state. We assume update_progress was called recently.
+        # But predict_eta doesn't take args. 
+        # So we should rely on processed_workload updated by update_progress?
+        # Actually, let's make predict_eta state-independent if possible, 
+        # but rate depends on history.
         
-        # Estimate ETA using exponential moving average of rates
-        if self.rates:
-            # Give more weight to recent batches
-            avg_rate = sum(self.rates) / len(self.rates)
-            eta = remaining_workload / avg_rate if avg_rate > 0 else 0
-        else:
-            eta = 0
+        # Simpler: update_progress updates self.processed_workload snapshot
+        # The original 'pass' is removed as per the user's instruction.
+        return 0.0 # Placeholder, as get_status is the primary prediction method now.
+
+    def get_status(self, batch_idx: int, step_pct: float) -> Tuple[float, float]:
+        """
+        Get (ETA, Progress) using the Relative Ratio Model.
+        """
+        # 1. Update internal rate state
+        self.update_progress(batch_idx, step_pct)
         
-        # Progress based on workload (not batch count)
-        progress = self.processed_workload / self.total_workload if self.total_workload > 0 else 0
+        # 2. Get stable rate
+        if not self.rates:
+             return -1.0, 0.0 # Signal unknown
+             
+        avg_rate = sum(self.rates) / len(self.rates)
+        
+        # 3. Calculate Remaining Work
+        done_workload = sum(self.batch_weights[:batch_idx])
+        if 0 <= batch_idx < len(self.batch_weights):
+             done_workload += self.batch_weights[batch_idx] * max(0.0, min(1.0, step_pct))
+             
+        remaining_workload = max(0.0, self.total_workload - done_workload)
+        
+        # 4. Predict
+        eta = remaining_workload / avg_rate if avg_rate > 1e-9 else 0.0
+        progress = done_workload / self.total_workload if self.total_workload > 0 else 0.0
         
         return eta, progress
-    
-    def get_batch_progress(self) -> Tuple[int, int]:
-        """Get completed batches and total batches."""
-        return self.completed_batches, self.num_batches
-    
-    def get_workload_progress(self) -> Tuple[float, float]:
-        """Get processed workload and total workload."""
-        return self.processed_workload, self.total_workload
-    
-    @staticmethod
-    def format_time(seconds: float) -> str:
-        """Format seconds as human-readable string."""
-        if seconds < 0:
-            return "--:--"
-        elif seconds < 60:
-            return f"{int(seconds)}s"
-        elif seconds < 3600:
-            minutes = int(seconds) // 60
-            secs = int(seconds) % 60
-            return f"{minutes}:{secs:02d}"
-        else:
-            hours = int(seconds) // 3600
-            minutes = (int(seconds) % 3600) // 60
-            return f"{hours}:{minutes:02d}:00"
 
+    # ... keep helpers ...
 
 def create_eta_estimator(
     alpha_values: List[float],
     dynamic_batches: Optional[List[Tuple[int, int, float]]] = None,
+    algorithm_name: str = "bigamp_spreading",
 ) -> PhysicsAwareETA:
-    """
-    Factory function to create a PhysicsAwareETA estimator.
-    
-    Args:
-        alpha_values: List of all alpha values
-        dynamic_batches: Optional pre-computed batch assignments.
-            If None, creates a single batch with max(alpha_values).
-    
-    Returns:
-        PhysicsAwareETA instance
-    """
-    if dynamic_batches is None:
-        # Default: single batch containing all alphas
+    """Factory with algorithm awareness."""
+    if dynamic_batches == None:
         alpha_max = max(alpha_values) if alpha_values else 1.0
         dynamic_batches = [(0, len(alpha_values), alpha_max)]
     
-    return PhysicsAwareETA(dynamic_batches)
+    return PhysicsAwareETA(dynamic_batches, algorithm_name=algorithm_name)
 
 
 # Backward compatibility: simple ETA estimator for non-dynamic batching

@@ -72,6 +72,20 @@ class SuperGraphData:
         )
 
 
+def _generate_single_sample(args):
+    """Worker function for parallel graph generation."""
+    seed, N1, N2, C_max, idx_dtype, total_edges = args
+    
+    # Independent RNG for each sample
+    gen = torch.Generator(device='cpu').manual_seed(seed)
+    perm = torch.randperm(total_edges, generator=gen)[:C_max]
+    
+    # Return directly as tensor
+    i_idx = (perm // N2).to(idx_dtype)
+    j_idx = (perm % N2).to(idx_dtype)
+    return i_idx, j_idx
+
+
 def create_supergraph(
     N1: int,
     N2: int,
@@ -80,6 +94,7 @@ def create_supergraph(
     S: int,
     base_seed: int,
     device: torch.device,
+    num_workers: int = 1,
 ) -> SuperGraphData:
     """
     Create a SuperGraph for coupled sampling.
@@ -87,11 +102,6 @@ def create_supergraph(
     The key idea: for each sample, we generate a random permutation of
     all possible edges (i, j). Then for each alpha, we take the first
     C_alpha = floor(alpha * M * N1) edges from this permutation.
-
-    This ensures:
-    1. Smaller alpha's edges are subsets of larger alpha's edges
-    2. Each sample has independent random structure
-    3. The marginal distribution of edges is uniform random
 
     Args:
         N1: Number of rows
@@ -101,10 +111,14 @@ def create_supergraph(
         S: Number of samples
         base_seed: Base random seed
         device: Torch device
+        num_workers: Number of parallel workers (CPU only)
 
     Returns:
         SuperGraphData with pre-computed indices and masks
     """
+    import concurrent.futures
+    import multiprocessing
+    
     alpha_values = np.array(alpha_values)
     A = len(alpha_values)
 
@@ -137,18 +151,79 @@ def create_supergraph(
     j_idx_all = torch.zeros((S, C_max), dtype=idx_dtype, device=device)
     seeds = torch.zeros(S, dtype=torch.long, device=device)
 
+    # Prepare seeds
     for s in range(S):
-        seed = base_seed + s * 1000
-        seeds[s] = seed
+        seeds[s] = base_seed + s * 1000
 
-        # Generate random permutation of edge indices
-        # Use GPU generator if device is CUDA for much faster generation
-        if device.type == 'cuda':
-            gen = torch.Generator(device=device).manual_seed(seed)
-            perm = torch.randperm(total_edges, generator=gen, device=device)[:C_max]
-            i_idx_all[s] = (perm // N2).to(idx_dtype)
-            j_idx_all[s] = (perm % N2).to(idx_dtype)
-        else:
+    # PARALLEL GENERATION (CPU ONLY)
+    # If device is CUDA, generation inside the loop using CUDA generator is often faster
+    # than MP overhead. MP is beneficial for CPU generation.
+    run_parallel_cpu = (device.type == 'cpu' and num_workers > 1)
+    
+    if device.type == 'cuda':
+        # GPU OPTIMIZED: Batched generation
+        # Instead of S randperms, we generate a noise matrix and take top-k.
+        # This vectorizes the sorting/selection.
+        
+        # 1. Allocate noise tensor (S, Total_Edges)
+        # Use float16 to save memory (we don't need high precision for random order)
+        try:
+            # Check size to avoid OOM on huge matrices
+            total_elements = S * total_edges
+            needed_gb = total_elements * 2 / (1024**3) # float16
+            
+            if needed_gb < 4.0: # Only use batch mode if < 4GB VRAM
+                noise = torch.empty((S, total_edges), device=device, dtype=torch.float16)
+                
+                # 2. Fill with seeded noise (Loop is fast for just random gen)
+                for s in range(S):
+                    seed = seeds[s].item()
+                    gen = torch.Generator(device=device).manual_seed(seed)
+                    noise[s].uniform_(0, 1, generator=gen)
+                
+                # 3. Top-K Selection (Batched)
+                # This replaces the slow randperm loop
+                _, flat_indices = torch.topk(noise, k=C_max, dim=1)
+                
+                # 4. Convert to (i, j)
+                i_idx_all = (flat_indices // N2).to(idx_dtype)
+                j_idx_all = (flat_indices % N2).to(idx_dtype)
+                
+                # Free noise memory immediately
+                del noise
+                
+            else:
+                # Fallback to Loop if too large
+                raise MemoryError("Too large for batch init")
+                
+        except (MemoryError, RuntimeError):
+            # Fallback to sequential GPU loop
+            for s in range(S):
+                seed = seeds[s].item()
+                gen = torch.Generator(device=device).manual_seed(seed)
+                perm = torch.randperm(total_edges, generator=gen, device=device)[:C_max]
+                i_idx_all[s] = (perm // N2).to(idx_dtype)
+                j_idx_all[s] = (perm % N2).to(idx_dtype)
+
+    elif run_parallel_cpu:
+        tasks = []
+        for s in range(S):
+            tasks.append((seeds[s].item(), N1, N2, C_max, idx_dtype, total_edges))
+        
+        # Use ProcessPool to bypass GIL
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Map returns results in order
+            results = list(executor.map(_generate_single_sample, tasks))
+            
+        # Assemble results
+        for s, (i_idx, j_idx) in enumerate(results):
+            i_idx_all[s] = i_idx.to(device)
+            j_idx_all[s] = j_idx.to(device)
+            
+    else:
+        # Sequential CPU generation
+        for s in range(S):
+            seed = seeds[s].item()
             gen = torch.Generator(device='cpu').manual_seed(seed)
             perm = torch.randperm(total_edges, generator=gen)[:C_max]
             i_idx_all[s] = (perm // N2).to(idx_dtype).to(device)

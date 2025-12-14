@@ -256,6 +256,7 @@ class DataFactory:
             S=S,
             base_seed=config.seeds.base_seed,
             device=self.device,
+            num_workers=config.training.num_workers,
         )
         
         # Generate F (spreading coefficients)

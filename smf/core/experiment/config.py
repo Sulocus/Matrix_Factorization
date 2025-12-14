@@ -49,11 +49,13 @@ class TrainingParams:
     samples_per_alpha: int = 20  # S: number of samples
     max_steps: int = 5000        # For BiGAMP algorithms
     max_epochs: int = 20000      # For AGD algorithm
+    num_workers: int = 1         # Parallel workers for graph generation (CPU)
     
     def __post_init__(self):
         assert self.samples_per_alpha > 0, "samples_per_alpha must be positive"
         assert self.max_steps > 0, "max_steps must be positive"
         assert self.max_epochs > 0, "max_epochs must be positive"
+        assert self.num_workers >= 1, "num_workers must be at least 1"
     
     def to_dict(self) -> Dict:
         return asdict(self)

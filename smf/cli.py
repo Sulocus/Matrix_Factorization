@@ -11,6 +11,9 @@ SMF Experiment CLI - 简洁版
     
     # 指定参数
     python smf/cli.py --N 200 --M 50 --steps 2000 --algorithm bigamp
+    
+    # 从 checkpoint 恢复中断的实验
+    smf resume [output_dir]
 """
 
 import argparse
@@ -184,7 +187,86 @@ def build_config(args) -> ExperimentConfig:
     )
 
 
+def handle_resume(resume_dir: str = None):
+    """
+    处理 smf resume 命令，从 checkpoint 恢复中断的实验。
+    使用 checkpoint 中保存的配置继续运行。
+    """
+    from smf.core.parallel.batch_checkpoint import CheckpointManager, dict_to_config
+    
+    print()
+    print("=" * 60)
+    print("🔄 SMF Resume - 从 Checkpoint 恢复")
+    print("=" * 60)
+    
+    # 加载 checkpoint (固定路径 smf/.checkpoint.pt)
+    ckpt_mgr = CheckpointManager()
+    ckpt_data = ckpt_mgr.load()
+    
+    if not ckpt_data:
+        print("❌ 未找到可恢复的 checkpoint")
+        print()
+        print("提示:")
+        print("  - checkpoint 位置: smf/.checkpoint.pt")
+        print("  - 确保之前的实验因中断而保存了 checkpoint")
+        return
+    
+    # 显示 checkpoint 信息
+    completed_alphas = ckpt_data.completed_alphas
+    config_dict = ckpt_data.config_dict
+    results = ckpt_data.results
+    
+    print(f"📂 找到 checkpoint: smf/.checkpoint.pt")
+    print(f"   已完成 alpha: {len(completed_alphas)}")
+    if completed_alphas:
+        print(f"   Alpha 范围: {min(completed_alphas):.2f} - {max(completed_alphas):.2f}")
+    print(f"   时间戳: {ckpt_data.timestamp}")
+    print()
+    
+    # 从 checkpoint 恢复配置
+    try:
+        config = dict_to_config(config_dict)
+    except Exception as e:
+        print(f"❌ 无法恢复配置: {e}")
+        return
+    
+    print(f"🚀 恢复实验: {config.experiment_name}")
+    print(f"   矩阵: {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
+    print(f"   步数: {config.training.max_steps}")
+    print(f"   剩余 alpha: {len(config.scan.values) - len(completed_alphas)}")
+    print("=" * 60)
+    print()
+    
+    # 运行实验（runner 会跳过已完成的 alpha）
+    from smf.core.experiment.runner import ExperimentRunner
+    from smf.core.progress import ProgressBridge
+    
+    runner = ExperimentRunner(verbose=True)
+    bridge = ProgressBridge()
+    
+    # 传递已完成的 results 给 runner（这样可以合并）
+    result = runner.run(config, observer=bridge.on_event, resume_results=results)
+    
+    # 保存结果
+    output_dir = Path(f"smf/Replica_results/alpha_scan/{config.experiment_name}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.save(output_dir)
+    
+    # 删除 checkpoint（成功完成）
+    ckpt_mgr.delete()
+    
+    print()
+    print("=" * 60)
+    print(f"✅ Resume 完成! 保存到: {output_dir}")
+    print("=" * 60)
+
+
 def main():
+    # 特殊处理: smf resume 子命令 (在argparse之前)
+    if len(sys.argv) >= 2 and sys.argv[1] == 'resume':
+        handle_resume(sys.argv[2] if len(sys.argv) > 2 else None)
+        return
+    
     # 特殊处理: smf conf 子命令 (在argparse之前)
     if len(sys.argv) >= 2 and sys.argv[1] == 'conf':
         import subprocess

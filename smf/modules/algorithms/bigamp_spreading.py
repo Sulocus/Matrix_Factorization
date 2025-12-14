@@ -893,7 +893,6 @@ class BiGAMPSpreading(AlgorithmBase):
             if is_large_problem:
                 # Large problem: use 'default' mode to avoid CUDA Graph issues
                 compile_modes = ['default']
-                print(f"[BiG-AMP Spreading] Large problem detected, using safe compile mode")
             else:
                 # Normal size: try more aggressive modes first
                 compile_modes = ['reduce-overhead', 'default']
@@ -903,17 +902,12 @@ class BiGAMPSpreading(AlgorithmBase):
                     BiGAMPSpreading._compiled_step = torch.compile(
                         bigamp_step_disjoint_union_flat,
                         mode=mode,
-                        fullgraph=False,  # Disable fullgraph for stability
+                        fullgraph=False,
                     )
-                    print(f"[BiG-AMP Spreading] torch.compile enabled (mode={mode})")
                     break
                 except Exception as e:
-                    print(f"[BiG-AMP Spreading] torch.compile mode={mode} failed: {e}")
                     if mode == compile_modes[-1]:
-                        # All modes failed
-                        print(f"[BiG-AMP Spreading] All compile modes failed, using eager mode")
                         self.use_compile = False
-
 
         # Phase 3: BF16 mixed precision (auto-detect hardware support)
         self.use_bf16 = False
@@ -921,12 +915,6 @@ class BiGAMPSpreading(AlgorithmBase):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
-            print(f"[BiG-AMP Spreading] BF16 enabled (2x memory reduction)")
-        else:
-            print(f"[BiG-AMP Spreading] BF16 not available, using FP32")
-
-        print(f"[BiG-AMP Spreading] F distribution: {self.f_distribution}")
-
 
     def create_spreading_data(
         self,
@@ -1290,34 +1278,16 @@ class BiGAMPSpreading(AlgorithmBase):
             W_students: (num_alphas, S, N1, M) trained W matrices
             X_students: (num_alphas, S, M, N2) trained X matrices
         """
-        from ...core.memory_manager import get_spreading_memory_strategy
-
+        # Input alpha_values are already batched by ParallelCoordinator in runner.py
+        # We process them as a single chunk here.
         S = self.config.training.samples_per_alpha
         N1, M = W_teacher.shape
         N2 = X_teacher.shape[1]
         A = len(alpha_values)
         alpha_max = max(alpha_values) if alpha_values else 4.0
 
-        # Get memory strategy with dynamic batching
-        strategy = get_spreading_memory_strategy(
-            N1, N2, M, S, A, alpha_max,
-            available_gb=max_memory_gb + 3.0,  # Add back the reserved 3GB
-            verbose=True,
-            alpha_values=alpha_values,  # Enable dynamic batching
-        )
-        
-        # Use dynamic batches if available, otherwise fall back to fixed
-        dynamic_batches = strategy.get('dynamic_batches')
-        if dynamic_batches:
-            num_batches = len(dynamic_batches)
-        else:
-            alphas_per_batch = strategy['alphas_per_batch']
-            num_batches = strategy['num_batches']
-            # Create fixed batch ranges
-            dynamic_batches = [
-                (i * alphas_per_batch, min((i + 1) * alphas_per_batch, A), alpha_max)
-                for i in range(num_batches)
-            ]
+        num_batches = 1
+        dynamic_batches = [(0, A, alpha_max)]
 
         # ===== Global SuperGraph Removed =====
         # Refactored to per-batch creation to prevent OOM on large problems.

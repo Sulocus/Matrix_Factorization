@@ -32,6 +32,8 @@ from ..parallel import (
     EstimationParams,
     AllocationPresets,
 )
+from ..parallel.batch_checkpoint import CheckpointManager, config_to_dict
+from ..parallel.memory_guard import MemoryAbortException
 
 if TYPE_CHECKING:
     from ...modules.algorithms.base import AlgorithmBase
@@ -47,7 +49,6 @@ class ProgressEventType(Enum):
     BATCH_END = "batch_end"
     STEP_UPDATE = "step_update"
     POINT_START = "point_start"
-    POINT_COMPLETE = "point_complete"
     POINT_COMPLETE = "point_complete"
     EXECUTION_PLAN = "execution_plan"
     ERROR = "error"
@@ -127,6 +128,10 @@ class ExperimentRunner:
             estimator=MemoryEstimator(),
             config=AllocationPresets.CONSERVATIVE,
         )
+        
+        # Enable MemoryGuard for runtime OOM protection
+        from ..parallel.memory_guard import create_monitored_guard
+        self._memory_guard = create_monitored_guard(self.parallel_coordinator)
     
     def run(
         self,
@@ -135,6 +140,8 @@ class ExperimentRunner:
         # Legacy callbacks (mapped to observer internally or ignored if observer present)
         step_callback: Optional[Callable[[int, int], None]] = None,
         point_callback: Optional[Callable[[int, int, Any], None]] = None,
+        # Resume support
+        resume_results: Optional[Dict[float, Dict]] = None,
     ) -> ExperimentResult:
         """
         Run a single experiment.
@@ -144,6 +151,7 @@ class ExperimentRunner:
             observer: Callback for ProgressEvents (recommended)
             step_callback: Legacy callback (step, max_steps)
             point_callback: Legacy callback (idx, total, value)
+            resume_results: Pre-completed results from checkpoint (metrics only)
             
         Returns:
             ExperimentResult with all results
@@ -208,6 +216,10 @@ class ExperimentRunner:
             print(f"  Matrix: {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
         
         try:
+            # Start MemoryGuard for OOM protection
+            if hasattr(self, '_memory_guard') and self._memory_guard:
+                self._memory_guard.start()
+            
             # Create Teacher data (shared across all scan points)
             W_teacher, X_teacher, Y_teacher = self.data_factory.create_teacher(
                 N1=config.matrix.N1,
@@ -237,7 +249,7 @@ class ExperimentRunner:
             if getattr(config.scan, 'is_steps_scan', config.scan.dimension == 'steps'):
                 self._run_steps_scan(config, algorithm, result, observer)
             else:
-                self._run_standard_scan(config, algorithm, result, observer)
+                self._run_standard_scan(config, algorithm, result, observer, resume_results)
             
             self._emit(observer, ProgressEventType.EXPERIMENT_END, {'result': result})
             return result
@@ -245,6 +257,10 @@ class ExperimentRunner:
         except Exception as e:
             self._emit(observer, ProgressEventType.ERROR, {'error': str(e)})
             raise e
+        finally:
+            # Stop MemoryGuard
+            if hasattr(self, '_memory_guard') and self._memory_guard:
+                self._memory_guard.stop()
     
     def run_scaling_sweep(
         self,
@@ -293,6 +309,7 @@ class ExperimentRunner:
         algorithm: 'AlgorithmBase',
         result: ExperimentResult,
         observer: Optional[Callable[[ProgressEvent], None]],
+        resume_results: Optional[Dict[float, Dict]] = None,
     ):
         """
         Run standard scan (alpha, samples, seed).
@@ -314,11 +331,31 @@ class ExperimentRunner:
             alpha_values=[float(v) for v in scan_values],
             algorithm_key=config.algorithm_key,
             use_compile=config.algorithm_params.use_compile,
+            use_bf16=True,  # BF16 is always enabled for spreading algorithm
             f_distribution=f_dist,
         )
         
         # Get execution plan from ParallelCoordinator
         plan = self.parallel_coordinator.plan_execution(params)
+        
+        # Initialize checkpoint manager (fixed global path: smf/.checkpoint.pt)
+        ckpt_mgr = CheckpointManager()
+        
+        # Prepare config dict for checkpoint
+        config_dict = config_to_dict(config)
+        
+        # Check if this is a resume or fresh start
+        if resume_results:
+            # Resume mode: use existing results, don't delete checkpoint
+            completed_alphas: List[float] = list(resume_results.keys())
+            checkpoint_results: Dict[float, Dict] = dict(resume_results)
+            if self.verbose:
+                print(f"  📂 Resuming: {len(completed_alphas)} alphas already done")
+        else:
+            # Fresh start: delete old checkpoint
+            ckpt_mgr.delete()
+            completed_alphas: List[float] = []
+            checkpoint_results: Dict[float, Dict] = {}
         
         # Calculate max_alpha for Physics-Aware ETA in UI
         # Pass batch structure to UI so it can predict time accurately
@@ -337,7 +374,8 @@ class ExperimentRunner:
         self._emit(observer, ProgressEventType.EXECUTION_PLAN, {
             'batches': batch_assignments,
             'total_batches': plan.num_batches,
-            'mode': plan.mode.name
+            'mode': plan.mode.name,
+            'algorithm_key': config.algorithm_key  # Phase 4: Enable algorithm-aware ETA
         })
 
         if self.verbose:
@@ -350,6 +388,14 @@ class ExperimentRunner:
         
         for batch_idx, batch in enumerate(plan.batches):
             batch_alpha_values = batch.alpha_values
+            
+            # Skip if all alphas in this batch are already completed (resume mode)
+            remaining_alphas = [a for a in batch_alpha_values if a not in completed_alphas]
+            if not remaining_alphas:
+                if self.verbose:
+                    print(f"  ⏭️ Skipping completed batch {batch_idx+1}/{total_batches}")
+                global_point_idx += len(batch_alpha_values)
+                continue
             
             # Emit Batch Start Event
             self._emit(observer, ProgressEventType.BATCH_START, {
@@ -364,88 +410,236 @@ class ExperimentRunner:
                 alpha_range = f"{min(batch_alpha_values):.2f}-{max(batch_alpha_values):.2f}"
                 print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
             
-            # Create data for this batch
-            data = self.data_factory.create(config, alpha_values=batch_alpha_values)
-            
-            # Create a localized step callback for this batch
-            def internal_step_callback(step, total, metrics=None):
-                self._emit(observer, ProgressEventType.STEP_UPDATE, {
-                    'step': step, 
-                    'total': total,
-                    'batch_idx': batch_idx,
-                    'metrics': metrics
-                })
+            try:
+                # Create data for this batch
+                data = self.data_factory.create(config, alpha_values=batch_alpha_values)
+                
+                # Check abort after data creation (OOM may occur during data setup)
+                if self._memory_guard and self._memory_guard.is_running:
+                    self._memory_guard.check_abort()
+                
+                # Create a localized step callback for this batch
+                def internal_step_callback(step, total, metrics=None):
+                    # Check memory abort flag every step (no algorithm modification needed)
+                    if self._memory_guard and self._memory_guard.is_running:
+                        self._memory_guard.check_abort()
+                    
+                    self._emit(observer, ProgressEventType.STEP_UPDATE, {
+                        'step': step, 
+                        'total': total,
+                        'batch_idx': batch_idx,
+                        'metrics': metrics
+                    })
 
-            # Run algorithm for this batch
-            W_students, X_students = self._run_algorithm(
-                algorithm=algorithm,
-                config=config,
-                data=data,
-                step_callback=internal_step_callback,
-            )
-            
-            # Process each alpha in the batch
-            for alpha_idx, alpha in enumerate(batch_alpha_values):
-                start_time = time.time()
+                # Run algorithm for this batch
+                W_students, X_students = self._run_algorithm(
+                    algorithm=algorithm,
+                    config=config,
+                    data=data,
+                    step_callback=internal_step_callback,
+                )
                 
-                # Report Point Start (for granular UI)
-                self._emit(observer, ProgressEventType.POINT_START, {
-                    'point_idx': global_point_idx + 1,
-                    'total_points': total_points,
-                    'value': alpha
+                # Process each alpha in the batch
+                for alpha_idx, alpha in enumerate(batch_alpha_values):
+                    start_time = time.time()
+                    
+                    # Report Point Start (for granular UI)
+                    self._emit(observer, ProgressEventType.POINT_START, {
+                        'point_idx': global_point_idx + 1,
+                        'total_points': total_points,
+                        'value': alpha
+                    })
+                    
+                    # Extract results (same as before)
+                    if W_students.dim() == 4:
+                        W_single = W_students[alpha_idx]
+                        X_single = X_students[alpha_idx]
+                    else:
+                        W_single = W_students
+                        X_single = X_students
+                    
+                    # Create single-alpha data for metrics
+                    single_data = ExperimentData(
+                        W_teacher=data.W_teacher,
+                        X_teacher=data.X_teacher,
+                        Y_teacher=data.Y_teacher,
+                        masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
+                        alpha_values=[alpha],
+                    )
+                    
+                    # Compute metrics
+                    metrics = self._compute_metrics(
+                        W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
+                        X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
+                        data=single_data,
+                    )
+                    
+                    # Store result
+                    single_result = SingleRunResult(
+                        scan_value=alpha,
+                        metrics=metrics,
+                        W_students=W_single,
+                        X_students=X_single,
+                        mask=None, # Optimization: Don't save masks to save space unless needed
+                        duration_seconds=time.time() - start_time,
+                    )
+                    result.add_result(alpha, single_result)
+                    
+                    global_point_idx += 1
+                    self._emit(observer, ProgressEventType.POINT_COMPLETE, {
+                        'point_idx': global_point_idx,
+                        'total_points': total_points,
+                        'value': alpha,
+                        'metrics': metrics
+                    })
+                
+                # Emit Batch End Event
+                self._emit(observer, ProgressEventType.BATCH_END, {
+                    'batch_idx': batch_idx, 
+                    'duration': 0.0 # TODO: Track actual duration
                 })
                 
-                # Extract results (same as before)
-                if W_students.dim() == 4:
-                    W_single = W_students[alpha_idx]
-                    X_single = X_students[alpha_idx]
-                else:
-                    W_single = W_students
-                    X_single = X_students
+                # Save checkpoint after successful batch
+                for alpha in batch_alpha_values:
+                    if alpha not in completed_alphas:
+                        completed_alphas.append(alpha)
+                        # Save metrics (not tensors)
+                        if alpha in result.results:
+                            r = result.results[alpha]
+                            checkpoint_results[alpha] = {
+                                'metrics': r.metrics if hasattr(r, 'metrics') else {},
+                                'duration_seconds': r.duration_seconds if hasattr(r, 'duration_seconds') else 0.0,
+                            }
                 
-                # Create single-alpha data for metrics
-                single_data = ExperimentData(
-                    W_teacher=data.W_teacher,
-                    X_teacher=data.X_teacher,
-                    Y_teacher=data.Y_teacher,
-                    masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
-                    alpha_values=[alpha],
-                )
+                ckpt_mgr.save(config_dict, completed_alphas, checkpoint_results)
                 
-                # Compute metrics
-                metrics = self._compute_metrics(
-                    W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
-                    X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
-                    data=single_data,
-                )
+                # Clean up batch data before next batch
+                del data
+                del W_students
+                del X_students
                 
-                # Store result
-                single_result = SingleRunResult(
-                    scan_value=alpha,
-                    metrics=metrics,
-                    W_students=W_single,
-                    X_students=X_single,
-                    mask=None, # Optimization: Don't save masks to save space unless needed
-                    duration_seconds=time.time() - start_time,
-                )
-                result.add_result(alpha, single_result)
+            except MemoryAbortException as e:
+                # OOM batch recovery: current batch failed
+                # This is different from Ctrl-C: we need to replan with more conservative settings
+                logger.warning(f"Batch {batch_idx} aborted due to OOM: {e}")
+                if self.verbose:
+                    print(f"  ⚠️ Batch {batch_idx+1} failed (OOM)")
+                    print(f"  🔄 Replanning remaining batches with conservative settings...")
                 
-                global_point_idx += 1
-                self._emit(observer, ProgressEventType.POINT_COMPLETE, {
-                    'point_idx': global_point_idx,
-                    'total_points': total_points,
-                    'value': alpha,
-                    'metrics': metrics
-                })
+                # Clean up any partial data
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                
+                # Mark this as OOM recovery in checkpoint for resume distinction
+                ckpt_mgr._oom_triggered = True
+                
+                # Collect remaining alphas (current failed batch + unprocessed batches)
+                remaining_alphas = list(batch_alpha_values)  # Current failed batch
+                for future_batch in plan.batches[batch_idx + 1:]:
+                    remaining_alphas.extend(future_batch.alpha_values)
+                
+                if remaining_alphas:
+                    # Replan with more conservative factor (70% of original allocation)
+                    conservative_params = EstimationParams(
+                        N1=config.matrix.N1,
+                        N2=config.matrix.N2,
+                        M=config.matrix.M,
+                        S=config.training.samples_per_alpha,
+                        alpha_values=[float(v) for v in remaining_alphas],
+                        algorithm_key=config.algorithm_key,
+                        use_compile=config.algorithm_params.use_compile,
+                        use_bf16=True,
+                        f_distribution=f_dist,
+                    )
+                    
+                    # Get new plan with reduced allocation (0.7x factor)
+                    old_ratio = self.parallel_coordinator.config.allocation_ratio
+                    self.parallel_coordinator.config.allocation_ratio = old_ratio * 0.7
+                    new_plan = self.parallel_coordinator.plan_execution(conservative_params)
+                    self.parallel_coordinator.config.allocation_ratio = old_ratio  # Restore
+                    
+                    if self.verbose:
+                        print(f"     New plan: {new_plan.num_batches} batches (was {plan.num_batches - batch_idx})")
+                    
+                    # Execute remaining with new plan
+                    new_batch_offset = batch_idx + 1
+                    for new_batch_idx, new_batch in enumerate(new_plan.batches):
+                        actual_batch_idx = new_batch_offset + new_batch_idx
+                        try:
+                            # Execute new batch (simplified, reuse same logic)
+                            new_batch_alphas = new_batch.alpha_values
+                            data = self.data_factory.create(config, alpha_values=new_batch_alphas)
+                            
+                            W_students, X_students = self._run_algorithm(
+                                algorithm=algorithm,
+                                config=config,
+                                data=data,
+                                step_callback=internal_step_callback,
+                            )
+                            
+                            for alpha_idx, alpha in enumerate(new_batch_alphas):
+                                if W_students.dim() == 4:
+                                    W_single = W_students[alpha_idx]
+                                    X_single = X_students[alpha_idx]
+                                else:
+                                    W_single = W_students
+                                    X_single = X_students
+                                
+                                single_data = ExperimentData(
+                                    W_teacher=data.W_teacher,
+                                    X_teacher=data.X_teacher,
+                                    Y_teacher=data.Y_teacher,
+                                    masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
+                                    alpha_values=[alpha],
+                                )
+                                
+                                metrics = self._compute_metrics(
+                                    W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
+                                    X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
+                                    data=single_data,
+                                )
+                                
+                                single_result = SingleRunResult(
+                                    scan_value=alpha,
+                                    metrics=metrics,
+                                    W_students=W_single,
+                                    X_students=X_single,
+                                    mask=None,
+                                    duration_seconds=0.0,
+                                )
+                                result.add_result(alpha, single_result)
+                                global_point_idx += 1
+                            
+                            ckpt_mgr.save_batch(
+                                batch_idx=actual_batch_idx,
+                                batch_alphas=new_batch_alphas,
+                                results={alpha: result.results.get(alpha) for alpha in new_batch_alphas},
+                            )
+                            
+                            del data, W_students, X_students
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            
+                        except MemoryAbortException:
+                            # Still failing, skip this batch
+                            if self.verbose:
+                                print(f"     Batch {actual_batch_idx} still failed, skipping...")
+                            continue
+                    
+                    # Exit the original loop since we've handled remaining batches
+                    break
+                
+                continue
             
-            # Emit Batch End Event
-            self._emit(observer, ProgressEventType.BATCH_END, {
-                'batch_idx': batch_idx, 
-                'duration': 0.0 # TODO: Track actual duration
-            })
-            
-            # Clear cache between batches
+            # Force memory cleanup between batches (all algorithms)
+            import gc
+            gc.collect()
             torch.cuda.empty_cache()
+        
+        # Cleanup checkpoints on successful completion
+        if global_point_idx == total_points:
+            ckpt_mgr.delete()
     
     def _run_steps_scan(
         self,

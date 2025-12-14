@@ -11,7 +11,6 @@ Available algorithms:
 from .base import AlgorithmBase
 from .bigamp import BiGAMPAlgorithm
 from .bigamp_spreading import BiGAMPSpreading
-from .bigamp_spreading_parallel_unit import BiGAMPSpreadingParallelUnit  # Unit scaling version
 from .agd import AGDAlgorithm
 from .combined import CombinedAlgorithm
 
@@ -19,7 +18,6 @@ __all__ = [
     'AlgorithmBase',
     'BiGAMPAlgorithm',
     'BiGAMPSpreading',
-    'BiGAMPSpreadingParallelUnit',
     'AGDAlgorithm',
     'CombinedAlgorithm',
 ]

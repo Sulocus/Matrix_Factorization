@@ -15,7 +15,7 @@ from datetime import datetime
 from .execution_plan import ExecutionPlan, ExecutionStep
 from .config import Config
 from .parameter_space import merge_config
-from .llm_logger import get_logger
+
 
 
 class PlanExecutor:
@@ -59,7 +59,7 @@ class PlanExecutor:
         """Run a single-step experiment (standard mode)."""
         from ..runner import run_experiment
 
-        logger = get_logger()
+
 
         # If base_config provided, use it; otherwise build from plan
         if base_config is None:
@@ -68,31 +68,13 @@ class PlanExecutor:
                 base_config = self._build_config_from_dict(plan.steps[0].config_dict)
             else:
                 # Single-step plan without explicit steps - use plan's module info
-                logger.log_execution(
-                    status="failed",
-                    steps_completed=0,
-                    steps_total=1,
-                    error_message="Single-step plan requires base_config or plan.steps[0]"
-                )
+                print("Warning: Single-step plan requires base_config or plan.steps[0]")
                 raise ValueError("Single-step plan requires base_config or plan.steps[0]")
 
         try:
             result = run_experiment(base_config, save=True)
-            result_path = result.get('result_path')
-            logger.log_execution(
-                status="success",
-                steps_completed=1,
-                steps_total=1,
-                result_paths=[str(result_path)] if result_path else None
-            )
             return result
-        except Exception as e:
-            logger.log_execution(
-                status="failed",
-                steps_completed=0,
-                steps_total=1,
-                error_message=str(e)
-            )
+        except Exception:
             raise
 
     def _run_multi_step(self, plan: ExecutionPlan, base_config: Config) -> Dict[str, Any]:
@@ -105,16 +87,10 @@ class PlanExecutor:
         """
         from ..runner import run_experiment
 
-        logger = get_logger()
         total_steps = len(plan.steps)
 
         if base_config is None:
-            logger.log_execution(
-                status="failed",
-                steps_completed=0,
-                steps_total=total_steps,
-                error_message="Multi-step plans require a base_config"
-            )
+            print("Error: Multi-step plans require a base_config")
             raise ValueError("Multi-step plans require a base_config")
 
         all_results = {}
@@ -149,14 +125,6 @@ class PlanExecutor:
             # Execute post-processing
             post_results = self._run_post_process(plan, comparison_dir)
 
-            # Log successful completion
-            logger.log_execution(
-                status="success",
-                steps_completed=completed_steps,
-                steps_total=total_steps,
-                result_paths=step_paths + [str(comparison_dir)]
-            )
-
             return {
                 'type': 'comparison',
                 'steps': total_steps,
@@ -166,15 +134,7 @@ class PlanExecutor:
                 'post_process_results': post_results,
             }
 
-        except Exception as e:
-            # Log partial completion
-            logger.log_execution(
-                status="partial" if completed_steps > 0 else "failed",
-                steps_completed=completed_steps,
-                steps_total=total_steps,
-                error_message=str(e),
-                result_paths=step_paths if step_paths else None
-            )
+        except Exception:
             raise
 
     def _run_post_process(self, plan: ExecutionPlan, output_dir: Path) -> List[Dict[str, Any]]:

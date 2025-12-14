@@ -26,6 +26,11 @@ class MemoryEventType(Enum):
     CRITICAL = auto()  # > 90% usage
 
 
+class MemoryAbortException(Exception):
+    """Raised when memory critical threshold is exceeded and abort is requested."""
+    pass
+
+
 @dataclass
 class MemoryEvent:
     """Memory monitoring event."""
@@ -68,8 +73,8 @@ class MemoryGuard:
     """
     
     # Default thresholds (can be overridden in constructor)
-    DEFAULT_WARNING_THRESHOLD = 0.85
-    DEFAULT_CRITICAL_THRESHOLD = 0.90
+    DEFAULT_WARNING_THRESHOLD = 0.85  # Normal allocation upper limit
+    DEFAULT_CRITICAL_THRESHOLD = 0.95  # Trigger batch recovery
     
     def __init__(
         self,
@@ -86,8 +91,8 @@ class MemoryGuard:
         Args:
             on_warning: Callback for warning events (> warning_threshold)
             on_critical: Callback for critical events (> critical_threshold)
-            warning_threshold: Ratio (0-1) for warning trigger
-            critical_threshold: Ratio (0-1) for critical trigger
+            warning_threshold: Ratio (0-1) for normal allocation limit
+            critical_threshold: Ratio (0-1) for batch recovery trigger
             check_interval: Seconds between checks
             warning_cooldown: Seconds between repeated warnings
         """
@@ -107,6 +112,32 @@ class MemoryGuard:
         self._peak_usage = 0.0
         self._events: list = []
         self._is_running = False
+        
+        # ABORT MECHANISM: Set by on_critical, checked by algorithm
+        self._abort_requested = threading.Event()
+    
+    def request_abort(self) -> None:
+        """Request abort of current operation. Called from on_critical."""
+        self._abort_requested.set()
+        logger.warning("[MemoryGuard] ABORT REQUESTED - algorithm should check and stop")
+    
+    def check_abort(self) -> None:
+        """Check if abort was requested. Raises MemoryAbortException if so.
+        
+        Call this in algorithm's step loop to enable OOM recovery.
+        """
+        if self._abort_requested.is_set():
+            self._abort_requested.clear()  # Reset for next batch
+            raise MemoryAbortException("Memory critical threshold exceeded, aborting batch")
+    
+    @property
+    def abort_requested(self) -> bool:
+        """Check if abort is pending without raising exception."""
+        return self._abort_requested.is_set()
+    
+    def clear_abort(self) -> None:
+        """Clear abort flag (call after successful recovery)."""
+        self._abort_requested.clear()
     
     def start(self) -> None:
         """Start background monitoring thread."""
@@ -230,17 +261,52 @@ class MemoryGuard:
         if not torch.cuda.is_available():
             return None
         
+        # 1. Try pynvml (Most accurate & efficient)
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            device_id = torch.cuda.current_device()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return {
+                'used': info.used / (1024**3),
+                'total': info.total / (1024**3),
+            }
+        except (ImportError, Exception):
+            pass
+            
+        # 2. Try torch.cuda (Fastest, in-process)
+        # Note: memory_reserved is what actually occupies VRAM from OS perspective
         try:
             device = torch.cuda.current_device()
-            allocated = torch.cuda.memory_allocated(device)
+            reserved = torch.cuda.memory_reserved(device)
             total = torch.cuda.get_device_properties(device).total_memory
-            
             return {
-                'used': allocated / (1024**3),
+                'used': reserved / (1024**3),
                 'total': total / (1024**3),
             }
+        except Exception as e:
+            logger.debug(f"torch.cuda memory check failed: {e}")
+            
+        # 3. Fallback to nvidia-smi (Slow subprocess - strictly last resort)
+        # Only use if we really can't get data otherwise
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=memory.used,memory.total', 
+                 '--format=csv,noheader,nounits', '-i', str(torch.cuda.current_device())],
+                capture_output=True, text=True, timeout=1.0
+            )
+            if result.returncode == 0:
+                used_mb, total_mb = map(float, result.stdout.strip().split(','))
+                return {
+                    'used': used_mb / 1024,
+                    'total': total_mb / 1024,
+                }
         except Exception:
-            return None
+            pass
+            
+        return None
 
 
 class OOMRecoveryHandler:
@@ -281,7 +347,12 @@ class OOMRecoveryHandler:
     
     def handle_critical(self, event: MemoryEvent) -> None:
         """
-        Handle critical memory event.
+        Handle critical memory event with batch recovery.
+        
+        When memory exceeds 95%, trigger batch recovery:
+        - Abort current batch
+        - Cleanup GPU memory
+        - Continue with next batch
         
         Args:
             event: The critical memory event
@@ -291,6 +362,14 @@ class OOMRecoveryHandler:
                 f"[OOMRecoveryHandler] CRITICAL: {event.usage_ratio:.1%} used! "
                 f"({event.used_gb:.1f}/{event.total_gb:.1f} GB)"
             )
+            
+            # Batch recovery mode
+            print(f"\n⚠️ OOM PROTECTION: Memory at {event.usage_ratio:.1%}")
+            print("🔄 Initiating batch recovery...")
+            
+            # 0. Request abort - algorithm should check this flag
+            if self.coordinator._memory_guard:
+                self.coordinator._memory_guard.request_abort()
             
             # 1. Abort current batch
             self.coordinator.abort_current_batch()
@@ -302,25 +381,19 @@ class OOMRecoveryHandler:
             if self.coordinator.estimator:
                 self.coordinator.estimator.record_oom_event(event.usage_ratio)
             
-            # 4. Attempt recovery
+            # 4. Increment retry counter for tracking
             if self.retry_count < self.max_retries:
                 self.retry_count += 1
                 logger.info(
-                    f"Attempting recovery ({self.retry_count}/{self.max_retries})"
+                    f"Batch recovery initiated ({self.retry_count}/{self.max_retries})"
                 )
-                
-                # Replan with more conservative settings
-                try:
-                    new_plan = self.coordinator.replan_with_safety(
-                        factor=self.reduction_factor
-                    )
-                    logger.info(f"Replanned: {new_plan.mode.name}")
-                except Exception as e:
-                    logger.error(f"Replan failed: {e}")
+                print(f"   Recovery attempt {self.retry_count}/{self.max_retries}")
             else:
+                # Max retries exceeded - let the exception propagate
                 raise RuntimeError(
                     f"OOM recovery failed after {self.max_retries} retries. "
-                    f"Peak usage: {event.usage_ratio:.1%}"
+                    f"Peak usage: {event.usage_ratio:.1%}. "
+                    f"Consider reducing problem size or using 'smf resume' to continue."
                 )
     
     def reset(self) -> None:

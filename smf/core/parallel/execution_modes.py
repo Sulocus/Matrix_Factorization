@@ -101,12 +101,11 @@ class AllocationConfig:
     """
     Memory allocation configuration.
     
-    Design Philosophy:
-    - estimation_precision: Used for accurate memory calculation
-    - allocation_ratio: Used for conservative allocation (50-60%)
-    - detection_threshold: Used for runtime monitoring (85-90%)
+    Threshold system:
+    - warning_threshold (85%): Normal allocation upper limit
+    - critical_threshold (95%): Trigger batch recovery
     
-    This allows precise estimation while maintaining a large buffer
+    This allows precise estimation while maintaining a buffer
     for torch.compile dynamic caches and unexpected memory spikes.
     """
     # Core allocation parameters
@@ -114,8 +113,8 @@ class AllocationConfig:
     max_allocation_gb: Optional[float] = None  # Optional hard limit
     
     # Runtime monitoring thresholds
-    warning_threshold: float = 0.85     # Warning threshold
-    critical_threshold: float = 0.90    # Critical threshold (trigger OOM recovery)
+    warning_threshold: float = 0.85     # Normal allocation limit
+    critical_threshold: float = 0.95    # Batch recovery trigger
     
     # Estimation parameters
     apply_calibration: bool = True      # Apply calibration factors
@@ -130,22 +129,21 @@ class AllocationPresets:
     use the actual GPU memory. Set it explicitly only if you want a hard limit.
     """
     
-    # Conservative: Large buffer for safety (55% of available)
-    # Suitable for most use cases - leaves 45% buffer for torch.compile etc.
+    # Conservative: 60% allocation with batch recovery protection
     CONSERVATIVE = AllocationConfig(
-        allocation_ratio=0.55,
-        max_allocation_gb=None,  # No hard limit - use GPU's actual memory
-        warning_threshold=0.80,
-        critical_threshold=0.90,
-        safety_margin=1.2
-    )
-    
-    # Balanced: Moderate buffer (70% of available)
-    BALANCED = AllocationConfig(
-        allocation_ratio=0.70,
+        allocation_ratio=0.60,  # Reduced from 0.85 to provide true safety buffer
         max_allocation_gb=None,
         warning_threshold=0.85,
-        critical_threshold=0.90,
+        critical_threshold=0.95,
+        safety_margin=1.1
+    )
+    
+    # Balanced: Moderate buffer (75% of available)
+    BALANCED = AllocationConfig(
+        allocation_ratio=0.75,
+        max_allocation_gb=None,
+        warning_threshold=0.85,
+        critical_threshold=0.95,
         safety_margin=1.1
     )
     

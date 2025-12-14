@@ -97,15 +97,19 @@ class UnifiedProgress:
         self._console = Console()
         self._live = None
 
-    def set_plan(self, batch_assignments: List[tuple], total_batches: int = None):
+    def set_plan(self, batch_assignments: List[tuple], total_batches: int = None, algorithm_key: str = None):
         """Update execution plan and initialize physics-aware ETA."""
         if total_batches:
             self._total_batches = total_batches
             
         if batch_assignments:
             try:
-                from .physics_eta import PhysicsAwareETA
-                self._physics_eta = PhysicsAwareETA(batch_assignments)
+                from .physics_eta import create_eta_estimator
+                self._physics_eta = create_eta_estimator(
+                    alpha_values=[], # Not needed if batch_assignments provided
+                    dynamic_batches=batch_assignments,
+                    algorithm_name=algorithm_key or "bigamp_spreading"
+                )
                 # Recalculate processed workload for any already-completed batches
                 if self._completed_batches > 0:
                      # This is rare if set_plan is called at start, but good for safety
@@ -250,9 +254,11 @@ class UnifiedProgress:
             return self.initial_estimate if self.initial_estimate else 0
 
         # Phase 4: Use physics-aware ETA if available
-        if self._physics_eta and self._completed_batches > 0:
+        # Phase 4: Use physics-aware ETA if available
+        if self._physics_eta:
             # Physics ETA uses α_max-weighted workload for accurate estimation
-            eta, _ = self._physics_eta.end_batch(self._completed_batches - 1)
+            step_pct = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
+            eta, _ = self._physics_eta.get_status(self._completed_batches, step_pct)
             return eta
 
         total_elapsed = time.time() - self._total_start_time
@@ -339,6 +345,11 @@ class UnifiedProgress:
         self._batch_start_time = time.time()
         self._current_step = 0
         self._frame += 1
+        
+        # Sync Physics ETA state (critical for accurate time estimation)
+        if self._physics_eta:
+            self._physics_eta.start_batch(batch_idx)
+        
         self._live.update(self._render())
 
     def start_alpha(self, alpha: float, batch_alphas: List[float] = None):
@@ -667,7 +678,8 @@ class ProgressBridge:
             if self.progress:
                 self.progress.set_plan(
                     batch_assignments=p.get('batches'),
-                    total_batches=p.get('total_batches')
+                    total_batches=p.get('total_batches'),
+                    algorithm_key=p.get('algorithm_key')
                 )
         elif type_name == 'STEP_UPDATE':
             if self.progress:

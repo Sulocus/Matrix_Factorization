@@ -105,6 +105,8 @@ class ParallelCoordinator:
             f"Planning execution: available={available_gb:.1f}GB, "
             f"target={target_gb:.1f}GB (ratio={self.config.allocation_ratio:.0%})"
         )
+        # DEBUG: Print to terminal
+        
         
         S = params.S
         A = len(params.alpha_values)
@@ -342,6 +344,10 @@ class ParallelCoordinator:
                 estimate = self.estimator.estimate(batch_params)
                 
                 if estimate.total_gb <= target_gb:
+                    logger.info(
+                        f"Batch selected: alphas={len(batch_alphas)}, α_max={batch_alpha_max:.2f}, "
+                        f"estimate={estimate.total_gb:.1f}GB <= target={target_gb:.1f}GB"
+                    )
                     batches.append(BatchConfig(
                         sample_range=(0, params.S),
                         alpha_range=(current_start, end),
@@ -426,8 +432,14 @@ class ParallelCoordinator:
         gc.collect()
     
     def _get_available_memory(self) -> float:
-        """Get available GPU memory in GB."""
-        return self.estimator.get_available_memory() or 8.0  # Default for CPU
+        """Get available GPU memory in GB.
+        
+        Subtracts fixed CUDA overhead (~500MB) for context, compile cache, etc.
+        This is the ONLY place where overhead is accounted for.
+        """
+        raw_memory = self.estimator.get_available_memory() or 8.0  # Default for CPU
+        CUDA_OVERHEAD_GB = 0.5  # Fixed 500MB for CUDA context
+        return max(raw_memory - CUDA_OVERHEAD_GB, 1.0)
 
 
 class BatchExecutionContext:
