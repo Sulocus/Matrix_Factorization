@@ -191,7 +191,8 @@ class UnifiedProgress:
                  step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
                  
                  # FIX: Don't estimate total if progress is tiny (startup overhead dominates)
-                 if step_pct < 0.01:
+                 # USER REQUEST: "Wait 10 seconds"
+                 if step_pct < 0.01 or elapsed < 10.0:
                      batch_total_estimated = -1.0
                  else:
                      batch_total_estimated = batch_elapsed / step_pct
@@ -303,6 +304,11 @@ class UnifiedProgress:
 
         if not self._total_start_time:
             return self.initial_estimate if self.initial_estimate else -1
+            
+        # USER REQUEST: Force 10s warmup masking for accurate initial reading
+        elapsed = time.time() - self._total_start_time
+        if elapsed < 10.0:
+            return -1.0
 
         # Helper to update cache
         def _return_and_cache(val):

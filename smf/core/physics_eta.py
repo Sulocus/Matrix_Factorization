@@ -69,15 +69,14 @@ class PhysicsAwareETA:
         
         # Runtime State
         self.processed_workload = 0.0 # Workload of COMPLETED batches
-        self.start_time = time.time()
-        self.rates = deque(maxlen=window_size) # Workload units / second
-        self.batch_start_time = None
         self.rates = deque(maxlen=window_size) # Workload units / second
         self.batch_start_time = None
         self.current_batch_idx = -1
         
-        # Resume Support: Track initial workload to isolate session performance
-        self.initial_workload_offset = None
+        # Differential Rate State
+        self.last_check_time = time.time()
+        self.last_check_workload = 0.0
+        self.first_update_done = False
                 
         # Print the Plan for the user (Transparency)
         # We can't print easily here as it might break UI, but we can log
@@ -122,31 +121,34 @@ class PhysicsAwareETA:
              pct = max(0.0, min(1.0, step_pct))
              done_workload += current_weight * pct
 
-        # Initialize offset on first update (Resume capability)
-        if self.initial_workload_offset is None:
-            # We assume the session starts processing effectively from this point
-            # To be safe against "start mid-batch", we set offset to the beginning of this batch
-            # or simply use current done_workload if we assume we just started.
-            # However, if we resume at batch 10, done_workload includes batches 0-9.
-            # We must exclude 0-9 from rate calculation.
-            
-            # Better strategy: Set offset to workload of COMPLETED batches before this session.
-            # But we don't know exactly which were completed offline.
-            # SIMPLEST: Set offset = done_workload_at_start.
-            # But update_progress is called continuously.
-            # Let's assume the first call defines the baseline.
-            # But wait, first call might have step_pct > 0.
-            # For 100% safety: offset = sum(weights[:batch_idx]) (completed batches)
-            # This ignores the partial progress of current batch in the offset, 
-            # effectively treating current batch as "fresh work" for rate calc.
-            self.initial_workload_offset = sum(self.batch_weights[:batch_idx])
+        # Calculate Total Workload (Absolute, from start of experiment plan)
+        total_current_workload = sum(self.batch_weights[:batch_idx])
+        if 0 <= batch_idx < len(self.batch_weights):
+             current_weight = self.batch_weights[batch_idx]
+             pct = max(0.0, min(1.0, step_pct))
+             total_current_workload += current_weight * pct
 
-        # Update Global Rate (Most stable metric) based on SESSION performance
-        session_work = done_workload - self.initial_workload_offset
+        # 1+1=2 Simple Physics: Instantaneous Rate = delta_Work / delta_Time
+        # This completely bypasses Resume/Offset issues. We just measure speed NOW.
+        if not self.first_update_done:
+            # First call: Just establish baseline, don't calculate rate yet
+            self.last_check_workload = total_current_workload
+            self.last_check_time = now
+            self.first_update_done = True
+            return
+
+        dt = now - self.last_check_time
+        dw = total_current_workload - self.last_check_workload
         
-        if session_work > 0 and total_elapsed > 0:
-             current_global_rate = session_work / total_elapsed
-             self.rates.append(current_global_rate)
+        # Only update if enough time passed (avoid jitter from ms updates)
+        if dt > 0.2: 
+             rate = dw / dt
+             # Filter huge spikes (e.g. batch finish jump) or negatives
+             if rate >= 0:
+                 self.rates.append(rate)
+             
+             self.last_check_time = now
+             self.last_check_workload = total_current_workload
 
     def predict_eta(self) -> float:
         """
