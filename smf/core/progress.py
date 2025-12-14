@@ -311,11 +311,11 @@ class UnifiedProgress:
             return val
 
         # Phase 4: Use physics-aware ETA if available
-        # DISABLE: Physics ETA is broken for Resume mode (mixes global progress with session time)
-        # if self._physics_eta:
-        #     step_pct = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
-        #     eta, _ = self._physics_eta.get_status(self._completed_batches, step_pct)
-        #     return _return_and_cache(eta)
+        # FIX: PhysicsAwareETA now correctly handles Resume by using session-based work tracking
+        if self._physics_eta:
+            step_pct = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
+            eta, _ = self._physics_eta.get_status(self._completed_batches, step_pct)
+            return _return_and_cache(eta)
 
         total_elapsed = time.time() - self._total_start_time
 
