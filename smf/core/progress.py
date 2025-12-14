@@ -203,7 +203,7 @@ class UnifiedProgress:
 
         # Alpha range string
         if self._current_batch_alphas and len(self._current_batch_alphas) > 1:
-            alpha_str = f"{self._current_batch_alphas[0]:.1f}-{self._current_batch_alphas[-1]:.1f}"
+            alpha_str = f"{self._current_batch_alphas[0]:.2f}-{self._current_batch_alphas[-1]:.2f}"
         else:
             alpha_str = f"{self._current_alpha:.2f}"
 
