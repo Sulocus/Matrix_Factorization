@@ -185,7 +185,12 @@ class UnifiedProgress:
             elif self._current_step > 0:
                  # First batch, slow start: cumulative fallback
                  step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
-                 batch_total_estimated = batch_elapsed / step_pct
+                 
+                 # FIX: Don't estimate total if progress is tiny (startup overhead dominates)
+                 if step_pct < 0.01:
+                     batch_total_estimated = 0
+                 else:
+                     batch_total_estimated = batch_elapsed / step_pct
 
         # Throttling Batch Total Time Display (User Request: 5-10s)
         if now - self._last_batch_total_update > 5.0 or self._cached_batch_total == 0:
