@@ -84,6 +84,7 @@ class UnifiedProgress:
         # Phase 4: Physics-aware ETA estimator
         self._physics_eta = None
         self._rate_history = deque(maxlen=50) # Sliding window for smooth it/s (5s history)
+        self._last_history_update = 0
         
         if batch_assignments:
             try:
@@ -140,7 +141,12 @@ class UnifiedProgress:
 
         # Timing
         now = time.time()
-        self._rate_history.append((now, self._current_step))
+        
+        # Rate Limiting History (10Hz sampling) ensures 5s window with maxlen=50
+        if now - self._last_history_update > 0.1:
+            self._rate_history.append((now, self._current_step))
+            self._last_history_update = now
+            
         elapsed = now - self._total_start_time if self._total_start_time else 0
         batch_elapsed = now - self._batch_start_time if self._batch_start_time else 0
         eta = self._estimate_eta()
