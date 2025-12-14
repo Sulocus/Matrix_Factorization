@@ -178,7 +178,11 @@ class UnifiedProgress:
 
         # 2. Calculate Batch Prediction
         batch_total_estimated = -1.0
-        if batch_elapsed > 0:
+        
+        # USER REQUEST: Force 10s warmup masking BEFORE any calculations
+        if elapsed < 10.0:
+            batch_total_estimated = -1.0
+        elif batch_elapsed > 0:
             if it_per_sec > 0.1: # Threshold to avoid divide by zero
                 remaining_steps = max(0, self.steps_per_alpha - self._current_step)
                 remaining_time = remaining_steps / it_per_sec
@@ -189,10 +193,7 @@ class UnifiedProgress:
             elif self._current_step > 0:
                  # First batch, slow start: cumulative fallback
                  step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
-                 
-                 # FIX: Don't estimate total if progress is tiny (startup overhead dominates)
-                 # USER REQUEST: "Wait 10 seconds"
-                 if step_pct < 0.01 or elapsed < 10.0:
+                 if step_pct < 0.01:
                      batch_total_estimated = -1.0
                  else:
                      batch_total_estimated = batch_elapsed / step_pct

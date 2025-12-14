@@ -69,14 +69,15 @@ class PhysicsAwareETA:
         
         # Runtime State
         self.processed_workload = 0.0 # Workload of COMPLETED batches
-        self.rates = deque(maxlen=window_size) # Workload units / second
+        
+        # Session Tracking (for Resume Support)
+        # Session = from when this estimator was created until now
+        self.session_start_time = time.time()
+        self.session_start_workload = None  # Set on first update
+        self.start_time = self.session_start_time  # Alias for compatibility
+        
         self.batch_start_time = None
         self.current_batch_idx = -1
-        
-        # Differential Rate State
-        self.last_check_time = time.time()
-        self.last_check_workload = 0.0
-        self.first_update_done = False
                 
         # Print the Plan for the user (Transparency)
         # We can't print easily here as it might break UI, but we can log
@@ -90,65 +91,47 @@ class PhysicsAwareETA:
     def end_batch(self, batch_idx: int):
         """Called when a batch completes."""
         if 0 <= batch_idx < len(self.batch_weights):
-            # Mark this batch as fully done in the accumulator
-            # (In a real implementation, we might track continuous progress, 
-            # but updating 'completed' blocks is safer).
             pass
 
     def update_progress(self, batch_idx: int, step_pct: float = 0.0):
         """
-        Update rate estimation based on current progress using Relative Ratios.
+        Update rate estimation based on SESSION performance.
         
-        Logic:
-        Total Done = Sum(Weights of prev batches) + (Current Batch Weight * step_pct)
-        Global Rate = Total Done / Total Elapsed Time
+        Logic (User's Request - Simple and Correct):
+        - Session Start Workload = Workload at moment Resume started
+        - Session Work Done = Current Workload - Session Start Workload
+        - Session Time = Now - Session Start Time
+        - Rate = Session Work Done / Session Time
         """
         if self.current_batch_idx < 0:
             return
 
         now = time.time()
-        # Use initial start time to capture full history
-        total_elapsed = now - self.start_time
+        session_elapsed = now - self.session_start_time
         
-        if total_elapsed < 1.0: # Ignore first second to allow warmup
+        # Skip the first 10 seconds (warmup: allocation, compilation)
+        if session_elapsed < 10.0:
             return
 
-        # Calculate Done Workload
-        done_workload = sum(self.batch_weights[:batch_idx])
-        if 0 <= batch_idx < len(self.batch_weights):
-             current_weight = self.batch_weights[batch_idx]
-             # Clamp percentage
-             pct = max(0.0, min(1.0, step_pct))
-             done_workload += current_weight * pct
-
-        # Calculate Total Workload (Absolute, from start of experiment plan)
-        total_current_workload = sum(self.batch_weights[:batch_idx])
+        # Calculate Current Total Workload (absolute)
+        current_workload = sum(self.batch_weights[:batch_idx])
         if 0 <= batch_idx < len(self.batch_weights):
              current_weight = self.batch_weights[batch_idx]
              pct = max(0.0, min(1.0, step_pct))
-             total_current_workload += current_weight * pct
+             current_workload += current_weight * pct
 
-        # 1+1=2 Simple Physics: Instantaneous Rate = delta_Work / delta_Time
-        # This completely bypasses Resume/Offset issues. We just measure speed NOW.
-        if not self.first_update_done:
-            # First call: Just establish baseline, don't calculate rate yet
-            self.last_check_workload = total_current_workload
-            self.last_check_time = now
-            self.first_update_done = True
+        # On first valid update (after warmup), record the baseline
+        if self.session_start_workload is None:
+            self.session_start_workload = current_workload
             return
-
-        dt = now - self.last_check_time
-        dw = total_current_workload - self.last_check_workload
         
-        # Only update if enough time passed (avoid jitter from ms updates)
-        if dt > 0.2: 
-             rate = dw / dt
-             # Filter huge spikes (e.g. batch finish jump) or negatives
-             if rate >= 0:
-                 self.rates.append(rate)
-             
-             self.last_check_time = now
-             self.last_check_workload = total_current_workload
+        # Calculate Session-Based Rate (Simple Cumulative Average)
+        session_work = current_workload - self.session_start_workload
+        
+        if session_work > 0 and session_elapsed > 0:
+            self.current_session_rate = session_work / session_elapsed
+        else:
+            self.current_session_rate = 0.0
 
     def predict_eta(self) -> float:
         """
@@ -179,27 +162,28 @@ class PhysicsAwareETA:
 
     def get_status(self, batch_idx: int, step_pct: float) -> Tuple[float, float]:
         """
-        Get (ETA, Progress) using the Relative Ratio Model.
+        Get (ETA, Progress) using Session-Based Rate.
+        
+        Rate = (Current Workload - Session Start Workload) / Session Elapsed Time
+        ETA = Remaining Workload / Rate
         """
-        # 1. Update internal rate state
+        # 1. Update internal state
         self.update_progress(batch_idx, step_pct)
         
-        # 2. Get stable rate
-        if not self.rates:
+        # 2. Check if we have a valid rate yet
+        if not hasattr(self, 'current_session_rate') or self.current_session_rate <= 0:
              return -1.0, 0.0 # Signal unknown
-             
-        avg_rate = sum(self.rates) / len(self.rates)
         
-        # 3. Calculate Remaining Work
-        done_workload = sum(self.batch_weights[:batch_idx])
+        # 3. Calculate Current Workload and Remaining
+        current_workload = sum(self.batch_weights[:batch_idx])
         if 0 <= batch_idx < len(self.batch_weights):
-             done_workload += self.batch_weights[batch_idx] * max(0.0, min(1.0, step_pct))
-             
-        remaining_workload = max(0.0, self.total_workload - done_workload)
+             current_workload += self.batch_weights[batch_idx] * max(0.0, min(1.0, step_pct))
+              
+        remaining_workload = max(0.0, self.total_workload - current_workload)
         
-        # 4. Predict
-        eta = remaining_workload / avg_rate if avg_rate > 1e-9 else 0.0
-        progress = done_workload / self.total_workload if self.total_workload > 0 else 0.0
+        # 4. Predict ETA
+        eta = remaining_workload / self.current_session_rate
+        progress = current_workload / self.total_workload if self.total_workload > 0 else 0.0
         
         return eta, progress
 
