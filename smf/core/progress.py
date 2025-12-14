@@ -297,10 +297,20 @@ class UnifiedProgress:
             return self.initial_estimate if self.initial_estimate else 0
 
         # Fallback: Use completed batch times for estimation
+        # Fallback: Use completed batch times for estimation
         if self._batch_times:
             avg_time_per_batch = sum(self._batch_times) / len(self._batch_times)
+        elif self._batch_start_time and self._current_step > 0:
+            # FIX: Only use current session data. Do NOT use _completed_batches for division
+            # because it includes skipped batches (Resume mode) having 0 duration.
+            step_elapsed = time.time() - self._batch_start_time
+            step_pct = self._current_step / max(1, self.steps_per_alpha)
+            if step_pct > 0.005: 
+                avg_time_per_batch = step_elapsed / step_pct
+            else:
+                avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
         else:
-            avg_time_per_batch = total_elapsed / self._completed_batches
+            avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
 
         remaining_batches = self._total_batches - self._completed_batches
 
