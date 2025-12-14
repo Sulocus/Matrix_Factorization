@@ -92,6 +92,10 @@ class UnifiedProgress:
         self._last_batch_total_update = 0
         self._cached_batch_total = 0.0
         
+        # Global ETA Throttling
+        self._last_eta_update = 0
+        self._cached_eta = -1.0
+                
         if batch_assignments:
             try:
                 from .physics_eta import PhysicsAwareETA
@@ -200,6 +204,7 @@ class UnifiedProgress:
             batch_total_estimated = self._cached_batch_total
 
         def fmt_time(seconds):
+            if seconds < 0: return "--:--"
             if seconds < 3600:
                 return f"{int(seconds)//60}:{int(seconds)%60:02d}"
             h = int(seconds) // 3600
@@ -208,7 +213,7 @@ class UnifiedProgress:
             return f"{h}:{m:02d}:{s:02d}"
 
         elapsed_str = fmt_time(elapsed)
-        eta_str = fmt_time(eta) if eta >= 0 else "--:--"
+        eta_str = fmt_time(eta)
         batch_elapsed_str = fmt_time(batch_elapsed)
         batch_total_str = fmt_time(batch_total_estimated)
 
@@ -286,34 +291,48 @@ class UnifiedProgress:
     def _estimate_eta(self) -> float:
         """Estimate remaining time based on batch timing.
         
-        Phase 4 Optimization: Uses PhysicsAwareETA if available, which models
-        computational complexity as proportional to α_max in each batch.
-        Falls back to simple avg_batch_time estimation otherwise.
+        Phase 4 Optimization: Uses PhysicsAwareETA if available.
+        Otherwise falls back to sliding window or cumulative average.
+        
+        NOW THROTTLED: Updates only every 5 seconds to prevent jitter.
         """
+        now = time.time()
+        # Return cached value if within 5s window
+        if now - self._last_eta_update < 5.0 and self._cached_eta >= 0:
+            return self._cached_eta
+
         if not self._total_start_time:
-            return self.initial_estimate if self.initial_estimate else 0
+            return self.initial_estimate if self.initial_estimate else -1
+
+        # Helper to update cache
+        def _return_and_cache(val):
+            self._cached_eta = val
+            self._last_eta_update = now
+            return val
 
         # Phase 4: Use physics-aware ETA if available
-        # Phase 4: Use physics-aware ETA if available
         if self._physics_eta:
-            # Physics ETA uses α_max-weighted workload for accurate estimation
             step_pct = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
             eta, _ = self._physics_eta.get_status(self._completed_batches, step_pct)
-            return eta
+            return _return_and_cache(eta)
 
         total_elapsed = time.time() - self._total_start_time
 
+        # If no batches completed yet, estimate from current batch progress
         # If no batches completed yet, estimate from current batch progress
         if self._completed_batches == 0:
             if self._batch_start_time and self._current_step > 0:
                 step_elapsed = time.time() - self._batch_start_time
                 step_pct = self._current_step / self.steps_per_alpha
-                if step_pct > 0.05:  # Wait for 5% progress before estimating
+                if step_pct > 0.01:  # Wait for 1% progress (was 5%)
                     estimated_batch_time = step_elapsed / step_pct
                     remaining_in_current = estimated_batch_time * (1 - step_pct)
                     remaining_batches = self._total_batches - 1
-                    return remaining_in_current + estimated_batch_time * remaining_batches
-            return self.initial_estimate if self.initial_estimate else 0
+                    return _return_and_cache(remaining_in_current + estimated_batch_time * remaining_batches)
+            
+            # Start of very first batch: Return initial estimate or -1 (unknown)
+            # Do NOT return 0, which looks like "Done"
+            return _return_and_cache(self.initial_estimate if self.initial_estimate else -1)
 
         # Fallback: Use completed batch times for estimation
         # Fallback: Use completed batch times for estimation
@@ -353,7 +372,8 @@ class UnifiedProgress:
             else:
                 remaining_in_current = avg_time_per_batch
 
-        return avg_time_per_batch * remaining_batches + remaining_in_current
+        total_est = avg_time_per_batch * remaining_batches + remaining_in_current
+        return _return_and_cache(total_est)
 
 
     def start(self):
