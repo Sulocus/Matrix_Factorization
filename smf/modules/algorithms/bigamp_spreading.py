@@ -684,6 +684,9 @@ def bigamp_step_disjoint_union_flat(
     alpha_scale = 1.0 / math.sqrt(M)
     alpha_scale_sq = 1.0 / M
     
+    # Pre-cast mask once for reuse (avoid multiple casts in function)
+    mask_typed = alpha_mask_exp.to(W_flat.dtype)
+    
     # ===== 1. Gather: one operation for all S*C_max edges =====
     W_sel = W_flat[:, i_offset, :]  # (A, SC, M)
     X_sel = X_flat[:, j_offset, :]  # (A, SC, M)
@@ -696,7 +699,7 @@ def bigamp_step_disjoint_union_flat(
     F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
     # Direct BF16 computation (RTX 5090 native support, 2.7x faster than .float())
     Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)  # (A, SC)
-    Z_hat = Z_hat * alpha_mask_exp.to(W_flat.dtype)
+    Z_hat = Z_hat * mask_typed
     
     # ===== 3. Variance =====
     if is_rademacher:
@@ -706,7 +709,7 @@ def bigamp_step_disjoint_union_flat(
     else:
         F_sq_exp = F_exp.pow(2)  # (1, SC, M)
         V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
-    V = V * alpha_mask_exp.to(W_flat.dtype) + 1e-10
+    V = V * mask_typed + 1e-10
 
     
     # ===== 4. Residuals =====
@@ -717,12 +720,13 @@ def bigamp_step_disjoint_union_flat(
     
     # ===== 5. Scatter: one operation for all edges =====
     s_exp = s_values.unsqueeze(2)  # (A, SC, 1)
-    mask_exp = alpha_mask_exp.unsqueeze(2).float()  # (A, SC, 1)
     inv_V = (1.0 / denom).unsqueeze(2)  # (A, SC, 1)
     
     # Direct BF16 computation (no .float() conversion - 2.7x faster)
     storage_dtype = W_flat.dtype
-    mask_typed = mask_exp.to(storage_dtype)
+    # Reuse pre-casted mask (A, SC) -> (A, SC, 1)
+    mask_typed = mask_typed.unsqueeze(2)
+    
     s_typed = s_exp.to(storage_dtype)
     inv_V_typed = inv_V.to(storage_dtype)
     

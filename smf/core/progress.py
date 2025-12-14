@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, Callable, List
 import time
 import math
 from datetime import timedelta
+from collections import deque
 
 try:
     from rich.console import Console, Group

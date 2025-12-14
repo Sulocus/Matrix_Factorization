@@ -834,15 +834,23 @@ class ExperimentRunner:
             Q_X_list = []
             Q_Y_list = []
             
-            Y_teacher = data.W_teacher @ data.X_teacher
+            # OPTIMIZATION: Reuse pre-computed Y_teacher from DataFactory
+            # data.Y_teacher is scaled by 1/sqrt(M), so we multiply back to match W@X convention
+            import math
+            Y_teacher = data.Y_teacher * math.sqrt(data.M)
+            
+            # OPTIMIZATION: Vectorized student Y computation via Batch Matrix Multiply
+            # (S, N1, M) @ (S, M, N2) -> (S, N1, N2)
+            Y_students = torch.bmm(W_for_metrics, X_for_metrics)
             
             for s in range(S):
                 Q_W = gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True)
                 Q_W_list.append(Q_W)
                 Q_X = gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False)
                 Q_X_list.append(Q_X)
-                Y_student = W_for_metrics[s] @ X_for_metrics[s]
-                Q_Y = compute_qy(Y_student, Y_teacher)
+                
+                # Use pre-computed slice
+                Q_Y = compute_qy(Y_students[s], Y_teacher)
                 Q_Y_list.append(Q_Y)
             
             import numpy as np
