@@ -86,6 +86,7 @@ class UnifiedProgress:
         self._physics_eta = None
         self._rate_history = deque(maxlen=50) # Sliding window for smooth it/s (5s history)
         self._last_history_update = 0
+        self._current_it_per_sec = 0.0  # Shared rate for display and ETA
         
         # Batch Total Time Throttling
         self._last_batch_total_update = 0
@@ -157,17 +158,19 @@ class UnifiedProgress:
         eta = self._estimate_eta()
 
         # 1. Calculate Instantaneous Rate (Sliding Window)
-        it_per_sec = 0.0
+        self._current_it_per_sec = 0.0
         if len(self._rate_history) > 1:
             t_old, s_old = self._rate_history[0]
             dt = now - t_old
             ds = self._current_step - s_old
             if dt > 0.1:
-                it_per_sec = ds / dt
+                self._current_it_per_sec = ds / dt
         
         # Fallback to cumulative if window undefined
-        if it_per_sec < 1e-3 and batch_elapsed > 0.1:
-             it_per_sec = self._current_step / batch_elapsed
+        if self._current_it_per_sec < 1e-3 and batch_elapsed > 0.1:
+             self._current_it_per_sec = self._current_step / batch_elapsed
+
+        it_per_sec = self._current_it_per_sec  # Local alias for brevity
 
         # 2. Calculate Batch Prediction
         batch_total_estimated = 0
@@ -309,17 +312,20 @@ class UnifiedProgress:
 
         # Fallback: Use completed batch times for estimation
         # Fallback: Use completed batch times for estimation
+        # Fallback: Use completed batch times for estimation
         if self._batch_times:
             avg_time_per_batch = sum(self._batch_times) / len(self._batch_times)
         elif self._batch_start_time and self._current_step > 0:
-            # FIX: Only use current session data. Do NOT use _completed_batches for division
-            # because it includes skipped batches (Resume mode) having 0 duration.
-            step_elapsed = time.time() - self._batch_start_time
-            step_pct = self._current_step / max(1, self.steps_per_alpha)
-            if step_pct > 0.005: 
-                avg_time_per_batch = step_elapsed / step_pct
+            # FIX: Use instantaneous rate (sliding window) to project current batch duration
+            # This avoids "2 hour" spikes caused by startup overhead in cumulative average
+            if self._current_it_per_sec > 0.01:
+                # Project based on current speed
+                avg_time_per_batch = max(1, self.steps_per_alpha) / self._current_it_per_sec
             else:
-                avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
+                 # If rate is 0 (start of first batch), use initial estimate if reasonable, else 0
+                 # Don't return 0 if we can help it, show "--" (handled by caller receiving 0 or large)
+                 # Better to return a placeholder based on config if possible, but here we fall back
+                 avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
         else:
             avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
 
