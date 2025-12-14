@@ -83,6 +83,8 @@ class UnifiedProgress:
 
         # Phase 4: Physics-aware ETA estimator
         self._physics_eta = None
+        self._rate_history = deque(maxlen=50) # Sliding window for smooth it/s (5s history)
+        
         if batch_assignments:
             try:
                 from .physics_eta import PhysicsAwareETA
@@ -137,33 +139,39 @@ class UnifiedProgress:
         pct_batch = batch_progress / self._total_batches if self._total_batches > 0 else 0
 
         # Timing
-        elapsed = time.time() - self._total_start_time if self._total_start_time else 0
+        now = time.time()
+        self._rate_history.append((now, self._current_step))
+        elapsed = now - self._total_start_time if self._total_start_time else 0
+        batch_elapsed = now - self._batch_start_time if self._batch_start_time else 0
         eta = self._estimate_eta()
 
-        # Calculate it/s (iterations per second for current batch)
-        batch_elapsed = time.time() - self._batch_start_time if self._batch_start_time else 0
-        if batch_elapsed > 0 and self._current_step > 0:
-            it_per_sec = self._current_step / batch_elapsed
-        else:
-            it_per_sec = 0
+        # 1. Calculate Instantaneous Rate (Sliding Window)
+        it_per_sec = 0.0
+        if len(self._rate_history) > 1:
+            t_old, s_old = self._rate_history[0]
+            dt = now - t_old
+            ds = self._current_step - s_old
+            if dt > 0.1:
+                it_per_sec = ds / dt
+        
+        # Fallback to cumulative if window undefined
+        if it_per_sec < 1e-3 and batch_elapsed > 0.1:
+             it_per_sec = self._current_step / batch_elapsed
 
-        # Calculate batch countdown: elapsed / total_estimated
-        # Left side: current elapsed time (starts at 0, increases)
-        # Right side: estimated total batch time (stable)
-        if batch_elapsed > 0 and self._current_step > 0:
-            step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
-            projected = batch_elapsed / step_pct
-            
-            # Stabilization: Use historical average at start of batch (<5%)
-            if step_pct <= 0.05 and self._batch_times:
-                 avg_time = sum(self._batch_times) / len(self._batch_times)
-                 batch_total_estimated = avg_time
-            elif step_pct > 0.005:  # Only project if > 0.5% progress
-                 batch_total_estimated = projected
-            else:
-                 batch_total_estimated = 0
-        else:
-            batch_total_estimated = 0
+        # 2. Calculate Batch Prediction
+        batch_total_estimated = 0
+        if batch_elapsed > 0:
+            if it_per_sec > 0.1: # Threshold to avoid divide by zero
+                remaining_steps = max(0, self.steps_per_alpha - self._current_step)
+                remaining_time = remaining_steps / it_per_sec
+                batch_total_estimated = batch_elapsed + remaining_time
+            elif self._batch_times:
+                 # Stalled or start: use history
+                 batch_total_estimated = sum(self._batch_times) / len(self._batch_times)
+            elif self._current_step > 0:
+                 # First batch, slow start: cumulative fallback
+                 step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
+                 batch_total_estimated = batch_elapsed / step_pct
 
         def fmt_time(seconds):
             if seconds < 3600:
@@ -362,7 +370,8 @@ class UnifiedProgress:
         # Sync Physics ETA state (critical for accurate time estimation)
         if self._physics_eta:
             self._physics_eta.start_batch(batch_idx)
-        
+            
+        self._rate_history.clear()
         self._live.update(self._render())
 
     def start_alpha(self, alpha: float, batch_alphas: List[float] = None):
