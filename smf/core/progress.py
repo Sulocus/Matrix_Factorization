@@ -152,8 +152,8 @@ class UnifiedProgress:
         # Timing
         now = time.time()
         
-        # Rate Limiting History (10Hz sampling) ensures 5s window with maxlen=50
-        if now - self._last_history_update > 0.1:
+        # Rate Limiting History (1Hz sampling for stability)
+        if now - self._last_history_update > 1.0:
             self._rate_history.append((now, self._current_step))
             self._last_history_update = now
             
@@ -162,16 +162,17 @@ class UnifiedProgress:
         eta = self._estimate_eta()
 
         # 1. Calculate Instantaneous Rate (Sliding Window)
+        # 5s warmup for batch it/s display
         self._current_it_per_sec = 0.0
-        if len(self._rate_history) > 1:
+        if batch_elapsed >= 5.0 and len(self._rate_history) > 1:
             t_old, s_old = self._rate_history[0]
             dt = now - t_old
             ds = self._current_step - s_old
-            if dt > 0.1:
+            if dt > 0.5:
                 self._current_it_per_sec = ds / dt
         
-        # Fallback to cumulative if window undefined
-        if self._current_it_per_sec < 1e-3 and batch_elapsed > 0.1:
+        # Fallback to cumulative if window undefined (but still respect warmup)
+        if self._current_it_per_sec < 1e-3 and batch_elapsed >= 5.0:
              self._current_it_per_sec = self._current_step / batch_elapsed
 
         it_per_sec = self._current_it_per_sec  # Local alias for brevity
