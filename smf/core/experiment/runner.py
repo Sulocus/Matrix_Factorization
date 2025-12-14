@@ -384,7 +384,9 @@ class ExperimentRunner:
         total_batches = plan.num_batches
         
         # Execute batches according to plan
+        # Execute batches according to plan
         global_point_idx = 0
+        skipped_msg_printed = False
         
         for batch_idx, batch in enumerate(plan.batches):
             batch_alpha_values = batch.alpha_values
@@ -392,10 +394,14 @@ class ExperimentRunner:
             # Skip if all alphas in this batch are already completed (resume mode)
             remaining_alphas = [a for a in batch_alpha_values if a not in completed_alphas]
             if not remaining_alphas:
-                if self.verbose:
-                    print(f"  ⏭️ Skipping completed batch {batch_idx+1}/{total_batches}")
+                if self.verbose and not skipped_msg_printed:
+                    print(f"  ⏭️ Skipping completed batch(es)...")
+                    skipped_msg_printed = True
                 global_point_idx += len(batch_alpha_values)
                 continue
+            
+            # Reset skip flag when we encounter a batch to run
+            skipped_msg_printed = False
             
             # Emit Batch Start Event
             self._emit(observer, ProgressEventType.BATCH_START, {
@@ -406,9 +412,9 @@ class ExperimentRunner:
                 'steps_per_alpha': config.training.max_steps,
             })
             
-            if self.verbose:
-                alpha_range = f"{min(batch_alpha_values):.2f}-{max(batch_alpha_values):.2f}"
-                print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
+            # if self.verbose:
+            #     alpha_range = f"{min(batch_alpha_values):.2f}-{max(batch_alpha_values):.2f}"
+            #     print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
             
             try:
                 # Create data for this batch
