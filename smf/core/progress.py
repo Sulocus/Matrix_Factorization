@@ -151,11 +151,17 @@ class UnifiedProgress:
         # Left side: current elapsed time (starts at 0, increases)
         # Right side: estimated total batch time (stable)
         if batch_elapsed > 0 and self._current_step > 0:
-            step_pct = self._current_step / self.steps_per_alpha
-            if step_pct > 0.01:  # Avoid division issues at very start
-                batch_total_estimated = batch_elapsed / step_pct
+            step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
+            projected = batch_elapsed / step_pct
+            
+            # Stabilization: Use historical average at start of batch (<5%)
+            if step_pct <= 0.05 and self._batch_times:
+                 avg_time = sum(self._batch_times) / len(self._batch_times)
+                 batch_total_estimated = avg_time
+            elif step_pct > 0.005:  # Only project if > 0.5% progress
+                 batch_total_estimated = projected
             else:
-                batch_total_estimated = 0
+                 batch_total_estimated = 0
         else:
             batch_total_estimated = 0
 
@@ -284,14 +290,21 @@ class UnifiedProgress:
         remaining_batches = self._total_batches - self._completed_batches
 
         # Estimate remaining time in current batch
+        # Estimate remaining time in current batch
         remaining_in_current = 0
         if remaining_batches > 0 and self._batch_start_time and self._current_step > 0:
             step_elapsed = time.time() - self._batch_start_time
             step_pct = self._current_step / self.steps_per_alpha
-            if step_pct > 0:
+            
+            # Stabilization: Only project current batch time after >1% progress
+            # Otherwise use average time (avoids spikes at start of batch)
+            remaining_batches -= 1
+            
+            if step_pct > 0.01:
                 estimated_batch_time = step_elapsed / step_pct
                 remaining_in_current = estimated_batch_time * (1 - step_pct)
-                remaining_batches -= 1  # Current batch partially counted
+            else:
+                remaining_in_current = avg_time_per_batch
 
         return avg_time_per_batch * remaining_batches + remaining_in_current
 

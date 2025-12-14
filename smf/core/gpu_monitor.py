@@ -18,7 +18,14 @@ class GPUMonitor:
         self._last_query_time = 0
 
     def _check_nvidia(self) -> bool:
-        """Check if nvidia-smi is available."""
+        """Check if GPU monitoring is available (nvidia-smi or torch.cuda)."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+               return True
+        except ImportError:
+            pass
+
         try:
             result = subprocess.run(
                 ['nvidia-smi', '--version'],
@@ -40,6 +47,10 @@ class GPUMonitor:
             or None if not available
         """
         import time
+        try:
+            import torch
+        except ImportError:
+            return None
         
         if not self.available:
             return None
@@ -49,88 +60,87 @@ class GPUMonitor:
         if self._last_status is not None and (current_time - self._last_query_time) < self._cache_timeout:
             return self._last_status
 
-            if not torch.cuda.is_available():
-                return self._last_status
+        if not torch.cuda.is_available():
+             return self._last_status
+        
+        # 1. Try pynvml (Best)
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+            limit = pynvml.nvmlDeviceGetEnforcedPowerLimit(handle) / 1000.0
             
-            # 1. Try pynvml (Best)
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-                limit = pynvml.nvmlDeviceGetEnforcedPowerLimit(handle) / 1000.0
-                
-                self._last_status = {
-                    'power_draw': power,
-                    'power_limit': limit,
-                    'memory_used': mem.used / (1024**3),
-                    'memory_total': mem.total / (1024**3),
-                    'gpu_name': pynvml.nvmlDeviceGetName(handle),
-                }
-                self._last_query_time = current_time
-                return self._last_status
-            except (ImportError, Exception):
-                pass
-                
-            # 2. Try torch.cuda (Good for memory, no power data)
-            # For power, we return 0 or keep last known value
-            try:
-                device = torch.cuda.current_device()
-                reserved = torch.cuda.memory_reserved(device)
-                total = torch.cuda.get_device_properties(device).total_memory
-                
-                # If we have previous status, keep power/name, update memory
-                last = self._last_status or {}
-                self._last_status = {
-                    'power_draw': last.get('power_draw', 0.0),
-                    'power_limit': last.get('power_limit', 0.0),
-                    'memory_used': reserved / (1024**3),
-                    'memory_total': total / (1024**3),
-                    'gpu_name': last.get('gpu_name', 'GPU'),
-                    'partial': True # Flag indicating partial data
-                }
-                self._last_query_time = current_time
-                return self._last_status
-            except Exception:
-                pass
-
-            # 3. Last Limit Subprocess (Only if > 5s since last update)
-            # Don't run every 2s if it's slow
-            if current_time - self._last_query_time > 5.0:
-                try:
-                    import subprocess
-                    result = subprocess.run([
-                        'nvidia-smi',
-                        '--query-gpu=power.draw,power.limit,memory.used,memory.total,gpu_name',
-                        '--format=csv,noheader,nounits'
-                    ], capture_output=True, text=True, timeout=1.0) # Reduced timeout
-
-                    if result.returncode != 0:
-                        return self._last_status
-
-                    # Parse: "245.00, 350.00, 8192, 24576, NVIDIA RTX 4090"
-                    line = result.stdout.strip().split('\n')[0]  # First GPU
-                    values = [v.strip() for v in line.split(',')]
-
-                    if len(values) < 4:
-                        return self._last_status
-
-                    self._last_status = {
-                        'power_draw': float(values[0]),           # W
-                        'power_limit': float(values[1]),          # W
-                        'memory_used': float(values[2]) / 1024,   # GB
-                        'memory_total': float(values[3]) / 1024,  # GB
-                        'gpu_name': values[4] if len(values) > 4 else 'GPU',
-                    }
-                    self._last_query_time = current_time
-                    return self._last_status
-                    
-                except (subprocess.TimeoutExpired, ValueError, IndexError, Exception):
-                    return self._last_status  # Return cached on error
-
+            self._last_status = {
+                'power_draw': power,
+                'power_limit': limit,
+                'memory_used': mem.used / (1024**3),
+                'memory_total': mem.total / (1024**3),
+                'gpu_name': pynvml.nvmlDeviceGetName(handle),
+            }
+            self._last_query_time = current_time
             return self._last_status
+        except (ImportError, Exception):
+            pass
+            
+        # 2. Try torch.cuda (Good for memory, no power data)
+        # For power, we return 0 or keep last known value
+        try:
+            device = torch.cuda.current_device()
+            reserved = torch.cuda.memory_reserved(device)
+            total = torch.cuda.get_device_properties(device).total_memory
+            
+            # If we have previous status, keep power/name, update memory
+            last = self._last_status or {}
+            self._last_status = {
+                'power_draw': last.get('power_draw', 0.0),
+                'power_limit': last.get('power_limit', 0.0),
+                'memory_used': reserved / (1024**3),
+                'memory_total': total / (1024**3),
+                'gpu_name': last.get('gpu_name', 'GPU'),
+                'partial': True # Flag indicating partial data
+            }
+            self._last_query_time = current_time
+            return self._last_status
+        except Exception:
+            pass
+
+        # 3. Last Limit Subprocess (Only if > 5s since last update)
+        # Don't run every 2s if it's slow
+        if current_time - self._last_query_time > 5.0:
+            try:
+                import subprocess
+                result = subprocess.run([
+                    'nvidia-smi',
+                    '--query-gpu=power.draw,power.limit,memory.used,memory.total,gpu_name',
+                    '--format=csv,noheader,nounits'
+                ], capture_output=True, text=True, timeout=1.0) # Reduced timeout
+
+                if result.returncode != 0:
+                    return self._last_status
+
+                # Parse: "245.00, 350.00, 8192, 24576, NVIDIA RTX 4090"
+                line = result.stdout.strip().split('\n')[0]  # First GPU
+                values = [v.strip() for v in line.split(',')]
+
+                if len(values) < 4:
+                    return self._last_status
+
+                self._last_status = {
+                    'power_draw': float(values[0]),           # W
+                    'power_limit': float(values[1]),          # W
+                    'memory_used': float(values[2]) / 1024,   # GB
+                    'memory_total': float(values[3]) / 1024,  # GB
+                    'gpu_name': values[4] if len(values) > 4 else 'GPU',
+                }
+                self._last_query_time = current_time
+                return self._last_status
+                
+            except (subprocess.TimeoutExpired, ValueError, IndexError, Exception):
+                return self._last_status  # Return cached on error
+
+        return self._last_status
 
 
     def format_status(self, compact: bool = True) -> str:
