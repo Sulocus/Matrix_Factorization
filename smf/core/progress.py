@@ -90,8 +90,8 @@ class UnifiedProgress:
         
         # Batch Total Time Throttling
         self._last_batch_total_update = 0
-        self._cached_batch_total = 0.0
-        
+        self._cached_batch_total = -1.0
+                
         # Global ETA Throttling
         self._last_eta_update = 0
         self._cached_eta = -1.0
@@ -177,7 +177,7 @@ class UnifiedProgress:
         it_per_sec = self._current_it_per_sec  # Local alias for brevity
 
         # 2. Calculate Batch Prediction
-        batch_total_estimated = 0
+        batch_total_estimated = -1.0
         if batch_elapsed > 0:
             if it_per_sec > 0.1: # Threshold to avoid divide by zero
                 remaining_steps = max(0, self.steps_per_alpha - self._current_step)
@@ -192,12 +192,12 @@ class UnifiedProgress:
                  
                  # FIX: Don't estimate total if progress is tiny (startup overhead dominates)
                  if step_pct < 0.01:
-                     batch_total_estimated = 0
+                     batch_total_estimated = -1.0
                  else:
                      batch_total_estimated = batch_elapsed / step_pct
 
         # Throttling Batch Total Time Display (User Request: 5-10s)
-        if now - self._last_batch_total_update > 5.0 or self._cached_batch_total == 0:
+        if now - self._last_batch_total_update > 5.0 or self._cached_batch_total <= 0:
             self._cached_batch_total = batch_total_estimated
             self._last_batch_total_update = now
         else:
