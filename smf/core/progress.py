@@ -87,6 +87,10 @@ class UnifiedProgress:
         self._rate_history = deque(maxlen=50) # Sliding window for smooth it/s (5s history)
         self._last_history_update = 0
         
+        # Batch Total Time Throttling
+        self._last_batch_total_update = 0
+        self._cached_batch_total = 0.0
+        
         if batch_assignments:
             try:
                 from .physics_eta import PhysicsAwareETA
@@ -179,6 +183,13 @@ class UnifiedProgress:
                  # First batch, slow start: cumulative fallback
                  step_pct = max(1e-6, self._current_step / self.steps_per_alpha)
                  batch_total_estimated = batch_elapsed / step_pct
+
+        # Throttling Batch Total Time Display (User Request: 5-10s)
+        if now - self._last_batch_total_update > 5.0 or self._cached_batch_total == 0:
+            self._cached_batch_total = batch_total_estimated
+            self._last_batch_total_update = now
+        else:
+            batch_total_estimated = self._cached_batch_total
 
         def fmt_time(seconds):
             if seconds < 3600:
