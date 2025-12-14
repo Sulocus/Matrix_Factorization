@@ -198,8 +198,8 @@ class UnifiedProgress:
                  else:
                      batch_total_estimated = batch_elapsed / step_pct
 
-        # Throttling Batch Total Time Display (User Request: 5-10s)
-        if now - self._last_batch_total_update > 5.0 or self._cached_batch_total <= 0:
+        # Throttling Batch Total Time Display (1s for smooth countdown)
+        if now - self._last_batch_total_update > 1.0 or self._cached_batch_total <= 0:
             self._cached_batch_total = batch_total_estimated
             self._last_batch_total_update = now
         else:
@@ -299,8 +299,8 @@ class UnifiedProgress:
         NOW THROTTLED: Updates only every 5 seconds to prevent jitter.
         """
         now = time.time()
-        # Return cached value if within 5s window
-        if now - self._last_eta_update < 5.0 and self._cached_eta >= 0:
+        # Return cached value if within 1s window (smooth countdown)
+        if now - self._last_eta_update < 1.0 and self._cached_eta >= 0:
             return self._cached_eta
 
         if not self._total_start_time:
@@ -438,7 +438,7 @@ class UnifiedProgress:
         if self._physics_eta:
             self._physics_eta.start_batch(batch_idx)
             
-        self._rate_history.clear()
+        # NOTE: Do NOT clear _rate_history to maintain smooth speed calculation
         self._live.update(self._render())
 
     def start_alpha(self, alpha: float, batch_alphas: List[float] = None):

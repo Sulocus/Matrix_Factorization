@@ -109,8 +109,8 @@ class PhysicsAwareETA:
         now = time.time()
         session_elapsed = now - self.session_start_time
         
-        # Skip the first 10 seconds (warmup: allocation, compilation)
-        if session_elapsed < 10.0:
+        # Skip the first 5 seconds (warmup for rate calculation)
+        if session_elapsed < 5.0:
             return
 
         # Calculate Current Total Workload (absolute)
@@ -123,6 +123,7 @@ class PhysicsAwareETA:
         # On first valid update (after warmup), record the baseline
         if self.session_start_workload is None:
             self.session_start_workload = current_workload
+            self.session_start_time = now  # Reset session start to this moment
             return
         
         # Calculate Session-Based Rate (Simple Cumulative Average)
