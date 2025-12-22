@@ -232,7 +232,7 @@ class ExperimentResult:
             for v, r in sorted(self.results.items())
         }
     
-    def save(self, path: Union[str, Path], save_tensors: bool = True, rsb_ordering: bool = False, uniform_colormap: bool = False):
+    def save(self, path: Union[str, Path], save_tensors: bool = True, rsb_ordering: bool = False, uniform_colormap: bool = False, output_options: Optional[Dict[str, Any]] = None):
         """
         Save result to directory.
         
@@ -241,6 +241,10 @@ class ExperimentResult:
             save_tensors: Whether to save raw tensors to results.pt
             rsb_ordering: Whether to use hierarchical clustering for RSB heatmap ordering
             uniform_colormap: If True, use linear colormap; if False, enhance 0.9-1.0 range
+            output_options: Full output configuration dict with:
+                - enable_heatmap: bool - Heatmap + GIF generation
+                - plots: list - Custom curves config [{curves: [A.y, B.w]}, ...]
+                - storage_mode: str - full/lightweight/plotting_only
         
         Creates:
         - config.json: Full experiment configuration
@@ -345,46 +349,77 @@ class ExperimentResult:
         plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
         plt.close(fig)
         
-        # Generate heatmaps and GIF (if we have W_students)
-        try:
-            from smf.modules.outputs.plotting import plot_replica_heatmap, create_gif
-            from smf.modules.metrics.overlap import build_interaction_matrix, gram_overlap_normalized
-            
-            heatmap_paths = []
-            W_teacher = self.W_teacher
-            
-            for v in sorted_values:
-                r = self.results[v]
-                if r.W_students is not None and W_teacher is not None:
-                    # Handle shape: W_students might be (1, S, N1, M) or (S, N1, M)
-                    W_s = r.W_students
-                    while W_s.dim() > 3:
-                        W_s = W_s.squeeze(0)  # Remove leading dims until (S, N1, M)
-                    
-                    # Build interaction matrix
-                    matrix_W = build_interaction_matrix(
-                        W_s, W_teacher, gram_overlap_normalized, use_left=True
-                    )
-                    
-                    # Save heatmap
-                    heatmap_path = plot_replica_heatmap(
-                        matrix_W, float(v), plots_dir,
-                        metric_name="Q_W", filename_prefix="heatmap_W",
-                        rsb_ordering=rsb_ordering,
-                        enhance_high_values=not uniform_colormap,  # uniform = no enhancement
-                    )
-                    if heatmap_path:
-                        heatmap_paths.append(heatmap_path)
-            
-            # Create GIF from heatmaps
-            if heatmap_paths:
-                gif_path = create_gif(heatmap_paths, plots_dir / "animation_W.gif", duration=0.2)
-                if gif_path:
-                    print(f"Generated GIF: {gif_path}")
-        except Exception as e:
-            import traceback
-            print(f"Warning: Could not generate heatmaps/GIF: {e}")
-            traceback.print_exc()
+        # ===== 自定义曲线绘图 (来自 output_options['plots']) =====
+        if output_options and output_options.get('plots'):
+            try:
+                from smf.modules.outputs.plotting import plot_custom_curves
+                
+                # 构建 results 数据格式供 plot_custom_curves 使用
+                plot_results = {
+                    float(v): r.metrics for v, r in self.results.items()
+                }
+                
+                for i, plot_config in enumerate(output_options['plots']):
+                    curves = plot_config.get('curves', [])
+                    if curves:
+                        output_file = plots_dir / f'custom_plot_{i+1}.png'
+                        plot_custom_curves(
+                            plot_results, 
+                            curves, 
+                            output_file,
+                            title=f"{self.experiment_id} - Plot {i+1}",
+                        )
+                        print(f"Generated: {output_file}")
+            except Exception as e:
+                import traceback
+                print(f"Warning: Could not generate custom plots: {e}")
+                traceback.print_exc()
+        
+        # ===== Heatmap 和 GIF (由 enable_heatmap 控制) =====
+        enable_heatmap = True  # 默认开启
+        if output_options:
+            enable_heatmap = output_options.get('enable_heatmap', True)
+        
+        if enable_heatmap:
+            try:
+                from smf.modules.outputs.plotting import plot_replica_heatmap, create_gif
+                from smf.modules.metrics.overlap import build_interaction_matrix, gram_overlap_normalized
+                
+                heatmap_paths = []
+                W_teacher = self.W_teacher
+                
+                for v in sorted_values:
+                    r = self.results[v]
+                    if r.W_students is not None and W_teacher is not None:
+                        # Handle shape: W_students might be (1, S, N1, M) or (S, N1, M)
+                        W_s = r.W_students
+                        while W_s.dim() > 3:
+                            W_s = W_s.squeeze(0)  # Remove leading dims until (S, N1, M)
+                        
+                        # Build interaction matrix
+                        matrix_W = build_interaction_matrix(
+                            W_s, W_teacher, gram_overlap_normalized, use_left=True
+                        )
+                        
+                        # Save heatmap
+                        heatmap_path = plot_replica_heatmap(
+                            matrix_W, float(v), plots_dir,
+                            metric_name="Q_W", filename_prefix="heatmap_W",
+                            rsb_ordering=rsb_ordering,
+                            enhance_high_values=not uniform_colormap,  # uniform = no enhancement
+                        )
+                        if heatmap_path:
+                            heatmap_paths.append(heatmap_path)
+                
+                # Create GIF from heatmaps
+                if heatmap_paths:
+                    gif_path = create_gif(heatmap_paths, plots_dir / "animation_W.gif", duration=0.2)
+                    if gif_path:
+                        print(f"Generated GIF: {gif_path}")
+            except Exception as e:
+                import traceback
+                print(f"Warning: Could not generate heatmaps/GIF: {e}")
+                traceback.print_exc()
     
     @classmethod
     def load(cls, path: Union[str, Path]) -> 'ExperimentResult':

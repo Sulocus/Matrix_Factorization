@@ -15,8 +15,8 @@ teacher: 2
 
 # ===== 矩阵尺寸 =====
 matrix:
-  N1: 2500
-  N2: 2500
+  N1: 500
+  N2: 500
   M: 50
 
 # ===== 扫描模式 (选一个数字) =====
@@ -27,14 +27,14 @@ scan_mode: 1
 
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
-  start: 3.2
-  stop: 4.0
-  step: 0.02             # 41 个点
+  start: 1
+  stop: 4
+  step: 0.1             # 41 个点
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
 steps_scan:
-  alpha: 3.38             # 固定的 alpha 值
-  step_values: [100, 200, 500, 1000, 2000, 3000, 5000,10000,20000,30000, 50000, 60000,70000, 80000, 100000, 120000, 150000, 200000]
+  alpha: 3.9             # 固定的 alpha 值
+  step_values: [100, 200, 500, 1000, 2000, 3000, 5000,10000,20000,30000, 50000]
   multiplier: 1           # 倍数: BiGAMP=1, AGD=10-20
 
 # --- 嵌套扫描配置 (scan_mode = 3) ---
@@ -50,8 +50,8 @@ nested_scan:
 
 # ===== 训练参数 =====
 training:
-  samples: 50            # 样本数 (S)
-  max_steps: 5000        # 训练步数
+  samples: 1            # 样本数 (S)
+  max_steps: 10000        # 训练步数
   seed: 42
   num_workers: 24        # 并行生成 Worker 数 (CPU)
 
@@ -67,9 +67,32 @@ spreading:
   f_distribution: 1
   seed: 12345
 
-# ===== 输出 =====
+# ===== 输出设置 =====
 output:
   name: ""               # 留空自动生成
-  save_tensors: true
-  rsb_ordering: True     # 热力图 RSB 排序 (层次聚类)
-  uniform_colormap: True # true=均匀颜色, false=增强高值区域(0.9-1.0)
+  
+  # 存储模式: full(完整) / lightweight(轻量) / plotting_only(仅绘图)
+  storage_mode: plotting_only
+  
+  # Heatmap 开关 (独立于 plots)
+  enable_heatmap: true
+  rsb_ordering: true     # 热力图 RSB 排序 (层次聚类)
+  uniform_colormap: true # true=均匀颜色, false=增强高值区域(0.9-1.0)
+  
+  # ===== 绘图指标格式 =====
+  # 格式: 类别.指标[:R]，其中 :R = replica (学生-学生)
+  #
+  # A (Cosine):     A.y=Q_Y  A.w=Q_W  A.x=Q_X
+  # B (Normalized): B.w=Q_W' B.x=Q_X'
+  # C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
+  # D (Physical):   D.y D.w D.x
+  # E (Other):      E.e=Gen_Error (不支持:R)
+  #
+  # 示例: curves: [A.y, A.w, A.y:R] = Q_Y, Q_W, Q_Y(replica) 画同一张图
+  
+  plots:
+    - curves: [A.y, B.w, C.o]      # Q_Y + 归一化 overlap
+    - curves: [C.o, C.u, C.u:R]           # observed vs unobserved
+    - curves: [A.y, A.y:R]
+    - curves: [B.w, B.w:R]
+

@@ -25,11 +25,19 @@ CHECKPOINT_PATH = Path("smf/.checkpoint.pt")
 @dataclass
 class CheckpointData:
     """Complete checkpoint data structure."""
-    version: int = 1
+    version: int = 2  # Version 2: added raw_yaml
     config_dict: Dict[str, Any] = field(default_factory=dict)
     completed_alphas: List[float] = field(default_factory=list)
     results: Dict[float, Dict[str, Any]] = field(default_factory=dict)  # alpha -> metrics
     timestamp: str = ""
+    # Output options (rsb_ordering, save_tensors, uniform_colormap)
+    output_options: Dict[str, Any] = field(default_factory=lambda: {
+        'rsb_ordering': False,
+        'save_tensors': True,
+        'uniform_colormap': False,
+    })
+    # Raw YAML string for complete config restoration
+    raw_yaml: str = ""
     
     def to_dict(self) -> Dict:
         return {
@@ -38,6 +46,8 @@ class CheckpointData:
             'completed_alphas': self.completed_alphas,
             'results': self.results,
             'timestamp': self.timestamp,
+            'output_options': self.output_options,
+            'raw_yaml': self.raw_yaml,
         }
     
     @classmethod
@@ -48,6 +58,12 @@ class CheckpointData:
             completed_alphas=data.get('completed_alphas', []),
             results=data.get('results', {}),
             timestamp=data.get('timestamp', ''),
+            output_options=data.get('output_options', {
+                'rsb_ordering': False,
+                'save_tensors': True,
+                'uniform_colormap': False,
+            }),
+            raw_yaml=data.get('raw_yaml', ''),
         )
 
 
@@ -82,6 +98,8 @@ class CheckpointManager:
         config_dict: Dict[str, Any],
         completed_alphas: List[float],
         results: Dict[float, Dict[str, Any]],
+        output_options: Dict[str, Any] = None,
+        raw_yaml: str = "",
     ) -> None: # Returns None because it's async
         """
         Async save checkpoint (non-blocking).
@@ -89,19 +107,36 @@ class CheckpointManager:
         Performs a shallow copy of mutable containers in the main thread,
         then serializes and writes to disk in a background thread.
         This prevents UI/Computation lag during large checkpoints.
+        
+        Args:
+            config_dict: Experiment configuration
+            completed_alphas: List of completed alpha values
+            results: Dict of alpha -> metrics
+            output_options: Output options (rsb_ordering, save_tensors, etc.)
+            raw_yaml: Complete original YAML config string
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Default output options
+        if output_options is None:
+            output_options = {
+                'rsb_ordering': False,
+                'save_tensors': True,
+                'uniform_colormap': False,
+            }
         
         # 1. Create Data Object
         # Note: We must COPY mutable containers (list, dict) to prevent
         # "dictionary changed size during iteration" or race conditions
         # while the background thread is pickling.
         payload = {
-            'version': 1,
+            'version': 2,  # Version 2: includes raw_yaml
             'config_dict': config_dict, # Assume config is immutable
             'completed_alphas': list(completed_alphas), # Copy list
             'results': results.copy(), # Shallow copy dict (inner metrics usually immutable)
             'timestamp': datetime.now().isoformat(),
+            'output_options': output_options.copy(),  # Save output options!
+            'raw_yaml': raw_yaml,  # Complete original YAML
         }
         
         # 2. Submit to background thread

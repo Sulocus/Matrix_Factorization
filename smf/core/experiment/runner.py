@@ -142,6 +142,10 @@ class ExperimentRunner:
         point_callback: Optional[Callable[[int, int, Any], None]] = None,
         # Resume support
         resume_results: Optional[Dict[float, Dict]] = None,
+        # Output options for checkpoint (rsb_ordering, save_tensors, etc.)
+        output_options: Optional[Dict[str, Any]] = None,
+        # Raw YAML config string for checkpoint
+        raw_yaml: str = "",
     ) -> ExperimentResult:
         """
         Run a single experiment.
@@ -152,6 +156,9 @@ class ExperimentRunner:
             step_callback: Legacy callback (step, max_steps)
             point_callback: Legacy callback (idx, total, value)
             resume_results: Pre-completed results from checkpoint (metrics only)
+            output_options: Output options dict (rsb_ordering, save_tensors, uniform_colormap)
+                           Saved to checkpoint for resume
+            raw_yaml: Complete original YAML config string for checkpoint
             
         Returns:
             ExperimentResult with all results
@@ -249,7 +256,7 @@ class ExperimentRunner:
             if getattr(config.scan, 'is_steps_scan', config.scan.dimension == 'steps'):
                 self._run_steps_scan(config, algorithm, result, observer)
             else:
-                self._run_standard_scan(config, algorithm, result, observer, resume_results)
+                self._run_standard_scan(config, algorithm, result, observer, resume_results, output_options, raw_yaml)
             
             self._emit(observer, ProgressEventType.EXPERIMENT_END, {'result': result})
             return result
@@ -310,6 +317,8 @@ class ExperimentRunner:
         result: ExperimentResult,
         observer: Optional[Callable[[ProgressEvent], None]],
         resume_results: Optional[Dict[float, Dict]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        raw_yaml: str = "",
     ):
         """
         Run standard scan (alpha, samples, seed).
@@ -470,6 +479,7 @@ class ExperimentRunner:
                         X_teacher=data.X_teacher,
                         Y_teacher=data.Y_teacher,
                         masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
+                        spreading_data=data.spreading_data,
                         alpha_values=[alpha],
                     )
                     
@@ -517,7 +527,7 @@ class ExperimentRunner:
                                 'duration_seconds': r.duration_seconds if hasattr(r, 'duration_seconds') else 0.0,
                             }
                 
-                ckpt_mgr.save(config_dict, completed_alphas, checkpoint_results)
+                ckpt_mgr.save(config_dict, completed_alphas, checkpoint_results, output_options, raw_yaml)
                 
                 # Clean up batch data before next batch
                 del data
@@ -525,118 +535,38 @@ class ExperimentRunner:
                 del X_students
                 
             except MemoryAbortException as e:
-                # OOM batch recovery: current batch failed
-                # This is different from Ctrl-C: we need to replan with more conservative settings
+                # OOM batch recovery: save checkpoint and exit gracefully
+                # This is the SAFEST approach - clean process restart via 'smf resume'
+                # ensures all torch.compile caches are properly cleared
                 logger.warning(f"Batch {batch_idx} aborted due to OOM: {e}")
-                if self.verbose:
-                    print(f"  ⚠️ Batch {batch_idx+1} failed (OOM)")
-                    print(f"  🔄 Replanning remaining batches with conservative settings...")
                 
-                # Clean up any partial data
+                if self.verbose:
+                    print(f"\n  ⚠️ OOM detected in batch {batch_idx+1}")
+                
+                # Clean up partial data to ensure valid checkpoint
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
                 
-                # Mark this as OOM recovery in checkpoint for resume distinction
-                ckpt_mgr._oom_triggered = True
+                # Save checkpoint with completed alphas
+                ckpt_mgr.save(config_dict, completed_alphas, checkpoint_results, output_options, raw_yaml)
                 
-                # Collect remaining alphas (current failed batch + unprocessed batches)
-                remaining_alphas = list(batch_alpha_values)  # Current failed batch
-                for future_batch in plan.batches[batch_idx + 1:]:
-                    remaining_alphas.extend(future_batch.alpha_values)
+                # Count remaining work
+                remaining_count = total_points - len(completed_alphas)
                 
-                if remaining_alphas:
-                    # Replan with more conservative factor (70% of original allocation)
-                    conservative_params = EstimationParams(
-                        N1=config.matrix.N1,
-                        N2=config.matrix.N2,
-                        M=config.matrix.M,
-                        S=config.training.samples_per_alpha,
-                        alpha_values=[float(v) for v in remaining_alphas],
-                        algorithm_key=config.algorithm_key,
-                        use_compile=config.algorithm_params.use_compile,
-                        use_bf16=True,
-                        f_distribution=f_dist,
-                    )
-                    
-                    # Get new plan with reduced allocation (0.7x factor)
-                    old_ratio = self.parallel_coordinator.config.allocation_ratio
-                    self.parallel_coordinator.config.allocation_ratio = old_ratio * 0.7
-                    new_plan = self.parallel_coordinator.plan_execution(conservative_params)
-                    self.parallel_coordinator.config.allocation_ratio = old_ratio  # Restore
-                    
-                    if self.verbose:
-                        print(f"     New plan: {new_plan.num_batches} batches (was {plan.num_batches - batch_idx})")
-                    
-                    # Execute remaining with new plan
-                    new_batch_offset = batch_idx + 1
-                    for new_batch_idx, new_batch in enumerate(new_plan.batches):
-                        actual_batch_idx = new_batch_offset + new_batch_idx
-                        try:
-                            # Execute new batch (simplified, reuse same logic)
-                            new_batch_alphas = new_batch.alpha_values
-                            data = self.data_factory.create(config, alpha_values=new_batch_alphas)
-                            
-                            W_students, X_students = self._run_algorithm(
-                                algorithm=algorithm,
-                                config=config,
-                                data=data,
-                                step_callback=internal_step_callback,
-                            )
-                            
-                            for alpha_idx, alpha in enumerate(new_batch_alphas):
-                                if W_students.dim() == 4:
-                                    W_single = W_students[alpha_idx]
-                                    X_single = X_students[alpha_idx]
-                                else:
-                                    W_single = W_students
-                                    X_single = X_students
-                                
-                                single_data = ExperimentData(
-                                    W_teacher=data.W_teacher,
-                                    X_teacher=data.X_teacher,
-                                    Y_teacher=data.Y_teacher,
-                                    masks=data.masks[alpha_idx:alpha_idx+1] if data.masks is not None and data.masks.dim() == 3 else data.masks,
-                                    alpha_values=[alpha],
-                                )
-                                
-                                metrics = self._compute_metrics(
-                                    W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
-                                    X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
-                                    data=single_data,
-                                )
-                                
-                                single_result = SingleRunResult(
-                                    scan_value=alpha,
-                                    metrics=metrics,
-                                    W_students=W_single,
-                                    X_students=X_single,
-                                    mask=None,
-                                    duration_seconds=0.0,
-                                )
-                                result.add_result(alpha, single_result)
-                                global_point_idx += 1
-                            
-                            ckpt_mgr.save_batch(
-                                batch_idx=actual_batch_idx,
-                                batch_alphas=new_batch_alphas,
-                                results={alpha: result.results.get(alpha) for alpha in new_batch_alphas},
-                            )
-                            
-                            del data, W_students, X_students
-                            gc.collect()
-                            torch.cuda.empty_cache()
-                            
-                        except MemoryAbortException:
-                            # Still failing, skip this batch
-                            if self.verbose:
-                                print(f"     Batch {actual_batch_idx} still failed, skipping...")
-                            continue
-                    
-                    # Exit the original loop since we've handled remaining batches
-                    break
+                if self.verbose:
+                    print(f"\n" + "=" * 60)
+                    print(f"💾 Progress saved to checkpoint!")
+                    print(f"   Completed: {len(completed_alphas)}/{total_points} alphas")
+                    print(f"   Remaining: {remaining_count} alphas")
+                    print(f"\n💡 To continue, run: smf resume")
+                    print(f"   This restarts the process with clean GPU memory.")
+                    print("=" * 60)
                 
-                continue
+                # Exit gracefully instead of trying to continue
+                # This ensures clean memory state on next resume
+                import sys
+                sys.exit(0)
             
             # Force memory cleanup between batches (all algorithms)
             import gc
@@ -822,7 +752,68 @@ class ExperimentRunner:
         data: ExperimentData,
     ) -> Dict[str, float]:
         """Compute evaluation metrics."""
+        print(f"DEBUG: _compute_metrics called. spreading_data is None? {data.spreading_data is None}")
         try:
+            # ===== Spreading 算法专用 metrics =====
+            if data.spreading_data is not None:
+                print("DEBUG: Entering spreading metrics branch")
+                from ...modules.metrics.spreading import compute_all_metrics_spreading_parallel
+                
+                # Reshape W, X for spreading metrics: (A, S, N, M) -> (S, A, N, M)
+                if W_students.dim() == 4:
+                    # Already (A, S, N1, M) or (S, A, N1, M)
+                    # compute_all_metrics_spreading_parallel expects (S, A, N1, M)
+                    if W_students.shape[0] != data.spreading_data.S:
+                        W_for_metrics = W_students.transpose(0, 1)
+                        X_for_metrics = X_students.transpose(0, 1)
+                    else:
+                        W_for_metrics = W_students
+                        X_for_metrics = X_students
+                else:
+                    W_for_metrics = W_students
+                    X_for_metrics = X_students
+                
+                # Check for single-alpha slice (when W has 1 alpha but spreading_data has many)
+                target_alpha_idx = None
+                S, A_in_W = W_for_metrics.shape[:2]
+                A_spreading = len(data.spreading_data.alpha_values)
+                
+                if A_in_W == 1 and A_spreading > 1 and data.alpha_values is not None and len(data.alpha_values) == 1:
+                    current_alpha = data.alpha_values[0]
+                    # Find closest match in spreading_data alpha values
+                    diffs = [abs(a - current_alpha) for a in data.spreading_data.alpha_values]
+                    best_idx = diffs.index(min(diffs))
+                    target_alpha_idx = int(best_idx)
+                    print(f"DEBUG: Mapping single alpha {current_alpha:.4f} -> idx {target_alpha_idx}")
+
+                metrics_tensor = compute_all_metrics_spreading_parallel(
+                    W_for_metrics, X_for_metrics, data.spreading_data,
+                    target_alpha_idx=target_alpha_idx
+                )
+                
+                # 返回第一个 alpha 的值（用于单点计算）
+                # 或者返回所有值的平均（用于汇总）
+                # If target_alpha_idx was used, results are already size (1,) or scalar-like
+                
+                result = {}
+                for key, val in metrics_tensor.items():
+                    if key == 'alpha_values':
+                        continue
+                        
+                    if isinstance(val, torch.Tensor):
+                        if val.numel() == 1:
+                            result[key] = float(val.item())
+                        elif val.dim() == 1 and len(val) > 0:
+                            # Return first element (should only be 1 if target_alpha_idx used)
+                            result[key] = float(val[0])
+                        else:
+                            # Fallback mean
+                            result[key] = float(val.mean().item())
+                    else:
+                        result[key] = float(val)
+                return result
+            
+            # ===== 标准算法 metrics =====
             from ...modules.metrics.overlap import (
                 gram_overlap_normalized,
                 compute_qy,

@@ -42,3 +42,7 @@ ENV/
 .DS_Store
 Thumbs.db
 *.log
+# Exclude large result files from git push
+smf/Replica_results/**/*.pt
+*.pth
+smf/.checkpoint.pt

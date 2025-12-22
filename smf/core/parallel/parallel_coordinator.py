@@ -185,17 +185,20 @@ class ParallelCoordinator:
             min_batch_mem = min(b.estimated_memory_gb for b in linear_plan.batches)
             if min_batch_mem > target_gb:
                 # Even linear mode can't fit - problem is too large
+                total_gb = self._get_total_memory()
                 error_msg = (
                     f"ERROR: Problem size too large for GPU!\n"
                     f"  Minimum memory required: {min_batch_mem:.2f} GB\n"
                     f"  Available allocation: {target_gb:.2f} GB (ratio={self.config.allocation_ratio:.0%})\n"
-                    f"  GPU total: {available_gb:.2f} GB\n"
+                    f"  GPU available: {available_gb:.2f} GB (after reserved)\n"
+                    f"  GPU total: {total_gb:.2f} GB\n"
                     f"  Parameters: N1={params.N1}, N2={params.N2}, M={params.M}\n"
                     f"\n"
                     f"  Suggestions:\n"
                     f"    1. Reduce matrix size (N1, N2, or M)\n"
                     f"    2. Use BF16 precision (halves memory usage)\n"
-                    f"    3. Use a GPU with more VRAM"
+                    f"    3. Use a GPU with more VRAM\n"
+                    f"    4. Try 'smf resume' after freeing GPU memory"
                 )
                 logger.error(error_msg)
                 raise MemoryError(error_msg)
@@ -431,15 +434,27 @@ class ParallelCoordinator:
             torch.cuda.empty_cache()
         gc.collect()
     
-    def _get_available_memory(self) -> float:
+    def _get_available_memory(self, use_total: bool = False) -> float:
         """Get available GPU memory in GB.
+        
+        Args:
+            use_total: If True, return physical total memory (for OOM recovery).
+                       If False, return available memory (total - reserved).
         
         Subtracts fixed CUDA overhead (~500MB) for context, compile cache, etc.
         This is the ONLY place where overhead is accounted for.
         """
-        raw_memory = self.estimator.get_available_memory() or 8.0  # Default for CPU
+        if use_total:
+            # Use physical total memory - useful for OOM recovery replanning
+            raw_memory = self.estimator.get_total_memory() or 8.0
+        else:
+            raw_memory = self.estimator.get_available_memory() or 8.0  # Default for CPU
         CUDA_OVERHEAD_GB = 0.5  # Fixed 500MB for CUDA context
         return max(raw_memory - CUDA_OVERHEAD_GB, 1.0)
+    
+    def _get_total_memory(self) -> float:
+        """Get total GPU memory in GB (physical total, not available)."""
+        return self.estimator.get_total_memory() or 8.0
 
 
 class BatchExecutionContext:

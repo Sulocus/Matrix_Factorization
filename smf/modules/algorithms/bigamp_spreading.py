@@ -694,8 +694,9 @@ def bigamp_step_disjoint_union_flat(
     X_var_sel = X_var_flat[:, j_offset, :]  # (A, SC, M)
     
     # ===== 2. Forward pass =====
-    # Convert F to compute dtype if stored as int8 (Rademacher optimization)
-    F_compute = F_flat.to(W_flat.dtype) if F_flat.dtype == torch.int8 else F_flat
+    # ALWAYS convert F to compute dtype to ensure scatter_add_ dtype consistency
+    # (needed for both int8 Rademacher and float32 Gaussian when using bf16 storage)
+    F_compute = F_flat.to(W_flat.dtype)
     F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
     # Direct BF16 computation (RTX 5090 native support, 2.7x faster than .float())
     Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)  # (A, SC)
@@ -849,6 +850,23 @@ class BiGAMPSpreading(AlgorithmBase):
 
     # Class-level cache for compiled step function
     _compiled_step = None
+
+    @classmethod
+    def clear_compile_cache(cls):
+        """Clear compiled step function cache to release GPU memory.
+        
+        This is useful for OOM recovery when batch-to-batch execution
+        accumulates torch.compile caches that cannot be freed by gc.collect()
+        or torch.cuda.empty_cache().
+        
+        Call this before replanning execution after an OOM event.
+        """
+        cls._compiled_step = None
+        try:
+            import torch._dynamo
+            torch._dynamo.reset()  # Clear torch.compile internal caches
+        except Exception:
+            pass
 
     def __init__(self, config, device: torch.device):
         """

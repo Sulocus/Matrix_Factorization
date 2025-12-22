@@ -34,10 +34,11 @@ from smf.core.progress import ProgressBridge
 
 
 def load_yaml_config(yaml_path: Path):
-    """从 YAML 文件加载配置，支持所有扫描模式"""
+    """从 YAML 文件加载配置，支持所有扫描模式。返回 (config, output_options, raw_yaml)"""
     import yaml
     with open(yaml_path, 'r') as f:
-        cfg = yaml.safe_load(f)
+        raw_yaml = f.read()  # 保存原始 YAML 字符串用于 checkpoint
+    cfg = yaml.safe_load(raw_yaml)
     
     # 数字选项映射
     ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd'}
@@ -68,12 +69,15 @@ def load_yaml_config(yaml_path: Path):
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
         spreading = SpreadingConfig(f_distribution=f_dist)
     
-    # 输出选项
+    # 输出选项 (完整解析)
     output_cfg = cfg.get('output', {})
     output_options = {
         'rsb_ordering': output_cfg.get('rsb_ordering', False),
         'save_tensors': output_cfg.get('save_tensors', True),
         'uniform_colormap': output_cfg.get('uniform_colormap', False),
+        'storage_mode': output_cfg.get('storage_mode', 'full'),
+        'enable_heatmap': output_cfg.get('enable_heatmap', True),  # Heatmap + GIF 开关
+        'plots': output_cfg.get('plots', []),  # 新格式: [{curves: [A.y, B.w]}, ...]
     }
     
     # 根据扫描模式创建不同的 ScanConfig
@@ -97,7 +101,7 @@ def load_yaml_config(yaml_path: Path):
             spreading=spreading,
             experiment_name=name,
             teacher_key=teacher_key,
-        ), output_options
+        ), output_options, raw_yaml
     
     elif scan_mode == 'steps':
         steps_cfg = cfg.get('steps_scan', {})
@@ -135,7 +139,7 @@ def load_yaml_config(yaml_path: Path):
             spreading=spreading,
             experiment_name=name,
             teacher_key=teacher_key,
-        ), output_options
+        ), output_options, raw_yaml
     
     elif scan_mode == 'nested':
         nested_cfg = cfg.get('nested_scan', {})
@@ -158,7 +162,7 @@ def load_yaml_config(yaml_path: Path):
             'seeds': SeedConfig(base_seed=t.get('seed', 42)),
             'algorithm_params': algo_params,
             'spreading': spreading,
-        }, output_options
+        }, output_options, raw_yaml
     
     else:
         raise ValueError(f"Unknown scan_mode: {scan_mode}")
@@ -192,6 +196,7 @@ def handle_resume(resume_dir: str = None):
     处理 smf resume 命令，从 checkpoint 恢复中断的实验。
     使用 checkpoint 中保存的配置继续运行。
     """
+    import yaml
     from smf.core.parallel.batch_checkpoint import CheckpointManager, dict_to_config
     
     print()
@@ -215,12 +220,33 @@ def handle_resume(resume_dir: str = None):
     completed_alphas = ckpt_data.completed_alphas
     config_dict = ckpt_data.config_dict
     results = ckpt_data.results
+    raw_yaml = ckpt_data.raw_yaml  # 读取原始 YAML！
+    
+    # 从 raw_yaml 恢复完整配置（包括绘图选项）
+    if raw_yaml:
+        # 有原始 YAML，可以完整恢复
+        cfg = yaml.safe_load(raw_yaml)
+        output_cfg = cfg.get('output', {})
+        output_options = {
+            'rsb_ordering': output_cfg.get('rsb_ordering', False),
+            'save_tensors': output_cfg.get('save_tensors', True),
+            'uniform_colormap': output_cfg.get('uniform_colormap', False),
+            'storage_mode': output_cfg.get('storage_mode', 'full'),
+            'enable_heatmap': output_cfg.get('enable_heatmap', True),
+            'plots': output_cfg.get('plots', []),
+        }
+        print("   配置来源: 原始 YAML (完整)")
+    else:
+        # 兼容旧版 checkpoint，使用 output_options 字段
+        output_options = ckpt_data.output_options
+        print("   配置来源: 旧版 checkpoint")
     
     print(f"📂 找到 checkpoint: smf/.checkpoint.pt")
     print(f"   已完成 alpha: {len(completed_alphas)}")
     if completed_alphas:
         print(f"   Alpha 范围: {min(completed_alphas):.2f} - {max(completed_alphas):.2f}")
     print(f"   时间戳: {ckpt_data.timestamp}")
+    print(f"   输出选项: rsb_ordering={output_options.get('rsb_ordering', False)}")
     print()
     
     # 从 checkpoint 恢复配置
@@ -244,13 +270,25 @@ def handle_resume(resume_dir: str = None):
     runner = ExperimentRunner(verbose=True)
     bridge = ProgressBridge()
     
-    # 传递已完成的 results 给 runner（这样可以合并）
-    result = runner.run(config, observer=bridge.on_event, resume_results=results)
+    # 传递已完成的 results 和 raw_yaml 给 runner
+    result = runner.run(
+        config, 
+        observer=bridge.on_event, 
+        resume_results=results,
+        output_options=output_options,
+        raw_yaml=raw_yaml,
+    )
     
-    # 保存结果
+    # 保存结果 - 使用恢复的输出选项
     output_dir = Path(f"smf/Replica_results/alpha_scan/{config.experiment_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    result.save(output_dir)
+    result.save(
+        output_dir,
+        save_tensors=output_options.get('save_tensors', True),
+        rsb_ordering=output_options.get('rsb_ordering', False),
+        uniform_colormap=output_options.get('uniform_colormap', False),
+        output_options=output_options,
+    )
     
     # 删除 checkpoint（成功完成）
     ckpt_mgr.delete()
@@ -259,6 +297,7 @@ def handle_resume(resume_dir: str = None):
     print("=" * 60)
     print(f"✅ Resume 完成! 保存到: {output_dir}")
     print("=" * 60)
+
 
 
 def main():
@@ -328,6 +367,7 @@ def main():
     
     # 加载配置
     output_options = {'rsb_ordering': False, 'save_tensors': True}  # defaults
+    raw_yaml = ""  # 原始 YAML 字符串 (用于 checkpoint)
     if args.config:
         config_path = Path(args.config)
         if not config_path.exists():
@@ -335,7 +375,7 @@ def main():
             print(f"   Tip: Use full path like 'smf/config_template.yaml'")
             sys.exit(1)
         print(f"📄 Loading: {args.config}")
-        config, output_options = load_yaml_config(config_path)
+        config, output_options, raw_yaml = load_yaml_config(config_path)
     else:
         config = build_config(args)
     
@@ -397,8 +437,8 @@ def main():
         print(f"  Steps:      {config.training.max_steps}")
         print()
         
-        # 运行
-        result = runner.run(config, observer=bridge.on_event)
+        # 运行 - 传递 output_options 和 raw_yaml 以便 checkpoint 系统保存
+        result = runner.run(config, observer=bridge.on_event, output_options=output_options, raw_yaml=raw_yaml)
         
         # 保存 - 按扫描类型分类
         scan_type_dir = "steps_scan" if config.scan.dimension == 'steps' else "alpha_scan"
@@ -408,6 +448,7 @@ def main():
             save_tensors=output_options.get('save_tensors', True),
             rsb_ordering=output_options.get('rsb_ordering', False),
             uniform_colormap=output_options.get('uniform_colormap', False),
+            output_options=output_options,
         )
         
         print()

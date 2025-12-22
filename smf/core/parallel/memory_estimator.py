@@ -786,45 +786,72 @@ def get_bigamp_standard_breakdown(params: EstimationParams) -> MemoryBreakdown:
     Get modular memory breakdown for standard BiG-AMP.
     
     Dense algorithm with:
-    - Student parameters: W, X, W_var, X_var
-    - Dense intermediate: (S, N1, N2) operations
+    - Student parameters: W, X, W_var, X_var → (B, S, N, M)
+    - Dense intermediate: (B, S, N1, N2) operations (z_hat, V, residual, s, etc.)
+    - Compute intermediate: (B, S, N, M) operations (w_sq, x_sq, tau, r, etc.)
+    
+    Note: B = batch_size = len(alpha_values) for parallel alpha processing.
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
+    B = params.batch_size  # Alpha batch size (num_alphas for parallel processing)
     storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
     
-    breakdown = MemoryBreakdown(algorithm_key="bigamp", safety_margin=1.10)
+    breakdown = MemoryBreakdown(algorithm_key="bigamp", safety_margin=1.15)
     
     # =========================================================================
     # COMPONENT 1: Student Parameters
-    # w_hat, x_hat, w_var, x_var: 4 × (S, N, M)
+    # w_hat, x_hat, w_var, x_var: 4 × (B, S, N, M)
     # DTYPE: storage_dtype
+    # NOTE: B dimension for parallel alpha processing
     # =========================================================================
     student = MemoryComponent(name="Student Parameters")
     student.add(TensorSpec(
         name="w_hat + x_hat + w_var + x_var",
-        shape=(S, N1 + N2, M),
-        shape_formula="4 × (S, N, M)",
+        shape=(B, S, N1 + N2, M),
+        shape_formula="4 × (B, S, N, M)",
         dtype=storage_dtype,
         count=4,
     ))
     breakdown.add_component(student)
     
     # =========================================================================
-    # COMPONENT 2: Dense Intermediate
-    # Z_hat, V, residuals: (S, N1, N2)
+    # COMPONENT 2: Dense Intermediate (N1 x N2)
+    # z_hat, p_var, V, residual, s (per W and X update = 2x)
+    # Shape: (B, S, N1, N2)
     # DTYPE: storage_dtype
+    # Count: ~8-10 tensors (z_hat, p_var, V, residual, s for W update, 
+    #        then z_hat2, p_var2, V2, residual2, s2 for X update)
     # =========================================================================
-    intermediate = MemoryComponent(name="Dense Intermediate")
-    num_tensors = 5 if params.use_compile else 8  # torch.compile reduces copies
-    intermediate.add(TensorSpec(
-        name="Z_hat + V + residuals + ...",
-        shape=(S, N1, N2),
-        shape_formula="(S, N1, N2)",
+    intermediate_dense = MemoryComponent(name="Dense Intermediate (N1×N2)")
+    num_dense = 8 if params.use_compile else 10  # torch.compile may fuse some
+    intermediate_dense.add(TensorSpec(
+        name="z_hat + p_var + V + residual + s (×2)",
+        shape=(B, S, N1, N2),
+        shape_formula="(B, S, N1, N2)",
         dtype=storage_dtype,
-        count=num_tensors,
-        notes="Dense (S, N1, N2) intermediate tensors"
+        count=num_dense,
+        notes="Dense intermediate tensors for forward pass"
     ))
-    breakdown.add_component(intermediate)
+    breakdown.add_component(intermediate_dense)
+    
+    # =========================================================================
+    # COMPONENT 3: Compute Intermediate (N × M)  *** PREVIOUSLY MISSING! ***
+    # w_sq, x_sq, tau_W, tau_X, r_W, r_X, w_var_new, x_var_new, w_hat_new, x_hat_new
+    # Shape: (B, S, N, M)
+    # DTYPE: storage_dtype
+    # Count: ~8-10 tensors live at peak
+    # =========================================================================
+    intermediate_compute = MemoryComponent(name="Compute Intermediate (N×M)")
+    num_compute = 8 if params.use_compile else 10
+    intermediate_compute.add(TensorSpec(
+        name="w_sq + x_sq + tau + r + var_new + hat_new",
+        shape=(B, S, N1 + N2, M),  # Combined W and X
+        shape_formula="(B, S, N, M)",
+        dtype=storage_dtype,
+        count=num_compute,
+        notes="Compute intermediate tensors: w_sq, x_sq, tau_W/X, r_W/X, *_new"
+    ))
+    breakdown.add_component(intermediate_compute)
     
     return breakdown
 
@@ -845,25 +872,29 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     Get modular memory breakdown for AGD algorithm.
     
     Simple gradient descent with:
-    - Parameters: W, X
-    - Gradients: grad_W, grad_X
-    - Masks and predictions
+    - Parameters: W, X → (B, S, N, M)
+    - Gradients: grad_W, grad_X → (B, S, N, M)
+    - Masks and predictions → (B, S, N1, N2)
+    
+    Note: B = batch_size = len(alpha_values) for parallel alpha processing.
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
+    B = params.batch_size  # Alpha batch size (num_alphas for parallel processing)
     storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
     
     breakdown = MemoryBreakdown(algorithm_key="agd", safety_margin=1.10)
     
     # =========================================================================
     # COMPONENT 1: Parameters and Gradients
-    # W, X, grad_W, grad_X: 4 × (S, N, M)
+    # W, X, grad_W, grad_X: 4 × (B, S, N, M)
     # DTYPE: storage_dtype
+    # NOTE: B dimension for parallel alpha processing
     # =========================================================================
     params_comp = MemoryComponent(name="Parameters & Gradients")
     params_comp.add(TensorSpec(
         name="W + X + grad_W + grad_X",
-        shape=(S, N1 + N2, M),
-        shape_formula="4 × (S, N, M)",
+        shape=(B, S, N1 + N2, M),
+        shape_formula="4 × (B, S, N, M)",
         dtype=storage_dtype,
         count=4,
     ))
@@ -871,29 +902,31 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     
     # =========================================================================
     # COMPONENT 2: Observation Masks
-    # Binary masks: (S, N1, N2)
+    # Binary masks: (B, S, N1, N2)
     # DTYPE: BOOL (1 byte)
+    # NOTE: B dimension for parallel alpha processing
     # =========================================================================
     masks = MemoryComponent(name="Observation Masks")
     masks.add(TensorSpec(
         name="observation_mask",
-        shape=(S, N1, N2),
-        shape_formula="(S, N1, N2)",
+        shape=(B, S, N1, N2),
+        shape_formula="(B, S, N1, N2)",
         dtype=DType.BOOL,
-        notes="Binary observation mask"
+        notes="Binary observation mask for parallel alpha"
     ))
     breakdown.add_component(masks)
     
     # =========================================================================
     # COMPONENT 3: Predictions and Residuals
-    # predictions, residuals: (S, N1, N2)
+    # predictions, residuals: (B, S, N1, N2)
     # DTYPE: storage_dtype
+    # NOTE: B dimension for parallel alpha processing
     # =========================================================================
     pred_res = MemoryComponent(name="Predictions & Residuals")
     pred_res.add(TensorSpec(
         name="predictions + residuals",
-        shape=(S, N1, N2),
-        shape_formula="(S, N1, N2)",
+        shape=(B, S, N1, N2),
+        shape_formula="(B, S, N1, N2)",
         dtype=storage_dtype,
         count=2,
     ))

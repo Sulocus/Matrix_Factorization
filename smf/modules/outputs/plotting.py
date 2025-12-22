@@ -1118,3 +1118,151 @@ def plot_replica_comparison(
     
     return output_path
 
+
+def plot_custom_curves(
+    results: Dict[float, Dict[str, float]],
+    curves: List[str],
+    output_path: Path,
+    title: str = None,
+    show_error_bar: bool = True,
+    error_style: str = 'bar',
+    dpi: int = None,
+) -> Path:
+    """
+    根据配置绘制自定义曲线组合。
+
+    使用 plot_registry 中定义的格式解析曲线代码。
+    
+    Args:
+        results: Dict mapping scan_value -> metrics dict
+                 例如: {1.0: {'Q_Y_mean': 0.5, 'Q_Y_std': 0.01, ...}, ...}
+        curves: 曲线代码列表，例如 ['A.y', 'B.w', 'A.y:R']
+        output_path: 输出路径
+        title: 图片标题 (可选)
+        show_error_bar: 是否显示误差棒
+        error_style: 误差样式 'bar' 或 'band'
+        dpi: 分辨率
+
+    Returns:
+        Path to saved plot
+    """
+    from .plot_registry import parse_curve_code, CurveSpec
+    
+    # 解析曲线配置
+    curve_specs: List[CurveSpec] = []
+    for code in curves:
+        try:
+            spec = parse_curve_code(code)
+            curve_specs.append(spec)
+        except ValueError as e:
+            print(f"Warning: Invalid curve code '{code}': {e}")
+            continue
+    
+    if not curve_specs:
+        print("No valid curves to plot")
+        return None
+    
+    # 准备数据
+    x_values = sorted([float(v) for v in results.keys()])
+    
+    # Metric 显示名称 (LaTeX)
+    METRIC_LABELS = {
+        'Q_Y': '$Q_Y$',
+        'Q_W': '$Q_W$',
+        'Q_X': '$Q_X$',
+        'Q_W_prime': "$Q'_W$",
+        'Q_X_prime': "$Q'_X$",
+        'Q_Y_observed': '$Q_Y$ (obs)',
+        'Q_Y_unobserved': '$Q_Y$ (unobs)',
+        'physical_overlap_Y': 'Phys $Q_Y$',
+        'physical_overlap_W': 'Phys $Q_W$',
+        'physical_overlap_X': 'Phys $Q_X$',
+        'Gen_Error': 'Gen Error',
+    }
+    
+    # 扩展颜色映射 (支持 replica)
+    EXTENDED_COLORS = {
+        'Q_Y': '#d62728',
+        'Q_Y_replica': '#ff9999',
+        'Q_W': '#1f77b4',
+        'Q_W_replica': '#a0c8e0',
+        'Q_X': '#ff7f0e',
+        'Q_X_replica': '#ffcc99',
+        'Q_W_prime': '#9467bd',
+        'Q_W_prime_replica': '#c9b3d6',
+        'Q_X_prime': '#8c564b',
+        'Q_X_prime_replica': '#c4a59e',
+        'Q_Y_observed': '#bcbd22',
+        'Q_Y_observed_replica': '#e0e088',
+        'Q_Y_unobserved': '#17becf',
+        'Q_Y_unobserved_replica': '#88daed',
+        'physical_overlap_Y': '#d62728',
+        'physical_overlap_Y_replica': '#ff9999',
+        'physical_overlap_W': '#1f77b4',
+        'physical_overlap_W_replica': '#a0c8e0',
+        'physical_overlap_X': '#ff7f0e',
+        'physical_overlap_X_replica': '#ffcc99',
+        'Gen_Error': '#2ca02c',
+    }
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    for spec in curve_specs:
+        # 构建 metric key (加 _replica 后缀如果需要)
+        if spec.is_replica:
+            metric_key = spec.metric_name + '_replica'
+        else:
+            metric_key = spec.metric_name
+        
+        mean_key = f'{metric_key}_mean'
+        std_key = f'{metric_key}_std'
+        
+        # 提取数据
+        means = []
+        stds = []
+        for v in x_values:
+            metrics = results.get(v, {})
+            means.append(metrics.get(mean_key, 0))
+            stds.append(metrics.get(std_key, 0))
+        
+        # 获取颜色和标签
+        color = EXTENDED_COLORS.get(metric_key, '#333333')
+        base_label = METRIC_LABELS.get(spec.metric_name, spec.metric_name)
+        label = f"{base_label} (R)" if spec.is_replica else base_label
+        
+        # 绘制曲线
+        yerr = stds if (show_error_bar and any(s > 0 for s in stds)) else None
+        linestyle = '--' if spec.is_replica else '-'
+        marker = 's' if spec.is_replica else 'o'
+        
+        if error_style == 'band' and yerr is not None:
+            ax.plot(x_values, means, color=color, label=label,
+                   linewidth=STYLE['linewidth'], linestyle=linestyle, marker=marker,
+                   markersize=STYLE['markersize'])
+            ax.fill_between(x_values,
+                           [m - s for m, s in zip(means, stds)],
+                           [m + s for m, s in zip(means, stds)],
+                           color=color, alpha=ERROR_CONFIG.band_alpha)
+        else:
+            ax.errorbar(x_values, means, yerr=yerr,
+                       color=color, label=label, linestyle=linestyle, marker=marker,
+                       linewidth=STYLE['linewidth'], markersize=STYLE['markersize'],
+                       capsize=STYLE['capsize'] if yerr else 0)
+    
+    # 格式化
+    ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
+    ax.set_ylabel('Overlap', fontsize=STYLE['fontsize']['label'])
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    ax.legend(fontsize=STYLE['fontsize']['legend'], loc='best')
+    
+    if title:
+        ax.set_title(title, fontsize=STYLE['fontsize']['title'])
+    
+    plt.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=dpi or DEFAULT_DPI, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
