@@ -381,7 +381,7 @@ def main():
     
     runner = ExperimentRunner(verbose=False)  # 由ProgressBridge处理输出
     bridge = ProgressBridge(use_rich=True)
-    timestamp = datetime.now().strftime('%m%d_%H%M')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')  # YYYYMMDD_HHMM for sort-friendly naming
     
     # 检查是否为嵌套扫描模式
     if isinstance(config, dict) and config.get('mode') == 'nested':
@@ -409,7 +409,7 @@ def main():
         )
         
         # 运行嵌套扫描
-        output_path = Path(args.output_dir) / "nested_scan" / f"nested_sweep_{timestamp}"
+        output_path = Path(args.output_dir) / "nested_scan" / f"{timestamp}_nested_sweep"
         results = runner.run_scaling_sweep(
             base_config=base_config,
             matrix_sizes=config['sizes'],
@@ -442,7 +442,7 @@ def main():
         
         # 保存 - 按扫描类型分类
         scan_type_dir = "steps_scan" if config.scan.dimension == 'steps' else "alpha_scan"
-        output_path = Path(args.output_dir) / scan_type_dir / f"{config.experiment_name}_{timestamp}"
+        output_path = Path(args.output_dir) / scan_type_dir / f"{timestamp}_{config.experiment_name}"
         result.save(
             output_path,
             save_tensors=output_options.get('save_tensors', True),
@@ -451,9 +451,20 @@ def main():
             output_options=output_options,
         )
         
+        # Update _latest symlink for easy access to newest result
+        scan_dir = Path(args.output_dir) / scan_type_dir
+        latest_link = scan_dir / "_latest"
+        try:
+            if latest_link.is_symlink():
+                latest_link.unlink()
+            latest_link.symlink_to(output_path.name)
+        except OSError:
+            pass  # Symlink creation may fail on some filesystems
+        
         print()
         print("=" * 60)
         print(f"✅ Done! Saved to: {output_path}")
+        print(f"   _latest -> {output_path.name}")
         print("=" * 60)
 
 
