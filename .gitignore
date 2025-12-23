@@ -63,3 +63,6 @@ smf/.checkpoint.pt
 
 # Large JSON metrics files (can exceed 10MB)
 **/metrics.json
+
+# Legacy/archive directories (local only, not synced)
+_legacy/
