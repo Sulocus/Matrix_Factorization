@@ -396,6 +396,11 @@ def bigamp_spreading_step(
         W_hat, X_hat, W_var, X_var, F, i_idx, j_idx, alpha_mask
     )  # (A, C_max)
 
+    # ===== Onsager Correction (AMP de-correlation) =====
+    # Critical for Random Spreading: removes echo effect from previous residuals
+    if prev_s is not None:
+        Z_hat = Z_hat - V * prev_s
+
     # ===== Compute residuals and beliefs =====
     # s = (Y - Z_hat) / (V + noise_var)
     Y_broadcast = Y_values.unsqueeze(0)  # (1, C_max)
@@ -409,10 +414,7 @@ def bigamp_spreading_step(
     # Apply mask
     s_values = s_values * alpha_mask.float()
 
-    # ===== Onsager correction / Damping =====
-    # REMOVED: s-damping (inconsistent with reference Wang/bigamp/train.py)
-    # if prev_s is not None:
-    #     s_values = damping * s_values + (1 - damping) * prev_s
+    # Note: Onsager correction replaces s-damping for Random Spreading
 
     # ===== Update W =====
     # r_W[a,i,μ] = Σ_{c: i_idx[c]=i} F[c,μ] * X[a,μ,j_idx[c]] * s[a,c]
@@ -561,18 +563,16 @@ def bigamp_step_disjoint_union(
     V = alpha_scale_sq * (F_sq_flat * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * alpha_mask_exp.float() + 1e-10
 
+    # ===== Onsager Correction (AMP de-correlation) =====
+    # Critical for Random Spreading: removes echo effect from previous residuals
+    if prev_s is not None:
+        Z_hat = Z_hat - V * prev_s
+
     # ===== 5. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
     s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
     s_values = torch.clamp(s_values, min=-1e6, max=1e6)
     s_values = s_values * alpha_mask_exp.float()
-
-    s_values = s_values * alpha_mask_exp.float()
-
-    # Onsager correction
-    # REMOVED: s-damping
-    # if prev_s is not None:
-    #     s_values = damping * s_values + (1 - damping) * prev_s
 
     # ===== 6. Scatter: one operation for all edges =====
     s_exp = s_values.unsqueeze(2)  # (A, SC, 1)
@@ -712,7 +712,11 @@ def bigamp_step_disjoint_union_flat(
         V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * mask_typed + 1e-10
 
-    
+    # ===== Onsager Correction (AMP de-correlation) =====
+    # Critical for Random Spreading: removes echo effect from previous residuals
+    # Note: Create new tensor to avoid CUDAGraphs address conflict
+    if prev_s is not None:
+        Z_hat = Z_hat - V * prev_s  # Creates new tensor (not in-place)
     # ===== 4. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
     s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
@@ -1227,6 +1231,8 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_flat = X_flat.clone()
                 W_var_flat = W_var_flat.clone()
                 X_var_flat = X_var_flat.clone()
+                if prev_s is not None:
+                    prev_s = prev_s.clone()  # Onsager term also needs clone
 
             # [Memory Calibration] Check actual usage early in the run
             if (step + 1) == 10 and torch.cuda.is_available():

@@ -43,6 +43,23 @@ ENV/
 Thumbs.db
 *.log
 # Exclude large result files from git push
-smf/Replica_results/**/*.pt
+# =============================================================================
+# Large Data Files (experiments, checkpoints, results)
+# =============================================================================
+# PyTorch model/result files
+*.pt
 *.pth
+
+# Pickle checkpoint files
+*.pkl
+
+# Large results directories
+smf/results/
+smf/Replica_results/
+
+# Checkpoint files
 smf/.checkpoint.pt
+.checkpoints/
+
+# Large JSON metrics files (can exceed 10MB)
+**/metrics.json
