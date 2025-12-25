@@ -752,11 +752,10 @@ class ExperimentRunner:
         data: ExperimentData,
     ) -> Dict[str, float]:
         """Compute evaluation metrics."""
-        print(f"DEBUG: _compute_metrics called. spreading_data is None? {data.spreading_data is None}")
         try:
             # ===== Spreading 算法专用 metrics =====
             if data.spreading_data is not None:
-                print("DEBUG: Entering spreading metrics branch")
+
                 from ...modules.metrics.spreading import compute_all_metrics_spreading_parallel
                 
                 # Reshape W, X for spreading metrics: (A, S, N, M) -> (S, A, N, M)
@@ -784,7 +783,7 @@ class ExperimentRunner:
                     diffs = [abs(a - current_alpha) for a in data.spreading_data.alpha_values]
                     best_idx = diffs.index(min(diffs))
                     target_alpha_idx = int(best_idx)
-                    print(f"DEBUG: Mapping single alpha {current_alpha:.4f} -> idx {target_alpha_idx}")
+
 
                 metrics_tensor = compute_all_metrics_spreading_parallel(
                     W_for_metrics, X_for_metrics, data.spreading_data,
@@ -815,8 +814,10 @@ class ExperimentRunner:
             
             # ===== 标准算法 metrics =====
             from ...modules.metrics.overlap import (
+                compute_cosine_similarity,
                 gram_overlap_normalized,
                 compute_qy,
+                _compute_qy_masked,
             )
             
             if W_students.dim() == 4:
@@ -827,9 +828,20 @@ class ExperimentRunner:
                 X_for_metrics = X_students
             
             S = W_for_metrics.shape[0]
+            
+            # A类: Cosine Similarity (Teacher-Student)
             Q_W_list = []
             Q_X_list = []
+            # B类: Normalized (Prime)
+            Q_W_prime_list = []
+            Q_X_prime_list = []
+            # D类: Physical Overlap
+            Physical_W_list = []
+            Physical_X_list = []
+            # Y metrics
             Q_Y_list = []
+            Q_Y_observed_list = []
+            Q_Y_unobserved_list = []
             
             # OPTIMIZATION: Reuse pre-computed Y_teacher from DataFactory
             # data.Y_teacher is scaled by 1/sqrt(M), so we multiply back to match W@X convention
@@ -841,24 +853,85 @@ class ExperimentRunner:
             Y_students = torch.bmm(W_for_metrics, X_for_metrics)
             
             for s in range(S):
-                Q_W = gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True)
-                Q_W_list.append(Q_W)
-                Q_X = gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False)
-                Q_X_list.append(Q_X)
+                # A类: Cosine Similarity
+                Q_W_list.append(compute_cosine_similarity(W_for_metrics[s], data.W_teacher, use_left=True))
+                Q_X_list.append(compute_cosine_similarity(X_for_metrics[s], data.X_teacher, use_left=False))
                 
-                # Use pre-computed slice
-                Q_Y = compute_qy(Y_students[s], Y_teacher)
-                Q_Y_list.append(Q_Y)
+                # B类: Normalized (Prime)
+                Q_W_prime_list.append(gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True))
+                Q_X_prime_list.append(gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False))
+                
+                # D类: Physical Overlap (<A,B> / ||B||^2, with abs for sign ambiguity)
+                w_dot = (W_for_metrics[s] * data.W_teacher).sum()
+                w_norm_sq = (data.W_teacher ** 2).sum() + 1e-12
+                Physical_W_list.append(float(w_dot.abs() / w_norm_sq))
+                
+                x_dot = (X_for_metrics[s] * data.X_teacher).sum()
+                x_norm_sq = (data.X_teacher ** 2).sum() + 1e-12
+                Physical_X_list.append(float(x_dot.abs() / x_norm_sq))
+                
+                # Q_Y
+                Q_Y_list.append(compute_qy(Y_students[s], Y_teacher))
+                
+                # C类: Observed/Unobserved
+                if data.masks is not None:
+                    if data.masks.dim() == 3:
+                        mask = data.masks[0]
+                    else:
+                        mask = data.masks
+                    
+                    Q_Y_observed_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=True))
+                    Q_Y_unobserved_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=False))
+            
+            # Replica metrics (Student-Student)
+            Q_W_replica_list = []
+            Q_X_replica_list = []
+            Q_W_prime_replica_list = []
+            Q_X_prime_replica_list = []
+            
+            if S >= 2:
+                for i in range(S):
+                    for j in range(i+1, S):
+                        Q_W_replica_list.append(compute_cosine_similarity(W_for_metrics[i], W_for_metrics[j], use_left=True))
+                        Q_X_replica_list.append(compute_cosine_similarity(X_for_metrics[i], X_for_metrics[j], use_left=False))
+                        Q_W_prime_replica_list.append(gram_overlap_normalized(W_for_metrics[i], W_for_metrics[j], use_left=True))
+                        Q_X_prime_replica_list.append(gram_overlap_normalized(X_for_metrics[i], X_for_metrics[j], use_left=False))
             
             import numpy as np
-            return {
+            result = {
+                # A类: Cosine
                 'Q_W_mean': float(np.mean(Q_W_list)),
                 'Q_W_std': float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
                 'Q_X_mean': float(np.mean(Q_X_list)),
                 'Q_X_std': float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
                 'Q_Y_mean': float(np.mean(Q_Y_list)),
                 'Q_Y_std': float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
+                # B类: Prime
+                'Q_W_prime_mean': float(np.mean(Q_W_prime_list)),
+                'Q_W_prime_std': float(np.std(Q_W_prime_list, ddof=1)) if len(Q_W_prime_list) > 1 else 0.0,
+                'Q_X_prime_mean': float(np.mean(Q_X_prime_list)),
+                'Q_X_prime_std': float(np.std(Q_X_prime_list, ddof=1)) if len(Q_X_prime_list) > 1 else 0.0,
+                # Replica
+                'Q_W_replica_mean': float(np.mean(Q_W_replica_list)) if Q_W_replica_list else 0.0,
+                'Q_X_replica_mean': float(np.mean(Q_X_replica_list)) if Q_X_replica_list else 0.0,
+                'Q_W_prime_replica_mean': float(np.mean(Q_W_prime_replica_list)) if Q_W_prime_replica_list else 0.0,
+                'Q_X_prime_replica_mean': float(np.mean(Q_X_prime_replica_list)) if Q_X_prime_replica_list else 0.0,
+                # D类: Physical
+                'physical_overlap_W_mean': float(np.mean(Physical_W_list)),
+                'physical_overlap_W_std': float(np.std(Physical_W_list, ddof=1)) if len(Physical_W_list) > 1 else 0.0,
+                'physical_overlap_X_mean': float(np.mean(Physical_X_list)),
+                'physical_overlap_X_std': float(np.std(Physical_X_list, ddof=1)) if len(Physical_X_list) > 1 else 0.0,
             }
+            
+            # C类: Observed/Unobserved
+            if Q_Y_observed_list:
+                result['Q_Y_observed_mean'] = float(np.mean(Q_Y_observed_list))
+                result['Q_Y_observed_std'] = float(np.std(Q_Y_observed_list, ddof=1)) if len(Q_Y_observed_list) > 1 else 0.0
+            if Q_Y_unobserved_list:
+                result['Q_Y_unobserved_mean'] = float(np.mean(Q_Y_unobserved_list))
+                result['Q_Y_unobserved_std'] = float(np.std(Q_Y_unobserved_list, ddof=1)) if len(Q_Y_unobserved_list) > 1 else 0.0
+            
+            return result
         except ImportError as e:
             print(f"Warning: metrics import failed: {e}")
             return {'Q_W_mean': 0.0, 'Q_X_mean': 0.0, 'Q_Y_mean': 0.0}
@@ -901,12 +974,14 @@ class ExperimentRunner:
         @dc
         class SpreadConfig:
             f_distribution: str = config.spreading.f_distribution if config.spreading else "rademacher"
+            onsager_correction: bool = config.spreading.onsager_correction if config.spreading else False
             seed: int = config.seeds.spreading_seed
         
         @dc
         class MockConfig:
             matrix = MatrixConfig()
             algorithm = AlgoConfig()
+            algorithm_params = config.algorithm_params
             training = TrainConfig()
             spreading = SpreadConfig()
         

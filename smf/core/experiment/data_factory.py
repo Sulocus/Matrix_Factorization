@@ -84,6 +84,11 @@ class DataFactory:
         """
         alpha_values = alpha_values or config.alpha_values
         
+        # Get teacher initialization distribution
+        init_distribution = "gaussian"  # default
+        if hasattr(config, 'teacher') and config.teacher:
+            init_distribution = config.teacher.init_distribution
+        
         # Create teacher
         W_teacher, X_teacher, Y_teacher = self.create_teacher(
             N1=config.matrix.N1,
@@ -91,6 +96,7 @@ class DataFactory:
             M=config.matrix.M,
             teacher_key=getattr(config, 'teacher_key', 'standard'),
             seed=config.seeds.teacher_seed,
+            init_distribution=init_distribution,
         )
         
         # Create algorithm-specific data
@@ -133,6 +139,7 @@ class DataFactory:
         M: int,
         teacher_key: str = "standard",
         seed: int = 12345,
+        init_distribution: str = "gaussian",
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Create teacher matrices.
@@ -141,6 +148,7 @@ class DataFactory:
             N1, N2, M: Matrix dimensions
             teacher_key: "standard" or "orthogonal"
             seed: Random seed
+            init_distribution: "gaussian" or "rademacher" (for standard teacher only)
             
         Returns:
             (W_teacher, X_teacher, Y_teacher)
@@ -160,9 +168,15 @@ class DataFactory:
             _, _, Vh = torch.linalg.svd(X_raw, full_matrices=False)
             X_teacher = Vh[:M, :] * math.sqrt(M)
         else:
-            # Standard Gaussian teacher
-            W_teacher = torch.randn(N1, M, device=self.device) * scale
-            X_teacher = torch.randn(M, N2, device=self.device) * scale
+            # Standard teacher with configurable distribution
+            if init_distribution == "rademacher":
+                # Rademacher: ±1 with equal probability, scaled by 1/√M
+                W_teacher = (2 * torch.randint(0, 2, (N1, M), device=self.device, dtype=torch.float32) - 1) * scale
+                X_teacher = (2 * torch.randint(0, 2, (M, N2), device=self.device, dtype=torch.float32) - 1) * scale
+            else:
+                # Gaussian: N(0, 1/√M)
+                W_teacher = torch.randn(N1, M, device=self.device) * scale
+                X_teacher = torch.randn(M, N2, device=self.device) * scale
         
         # Compute Y = (1/√M) * W @ X
         Y_teacher = scale * torch.matmul(W_teacher, X_teacher)

@@ -114,6 +114,7 @@ class ScanConfig:
 class SpreadingConfig:
     """Configuration specific to spreading algorithms."""
     f_distribution: str = "rademacher"  # "rademacher" or "gaussian"
+    onsager_correction: bool = False  # Enable Onsager correction for Z update
     
     def __post_init__(self):
         valid = ["rademacher", "gaussian"]
@@ -127,6 +128,23 @@ class SpreadingConfig:
     def f_bytes_per_element(self) -> int:
         """Bytes per F element."""
         return 1 if self.f_distribution == "rademacher" else 4
+    
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+@dataclass
+class TeacherConfig:
+    """Configuration specific to teacher model initialization."""
+    init_distribution: str = "gaussian"  # "gaussian" or "rademacher"
+    
+    def __post_init__(self):
+        valid = ["gaussian", "rademacher"]
+        if self.init_distribution not in valid:
+            raise ValueError(
+                f"Invalid init_distribution: {self.init_distribution}. "
+                f"Valid options: {valid}"
+            )
     
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -159,6 +177,15 @@ class AlgorithmParams:
     
     # Step scanning: fixed alpha value when scanning steps
     default_alpha: float = 1.0
+
+    # Adaptive Damping (BiGAMP)
+    adaptive_damping: bool = True
+    step_min: float = 0.05
+    step_max: float = 1.0
+    step_incr: float = 1.1
+    step_decr: float = 0.5
+    step_window: int = 1
+    max_bad_steps: int = 10
     
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -192,6 +219,7 @@ class ExperimentConfig:
     seeds: SeedConfig = field(default_factory=SeedConfig)
     algorithm_params: AlgorithmParams = field(default_factory=AlgorithmParams)
     spreading: Optional[SpreadingConfig] = None  # Only for spreading algorithms
+    teacher: Optional[TeacherConfig] = None  # Teacher initialization config
     
     # Metadata
     experiment_name: str = "unnamed_experiment"
@@ -255,6 +283,7 @@ class ExperimentConfig:
             "seeds": self.seeds.to_dict(),
             "algorithm_params": self.algorithm_params.to_dict(),
             "spreading": self.spreading.to_dict() if self.spreading else None,
+            "teacher": self.teacher.to_dict() if self.teacher else None,
             "experiment_name": self.experiment_name,
             "teacher_key": self.teacher_key,
             "notes": self.notes,
@@ -281,6 +310,7 @@ class ExperimentConfig:
             seeds=SeedConfig(**data["seeds"]),
             algorithm_params=AlgorithmParams(**data["algorithm_params"]),
             spreading=SpreadingConfig(**data["spreading"]) if data.get("spreading") else None,
+            teacher=TeacherConfig(**data["teacher"]) if data.get("teacher") else None,
             experiment_name=data.get("experiment_name", "unnamed"),
             teacher_key=data.get("teacher_key", "standard"),
             notes=data.get("notes", ""),

@@ -396,11 +396,6 @@ def bigamp_spreading_step(
         W_hat, X_hat, W_var, X_var, F, i_idx, j_idx, alpha_mask
     )  # (A, C_max)
 
-    # ===== Onsager Correction (AMP de-correlation) =====
-    # Critical for Random Spreading: removes echo effect from previous residuals
-    if prev_s is not None:
-        Z_hat = Z_hat - V * prev_s
-
     # ===== Compute residuals and beliefs =====
     # s = (Y - Z_hat) / (V + noise_var)
     Y_broadcast = Y_values.unsqueeze(0)  # (1, C_max)
@@ -414,7 +409,10 @@ def bigamp_spreading_step(
     # Apply mask
     s_values = s_values * alpha_mask.float()
 
-    # Note: Onsager correction replaces s-damping for Random Spreading
+    # ===== Onsager correction / Damping =====
+    # REMOVED: s-damping (inconsistent with reference Wang/bigamp/train.py)
+    # if prev_s is not None:
+    #     s_values = damping * s_values + (1 - damping) * prev_s
 
     # ===== Update W =====
     # r_W[a,i,μ] = Σ_{c: i_idx[c]=i} F[c,μ] * X[a,μ,j_idx[c]] * s[a,c]
@@ -563,16 +561,18 @@ def bigamp_step_disjoint_union(
     V = alpha_scale_sq * (F_sq_flat * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * alpha_mask_exp.float() + 1e-10
 
-    # ===== Onsager Correction (AMP de-correlation) =====
-    # Critical for Random Spreading: removes echo effect from previous residuals
-    if prev_s is not None:
-        Z_hat = Z_hat - V * prev_s
-
     # ===== 5. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
     s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
     s_values = torch.clamp(s_values, min=-1e6, max=1e6)
     s_values = s_values * alpha_mask_exp.float()
+
+    s_values = s_values * alpha_mask_exp.float()
+
+    # Onsager correction
+    # REMOVED: s-damping
+    # if prev_s is not None:
+    #     s_values = damping * s_values + (1 - damping) * prev_s
 
     # ===== 6. Scatter: one operation for all edges =====
     s_exp = s_values.unsqueeze(2)  # (A, SC, 1)
@@ -630,6 +630,148 @@ def bigamp_step_disjoint_union(
     X_var_out = torch.nan_to_num(X_var_out, nan=1.0)
 
     return W_hat_out, X_hat_out, W_var_out, X_var_out, s_values
+
+
+def compute_log_likelihood(
+    Y_flat: torch.Tensor,
+    Z_flat: torch.Tensor,
+    V_flat: torch.Tensor,
+    noise_var: float,
+) -> float:
+    """
+    Compute log-likelihood for AWGN:
+    LogL = -0.5 * sum( log(2pi(V + noise_var)) + (Y - Z)^2 / (V + noise_var) )
+    """
+    denom = V_flat + noise_var
+    diff_sq = (Y_flat.unsqueeze(0) - Z_flat).pow(2)  # (A, SC)
+    
+    # log(2*pi) = 1.837877
+    term1 = torch.log(denom + 1e-12) + 1.837877
+    term2 = diff_sq / (denom + 1e-12)
+    
+    # Average over S*C_max (or sum? MATLAB usually sums, but average is scale-invariant)
+    # Using SUM to match energy minimization physics
+    return -0.5 * (term1 + term2).sum().item()
+
+
+def bigamp_step_disjoint_union_flat_adaptive(
+    W_flat: torch.Tensor,      # (A, S*N1, M)
+    X_flat: torch.Tensor,      # (A, S*N2, M)
+    W_var_flat: torch.Tensor,  # (A, S*N1, M)
+    X_var_flat: torch.Tensor,  # (A, S*N2, M)
+    Y_flat: torch.Tensor,      # (S*C_max,)
+    F_flat: torch.Tensor,      # (S*C_max, M)
+    i_offset: torch.Tensor,    # (S*C_max,)
+    j_offset: torch.Tensor,    # (S*C_max,)
+    alpha_mask_exp: torch.Tensor,  # (A, S*C_max)
+    S: int,
+    N1: int,
+    N2: int,
+    noise_var: float,
+    is_rademacher: bool = False,
+    prev_s: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Adaptive Step Function: Returns RAW updates + Z_hat + V for cost check.
+    Does NOT apply damping.
+    
+    Returns:
+        W_hat_new, X_hat_new, W_var_new, X_var_new, s_values, Z_hat, V
+    """
+    A = W_flat.shape[0]
+    M = W_flat.shape[2]
+    SC = F_flat.shape[0]
+    
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    
+    # Pre-cast mask
+    mask_typed = alpha_mask_exp.to(W_flat.dtype)
+    
+    # ===== 1. Gather =====
+    W_sel = W_flat[:, i_offset, :]  # (A, SC, M)
+    X_sel = X_flat[:, j_offset, :]  # (A, SC, M)
+    W_var_sel = W_var_flat[:, i_offset, :]
+    X_var_sel = X_var_flat[:, j_offset, :]
+    
+    # ===== 2. Forward pass =====
+    F_compute = F_flat.to(W_flat.dtype)
+    F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
+    
+    Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)  # (A, SC)
+    Z_hat = Z_hat * mask_typed
+    
+    # ===== 3. Variance =====
+    if is_rademacher:
+        V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
+        F_sq_exp = None
+    else:
+        F_sq_exp = F_exp.pow(2)
+        V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
+    V = V * mask_typed + 1e-10
+
+    # ===== 4. ONSAGER CORRECTION (Restored) =====
+    if prev_s is not None:
+        # p_hat = Z_hat - V * prev_s
+        # Z_hat is actually p_hat in many derivations before correction
+        # But here Z_hat is pure mean.
+        # Standard AMP: p^t = Z^t - V^t * s^{t-1}
+        Z_hat = Z_hat - V * prev_s
+
+    # ===== 5. Residuals =====
+    denom = torch.clamp(V + noise_var, min=1e-6)
+    s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom
+    s_values = torch.clamp(s_values, min=-1e6, max=1e6)
+    s_values = s_values * alpha_mask_exp.float()
+    
+    # ===== 6. Scatter =====
+    s_exp = s_values.unsqueeze(2)
+    inv_V = (1.0 / denom).unsqueeze(2)
+    storage_dtype = W_flat.dtype
+    mask_typed = mask_typed.unsqueeze(2)
+    
+    s_typed = s_exp.to(storage_dtype)
+    inv_V_typed = inv_V.to(storage_dtype)
+    
+    # W update
+    r_W_contrib = alpha_scale * F_exp * X_sel * s_typed * mask_typed
+    r_W = torch.zeros(A, S * N1, M, device=W_flat.device, dtype=storage_dtype)
+    idx_W = i_offset.view(1, SC, 1).expand(A, SC, M)
+    r_W.scatter_add_(1, idx_W, r_W_contrib)
+    
+    if is_rademacher:
+        tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * inv_V_typed * mask_typed
+    else:
+        tau_W_contrib = alpha_scale_sq * F_sq_exp * X_sel.pow(2) * inv_V_typed * mask_typed
+    
+    tau_W = torch.zeros(A, S * N1, M, device=W_flat.device, dtype=storage_dtype)
+    tau_W.scatter_add_(1, idx_W, tau_W_contrib)
+    tau_W = tau_W.clamp(min=1e-10)
+    
+    W_var_new = 1.0 / (M + tau_W)
+    r_W = torch.clamp(r_W, min=-1e4, max=1e4)
+    W_hat_new = W_flat + W_var_new * r_W
+    
+    # X update
+    r_X_contrib = alpha_scale * F_exp * W_sel * s_typed * mask_typed
+    r_X = torch.zeros(A, S * N2, M, device=W_flat.device, dtype=storage_dtype)
+    idx_X = j_offset.view(1, SC, 1).expand(A, SC, M)
+    r_X.scatter_add_(1, idx_X, r_X_contrib)
+    
+    if is_rademacher:
+        tau_X_contrib = alpha_scale_sq * W_sel.pow(2) * inv_V_typed * mask_typed
+    else:
+        tau_X_contrib = alpha_scale_sq * F_sq_exp * W_sel.pow(2) * inv_V_typed * mask_typed
+    
+    tau_X = torch.zeros(A, S * N2, M, device=W_flat.device, dtype=storage_dtype)
+    tau_X.scatter_add_(1, idx_X, tau_X_contrib)
+    tau_X = tau_X.clamp(min=1e-10)
+    
+    X_var_new = 1.0 / (M + tau_X)
+    r_X = torch.clamp(r_X, min=-1e4, max=1e4)
+    X_hat_new = X_flat + X_var_new * r_X
+    
+    return W_hat_new, X_hat_new, W_var_new, X_var_new, s_values, Z_hat, V
 
 
 def bigamp_step_disjoint_union_flat(
@@ -712,11 +854,7 @@ def bigamp_step_disjoint_union_flat(
         V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * mask_typed + 1e-10
 
-    # ===== Onsager Correction (AMP de-correlation) =====
-    # Critical for Random Spreading: removes echo effect from previous residuals
-    # Note: Create new tensor to avoid CUDAGraphs address conflict
-    if prev_s is not None:
-        Z_hat = Z_hat - V * prev_s  # Creates new tensor (not in-place)
+    
     # ===== 4. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
     s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
@@ -1153,6 +1291,13 @@ class BiGAMPSpreading(AlgorithmBase):
         C_max = spreading_data.C_max
         SC = S * C_max
 
+        # Check for Adaptive Damping
+        if hasattr(self.config.algorithm, 'adaptive_damping') and self.config.algorithm.adaptive_damping:
+            return self._train_full_parallel_adaptive(
+                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps
+            )
+
+
         # Determine which alphas to train
         if batch_alpha_indices is None:
             batch_alpha_indices = list(range(A))
@@ -1231,8 +1376,6 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_flat = X_flat.clone()
                 W_var_flat = W_var_flat.clone()
                 X_var_flat = X_var_flat.clone()
-                if prev_s is not None:
-                    prev_s = prev_s.clone()  # Onsager term also needs clone
 
             # [Memory Calibration] Check actual usage early in the run
             if (step + 1) == 10 and torch.cuda.is_available():
@@ -1258,6 +1401,241 @@ class BiGAMPSpreading(AlgorithmBase):
         # (B, S*N2, M) -> (B, S, N2, M) -> (S, B, M, N2)
         X_hat = X_flat.reshape(B, S, N2, M).permute(1, 0, 3, 2)
 
+        return W_hat, X_hat
+
+    def _train_full_parallel_adaptive(
+        self,
+        spreading_data: SpreadingDataParallel,
+        batch_alpha_indices: List[int],
+        verbose: bool,
+        step_callback,
+        max_steps: Optional[int],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Adaptive Damping Training Loop with Backtracking.
+        """
+        S = spreading_data.S
+        A = spreading_data.A
+        N1 = spreading_data.supergraph.N1
+        N2 = spreading_data.supergraph.N2
+        M = spreading_data.M
+        C_max = spreading_data.C_max
+        SC = S * C_max
+        
+        B = len(batch_alpha_indices)
+        
+        # Determine params
+        params = self.config.algorithm
+        step_min = getattr(params, 'step_min', 0.05)
+        step_max = getattr(params, 'step_max', 1.0)
+        step_incr = getattr(params, 'step_incr', 1.1)
+        step_decr = getattr(params, 'step_decr', 0.5)
+        max_bad = getattr(params, 'max_bad_steps', 10)
+        
+        # State: Current Damping
+        damping = self.damping  # Start with configured damping
+        
+        # Get masked data
+        full_alpha_mask = spreading_data.supergraph.alpha_mask
+        batch_alpha_mask = full_alpha_mask[batch_alpha_indices]
+        i_offset, j_offset = compute_offset_indices(
+            spreading_data.supergraph.i_idx,
+            spreading_data.supergraph.j_idx,
+            N1, N2
+        )
+        F_flat = spreading_data.F_super.reshape(SC, M)
+        Y_flat = spreading_data.Y_super.reshape(SC)
+        alpha_mask_exp = batch_alpha_mask.unsqueeze(1).expand(B, S, C_max).reshape(B, SC)
+        
+        # Initialization
+        W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
+        X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+        W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
+        X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
+        
+        # "Safe" State (Last accepted)
+        W_safe = W_flat.clone()
+        X_safe = X_flat.clone()
+        W_var_safe = W_var_flat.clone()
+        X_var_safe = X_var_flat.clone()
+        s_safe = None
+        
+        prev_s = None
+        current_val = -float('inf')
+        
+        is_rademacher = (self.f_distribution == 'rademacher')
+        steps = max_steps if max_steps is not None else self.max_steps
+        
+        for step in range(steps):
+             # 1. Run Step (Raw Updates) from Safe State?
+             # MATLAB: runs from current state. If fail, reverts.
+             # Here current state IS safe state unless we tentatively moved?
+             # Let's use standard logic:
+             # Try step from W_flat using damping.
+             
+             # Problem: Standard AMP computes Z at START of step.
+             # So Z corresponds to W_flat.
+             # We want to check Likelihood(Z).
+             # If Good -> Accept W_flat (which yielded Z), perform update to get NEXT W_flat.
+             # If Bad -> Reject.
+             
+             # Actually:
+             # step_fn computes Z(W_in) and returns W_out (Raw).
+             # We calculate Val(Z(W_in)).
+             # If Val improved vs Val_prev:
+             #    Accept step.
+             #    Safe = W_flat.
+             #    W_flat = Damping * W_out + (1-Damping) * Safe ??? 
+             #    No. Damping is applied to the UPDATE.
+             #    W_new = Safe + Damping * (W_out - Safe).
+             #    Update Damping (Increase).
+             # Else:
+             #    Reject.
+             #    Decrease Damping.
+             #    W_flat = Safe (Stay).
+             #    But we need to try again with updated damping?
+             #    Actually, if we stay at Safe, Step_fn will satisfy the same Z.
+             #    Simply applying damping to the PREVIOUS update vector?
+             
+             # SIMPLIFIED ROBUST LOGIC:
+             # 1. Calculate Raw Update from W_flat.
+             #    Get W_raw, Z_hat, V.
+             # 2. Check Cost(Z_hat, V).
+             # 3. Decision.
+             
+             W_raw, X_raw, W_var_raw, X_var_raw, s_vals, Z_hat, V = bigamp_step_disjoint_union_flat_adaptive(
+                 W_flat, X_flat, W_var_flat, X_var_flat,
+                 Y_flat, F_flat, i_offset, j_offset, alpha_mask_exp,
+                 S, N1, N2, self.noise_var, is_rademacher, prev_s
+             )
+             
+             new_val = compute_log_likelihood(Y_flat, Z_hat, V, self.noise_var)
+             
+             # Acceptance Logic
+             pass_step = False
+             if step == 0:
+                 pass_step = True
+             elif new_val > current_val:
+                 pass_step = True
+             else:
+                 # Check relative decrease?
+                 # If very small decrease, maybe allow?
+                 pass_step = False
+             
+             if pass_step:
+                 # ACCEPT
+                 current_val = new_val
+                 damping = min(damping * step_incr, step_max)
+                 
+                 # Apply Damping to move to next point
+                 # W_next = damp * W_raw + (1-damp) * W_flat
+                 W_flat = damping * W_raw + (1 - damping) * W_flat
+                 X_flat = damping * X_raw + (1 - damping) * X_flat
+                 W_var_flat = damping * W_var_raw + (1 - damping) * W_var_flat # Approx
+                 X_var_flat = damping * X_var_raw + (1 - damping) * X_var_flat
+                 
+                 # Save Safe State
+                 W_safe = W_flat.clone() # This is now the accepted point
+                 prev_s = s_vals # Update Onsager state
+                 
+             else:
+                 # REJECT
+                 damping = max(damping * step_decr, step_min)
+                 # Revert to SAFE state implies: W_flat was already Safe (since we ran from it).
+                 # But we want to try a smaller step?
+                 # Actually, if we just stay at W_safe and run again, we get SAME Raw update.
+                 # So we need to store W_raw_prev?
+                 # No, we can just re-run next iteration with W_flat (which is Safe).
+                 # And since damping changed, the *Next* candidate will be closer.
+                 # Wait. W_flat is INPUT to step.
+                 # If we Reject, we stay at W_flat.
+                 # Next iter: Run step from W_flat. Get SAME W_raw.
+                 # But Accept Logic will see SAME new_val.
+                 # So it will Reject again?
+                 # NO.
+                 # Code above: W_flat = damp * W_raw + ...
+                 # If we Accept, we MOVE W_flat.
+                 # If we Reject, we DON'T move W_flat.
+                 # So W_flat stays same.
+                 # But if W_flat stays same, new_val stays same.
+                 # If new_val < current_val (which is from PREVIOUS accepted step),
+                 # It will Infinite Loop rejecting.
+                 
+                 # FIX:
+                 # If Reject, we essentially need to "Backtrack" along the previous search direction?
+                 # Or does Adaptive AMP mean adaptive *Damping* of the *current* update?
+                 # Yes.
+                 # If the *current* update direction is bad...
+                 # Maybe we accepted a bad step previously?
+                 
+                 # Look at GAMPmatlab:
+                 # It adapts step size based on *Cost of Z*.
+                 # It keeps `xhat` (SAFE).
+                 # Try `xhat_new = xhat + step * (xhat_raw - xhat)`.
+                 # Compute Z(xhat_new). Cost(Z).
+                 # If fail, reduce step, retry.
+                 
+                 # This requires evaluating Cost of the CANDIDATE.
+                 # My Step 1 computes Cost of INPUT.
+                 # So if verification fails, it means the *Previous* step took us to a bad place.
+                 # So we must REVERT to *Previous Safe*.
+                 # But we overwrote it.
+                 # So we need `W_safe` (Previous) and `W_cand` (Current).
+                 
+                 # Loop structure:
+                 # 1. We are at W_cand.
+                 # 2. Compute Val(W_cand).
+                 # 3. If Bad vs Val(W_safe):
+                 #      Revert W_cand = W_safe.
+                 #      Decrease Damping.
+                 #      # But how to apply new damping? We need the *Delta* from Safe to Raw?
+                 #      # We lost Raw.
+                 #      # So we need to re-compute Raw from W_safe?
+                 #      # Yes.
+                 #      W_flat = W_safe.
+                 #      # Continue loop. Next iter will re-compute Raw from Safe.
+                 #      # The Result will be W_raw (same).
+                 #      # Then we accept? No.
+                 #      # The logic `W_flat = damp * W_raw ...` applies damping.
+                 #      # So next `W_flat` will be closer to Safe.
+                 #      # So Val might improve?
+                 #      # Yes, if convex.
+                 
+                 # So:
+                 # If Reject:
+                 #   W_flat = W_safe
+                 #   Decrease Damp.
+                 #   prev_s = prev_s_safe (Need to store this too)
+                 
+                 # BUT, for the VERY FIRST STEP.
+                 # W_flat is init. Val is Val(Init).
+                 # If Val(Init) is bad?
+                 # We accept init always as baseline.
+             
+             if not pass_step:
+                 # Backtrack
+                 W_flat = W_safe.clone()
+                 X_flat = X_safe.clone()
+                 W_var_flat = W_var_safe.clone()
+                 X_var_flat = X_var_safe.clone()
+                 # prev_s? 
+                 # If we reverted W, we should revert s?
+                 # Generally yes.
+                 # Need s_safe.
+                 if s_safe is not None:
+                     prev_s = s_safe.clone()
+             else:
+                 # Update Safe s
+                 s_safe = s_vals.clone() if s_vals is not None else None
+                 
+             if verbose and step % 100 == 0:
+                 print(f"DEBUG: Step {step} | Loss {-new_val:.4e} | Damp {damping:.3f} | Pass {pass_step}")
+                 
+             if step_callback:
+                 step_callback(step + 1, steps)
+
+        W_hat = W_flat.reshape(B, S, N1, M).permute(1, 0, 2, 3)
+        X_hat = X_flat.reshape(B, S, N2, M).permute(1, 0, 3, 2)
         return W_hat, X_hat
 
     def supports_batch_training(self) -> bool:

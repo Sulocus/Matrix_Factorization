@@ -67,7 +67,8 @@ def load_yaml_config(yaml_path: Path):
     if algorithm_key == 'bigamp_spreading':
         s = cfg.get('spreading', {})
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
-        spreading = SpreadingConfig(f_distribution=f_dist)
+        onsager = s.get('onsager_correction', False)
+        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager)
     
     # 输出选项 (完整解析)
     output_cfg = cfg.get('output', {})
@@ -174,7 +175,7 @@ def build_config(args) -> ExperimentConfig:
     
     spreading = None
     if args.algorithm == 'bigamp_spreading':
-        spreading = SpreadingConfig(f_distribution=args.f_dist, seed=12345)
+        spreading = SpreadingConfig(f_distribution=args.f_dist)
     
     name = f"{args.algorithm}_{args.teacher}_{args.N}x{args.N}_M{args.M}_S{args.S}_steps{args.steps}"
     

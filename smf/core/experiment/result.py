@@ -314,40 +314,44 @@ class ExperimentResult:
             
             torch.save(results_data, path / 'results.pt')
         
-        # Generate evolution plots
+        # Generate evolution plots (only if user does NOT have custom plots configured)
         sorted_values = sorted(self.results.keys(), key=lambda x: float(x) if isinstance(x, (int, float)) else x)
         
         # Determine x-axis label based on scan dimension
         x_label = 'Alpha' if self.scan_dimension == 'alpha' else 'Steps'
         
-        # Extract metrics for plotting
-        x_values = [float(v) for v in sorted_values]
-        q_w_means = [self.results[v].metrics.get('Q_W_mean', 0) for v in sorted_values]
-        q_y_means = [self.results[v].metrics.get('Q_Y_mean', 0) for v in sorted_values]
+        # Check if user has custom plots configured - if so, skip default plots
+        has_custom_plots = output_options and output_options.get('plots')
         
-        # Plot Q_W and Q_Y evolution
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(x_values, q_w_means, 'r-', label='Q_W', linewidth=2, marker='o', markersize=3)
-        ax.plot(x_values, q_y_means, 'g-', label='Q_Y', linewidth=2, marker='s', markersize=3)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel('Overlap')
-        ax.set_title(f'{self.experiment_id}')
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        ax.set_ylim(-0.1, 1.1)
-        plt.savefig(plots_dir / 'qy_evolution.png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        
-        # Plot Q_W only (convergence curve for steps scan)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(x_values, q_w_means, 'r-', linewidth=2, marker='o', markersize=4)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel('Q_W (Gram Overlap Normalized)')
-        ax.set_title(f'Q_W Evolution - {self.experiment_id}')
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim(-0.1, 1.1)
-        plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
+        if not has_custom_plots:
+            # Extract metrics for plotting
+            x_values = [float(v) for v in sorted_values]
+            q_w_means = [self.results[v].metrics.get('Q_W_mean', 0) for v in sorted_values]
+            q_y_means = [self.results[v].metrics.get('Q_Y_mean', 0) for v in sorted_values]
+            
+            # Plot Q_W and Q_Y evolution
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(x_values, q_w_means, 'r-', label='Q_W', linewidth=2, marker='o', markersize=3)
+            ax.plot(x_values, q_y_means, 'g-', label='Q_Y', linewidth=2, marker='s', markersize=3)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel('Overlap')
+            ax.set_title(f'{self.experiment_id}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            ax.set_ylim(-0.1, 1.1)
+            plt.savefig(plots_dir / 'qy_evolution.png', dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            
+            # Plot Q_W only (convergence curve for steps scan)
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(x_values, q_w_means, 'r-', linewidth=2, marker='o', markersize=4)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel('Q_W (Gram Overlap Normalized)')
+            ax.set_title(f'Q_W Evolution - {self.experiment_id}')
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(-0.1, 1.1)
+            plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
+            plt.close(fig)
         
         # ===== 自定义曲线绘图 (来自 output_options['plots']) =====
         if output_options and output_options.get('plots'):

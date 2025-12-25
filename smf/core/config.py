@@ -62,6 +62,8 @@ class AlgorithmConfig:
     convergence_threshold: float = 1e-6
     # Acceleration
     use_compile: bool = True  # Enable torch.compile for kernel fusion
+    # Onsager correction (for BiGAMP Spreading)
+    onsager_enabled: bool = True  # Enable Onsager correction for AMP de-correlation
 
 
 @dataclass

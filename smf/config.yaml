@@ -1,7 +1,3 @@
-# SMF Experiment Configuration Template
-# =====================================
-# 运行: python smf/cli.py config_template.yaml
-
 # ===== 算法 (选一个数字) =====
 # 1 = bigamp
 # 2 = bigamp_spreading  
@@ -13,10 +9,16 @@ algorithm: 2
 # 2 = standard
 teacher: 2
 
+# ===== Teacher 配置 (可选) =====
+# init_distribution: 1 = gaussian (默认, N(0,1/√M))
+#                    2 = rademacher (±1/√M, 类 Ising 模型)
+teacher_config:
+  init_distribution: 1
+
 # ===== 矩阵尺寸 =====
 matrix:
-  N1: 500
-  N2: 500
+  N1: 200
+  N2: 200
   M: 50
 
 # ===== 扫描模式 (选一个数字) =====
@@ -27,9 +29,9 @@ scan_mode: 1
 
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
-  start: 1
+  start: 0
   stop: 4
-  step: 0.1             # 41 个点
+  step: 0.1             
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
 steps_scan:
@@ -37,45 +39,70 @@ steps_scan:
   step_values: [100, 200, 500, 1000, 2000, 3000, 5000,10000,20000,30000, 50000]
   multiplier: 1           # 倍数: BiGAMP=1, AGD=10-20
 
+
+# 扫描配置
+scan:
+  axis: 0
+  # Alpha values from 1.0 to 2.0
+  values: [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+
 # --- 嵌套扫描配置 (scan_mode = 3) ---
 nested_scan:
   sizes:                 # [N, M] 列表
     - [1000, 250]
-#    - [400, 100]
-#    - [600, 150]
   alpha:
     start: 0
     stop: 4.0
     step: 0.05
 
-# ===== 训练参数 =====
+# 训练参数
 training:
-  samples: 1            # 样本数 (S)
-  max_steps: 10000        # 训练步数
-  seed: 42
-  num_workers: 24        # 并行生成 Worker 数 (CPU)
+  samples_per_alpha: 10
+  max_steps: 5000
+  max_epochs: 20000
+  num_workers: 24
+
+# 随机种子
+seeds:
+  model: 42
+  data: 42
 
 # ===== 算法参数 =====
 algorithm_params:
-  damping: 0.5
-  noise_var: 1.0e-10
+  damping: 0.3
+  noise_var: 1.0e-5
+  learning_rate: 0.01
   use_compile: true
+  use_bf16: true
+  use_early_stop: false
+  target_loss_threshold: 1.0e-08
+  default_alpha: 1.0
+  
+  # Adaptive Damping
+  adaptive_damping: true
+  step_min: 0.1
+  step_max: 1.0
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
 
 # ===== Spreading 专用 (algorithm = 2) =====
 # f_distribution: 1 = rademacher, 2 = gaussian
 spreading:
   f_distribution: 1
   seed: 12345
+  onsager_correction: true # Disable Onsager correction (V * prev_s)
 
 # ===== 输出设置 =====
 output:
   name: ""               # 留空自动生成
   
   # 存储模式: full(完整) / lightweight(轻量) / plotting_only(仅绘图)
-  storage_mode: plotting_only
+  storage_mode: lightweight
   
   # Heatmap 开关 (独立于 plots)
-  enable_heatmap: true
+  enable_heatmap: false
   rsb_ordering: true     # 热力图 RSB 排序 (层次聚类)
   uniform_colormap: true # true=均匀颜色, false=增强高值区域(0.9-1.0)
   
@@ -91,8 +118,8 @@ output:
   # 示例: curves: [A.y, A.w, A.y:R] = Q_Y, Q_W, Q_Y(replica) 画同一张图
   
   plots:
-    - curves: [A.y, B.w, C.o]      # Q_Y + 归一化 overlap
-    - curves: [C.o, C.u, C.u:R]           # observed vs unobserved
-    - curves: [A.y, A.y:R]
-    - curves: [B.w, B.w:R]
+    - curves: [B.w, C.o]      # Q_Y + 归一化 overlap
+    # - curves: [C.o, C.u, C.u:R]           # observed vs unobserved
+    # - curves: [A.y, A.y:R]
+    # - curves: [B.w, B.w:R]
 

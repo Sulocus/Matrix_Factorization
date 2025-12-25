@@ -1,0 +1,55 @@
+{
+  "matrix": {
+    "N1": 1000,
+    "N2": 1000,
+    "M": 50
+  },
+  "training": {
+    "samples_per_alpha": 50,
+    "max_steps": 10000,
+    "max_epochs": 20000,
+    "num_workers": 1
+  },
+  "algorithm_key": "bigamp",
+  "scan": {
+    "dimension": "alpha",
+    "values": [
+      1.8,
+      1.82,
+      1.84,
+      1.86,
+      1.8800000000000001,
+      1.9000000000000001,
+      1.9200000000000002,
+      1.9400000000000002,
+      1.9600000000000002,
+      1.9800000000000002,
+      2.0,
+      2.0200000000000005,
+      2.04,
+      2.0600000000000005,
+      2.08,
+      2.1000000000000005
+    ]
+  },
+  "seeds": {
+    "base_seed": 42,
+    "teacher_seed": 12345,
+    "spreading_seed": 99999,
+    "student_seed": 0
+  },
+  "algorithm_params": {
+    "damping": 0.5,
+    "noise_var": 1e-10,
+    "learning_rate": 0.01,
+    "use_compile": true,
+    "use_bf16": true,
+    "use_early_stop": false,
+    "target_loss_threshold": 1e-08,
+    "default_alpha": 1.0
+  },
+  "spreading": null,
+  "experiment_name": "bigamp_standard_1000x1000_M50",
+  "teacher_key": "standard",
+  "notes": ""
+}

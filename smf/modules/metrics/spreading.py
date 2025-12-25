@@ -259,6 +259,8 @@ def compute_all_metrics_spreading_parallel(
     Q_X_all = torch.zeros(S, output_A, device=device)
     Q_W_prime_all = torch.zeros(S, output_A, device=device)
     Q_X_prime_all = torch.zeros(S, output_A, device=device)
+    Physical_W_all = torch.zeros(S, output_A, device=device)
+    Physical_X_all = torch.zeros(S, output_A, device=device)
     
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
@@ -315,6 +317,15 @@ def compute_all_metrics_spreading_parallel(
             Q_X_all[s, out_idx] = compute_cosine_similarity(X_s, X_teacher, use_left=False)
             Q_W_prime_all[s, out_idx] = gram_overlap_normalized(W_s, W_teacher, use_left=True)
             Q_X_prime_all[s, out_idx] = gram_overlap_normalized(X_s, X_teacher, use_left=False)
+            
+            # Physical Overlap (Projection coefficient: <A,B> / ||B||^2)
+            w_dot = (W_s * W_teacher).sum()
+            w_norm_sq = (W_teacher ** 2).sum() + 1e-12
+            Physical_W_all[s, out_idx] = w_dot.abs() / w_norm_sq  # abs for sign ambiguity
+            
+            x_dot = (X_s * X_teacher).sum()
+            x_norm_sq = (X_teacher ** 2).sum() + 1e-12
+            Physical_X_all[s, out_idx] = x_dot.abs() / x_norm_sq
 
             # --- 3. Full Matrix Metrics (Q_Y_total, Physical_Total, Unobserved) ---
             # Student full Y
@@ -324,6 +335,7 @@ def compute_all_metrics_spreading_parallel(
             y_t_flat = Y_teacher_full.flatten()
             y_s_flat = Y_student_full.flatten()
             dot_full = (y_t_flat * y_s_flat).sum()
+                
             Q_Y_total_all[s, out_idx] = dot_full / (y_t_flat.norm() * y_s_flat.norm() + 1e-12)
             
             # b) Physical Overlap Mean (average of point-wise overlaps)
@@ -388,6 +400,10 @@ def compute_all_metrics_spreading_parallel(
         'Q_W_prime_std': Q_W_prime_all.std(dim=0),
         'Q_X_prime_mean': Q_X_prime_all.mean(dim=0),
         'Q_X_prime_std': Q_X_prime_all.std(dim=0),
+        'physical_overlap_W_mean': Physical_W_all.mean(dim=0),
+        'physical_overlap_W_std': Physical_W_all.std(dim=0),
+        'physical_overlap_X_mean': Physical_X_all.mean(dim=0),
+        'physical_overlap_X_std': Physical_X_all.std(dim=0),
         'Q_W_replica_mean': Q_W_replica_all,
         'Q_X_replica_mean': Q_X_replica_all,
         'Q_W_prime_replica_mean': Q_W_prime_replica_all,

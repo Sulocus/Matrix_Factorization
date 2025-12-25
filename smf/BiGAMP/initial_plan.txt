@@ -1,0 +1,146 @@
+```yaml
+complete_reproduction_plan:
+  paper_info:
+    title: "Bilinear Generalized Approximate Message Passing (BiG-AMP)"
+    core_contribution: "A unified, low-complexity algorithmic framework for bilinear inference problems (Matrix Completion, Robust PCA, Dictionary Learning) that automates parameter tuning via EM and ensures convergence through adaptive damping."
+
+  # SECTION 1: File Structure Design
+  file_structure: |
+    big_amp_repro/
+    ├── core/
+    │   ├── engine.py           # Implementation of Table III (General) and Table IV (Scalar)
+    │   ├── damping.py          # Adaptive damping logic and Cost Function J(t)
+    │   └── base_solver.py      # Abstract class for BiG-AMP iterations
+    ├── estimators/
+    │   ├── __init__.py
+    │   ├── gaussian.py         # Gaussian prior/likelihood estimators
+    │   ├── bernoulli_bg.py     # Bernoulli-Gaussian (sparse) estimators
+    │   └── mixture.py          # Gaussian Mixture and Laplacian estimators
+    ├── utils/
+    │   ├── em_tuner.py         # EM update rules for noise and prior variances
+    │   ├── rank_logic.py       # AICc and Rank Contraction algorithms
+    │   └── metrics.py          # NMSE, NMAE, and Phase Transition utilities
+    ├── apps/
+    │   ├── matrix_completion.py # Wrapper for MC (Section VI)
+    │   ├── robust_pca.py       # Wrapper for RPCA (Section VII)
+    │   └── dict_learning.py    # Wrapper for Dictionary Learning (Section VIII)
+    ├── experiments/
+    │   ├── run_synthetic_ptc.py # Reproduces Fig 2 (Phase Transitions)
+    │   ├── run_movielens.py    # Reproduces Fig 7 (MovieLens 100k)
+    │   └── run_video_rpca.py   # Reproduces Fig 11 (Mall sequence)
+    ├── main.py                 # Unified entry point for all applications
+    ├── requirements.txt        # Dependencies (implemented last)
+    └── README.md               # Documentation (implemented last)
+
+  # SECTION 2: Implementation Components
+  implementation_components: |
+    The reproduction requires four primary technical modules integrated into a single execution flow.
+
+    1. THE BiG-AMP ENGINE (core/engine.py)
+    Implement the Scalar Variance BiG-AMP (Table IV) for computational efficiency O(N|Ω|).
+    - Input: Observation matrix Y, sampling mask Ω, and Estimator objects for A, X, and Z.
+    - State Initialization: 
+      * a_hat, x_hat: Random Gaussian or zeros.
+      * νa, νx: Set to 10x the expected prior variance to allow initial data dominance.
+      * s_hat: Initialize to zeros (size M x L).
+    - The 16-Step Loop (Iterative):
+      * R1-R4 (Z-updates): Compute p_hat using Onsager correction: p_hat = (A_hat * X_hat) - (s_hat_prev * νp).
+      * R5-R8 (Residual updates): Call Z-Estimator (Likelihood) to get posterior mean z_hat and variance νz. Compute residual s_hat = (z_hat - p_hat) / νp_bar.
+      * R9-R12 (R/Q-updates): Compute effective noise-corrupted observations for X (r_hat) and A (q_hat).
+      * R13-R16 (A/X-updates): Call A and X Estimators (Priors) to get updated a_hat, x_hat and their variances.
+
+    2. NON-LINEAR ESTIMATORS (estimators/)
+    Each estimator must implement `estimate(mean_in, var_in)` returning `(mean_out, var_out)`.
+    - Gaussian Estimator: 
+      * mean_out = (mean_in * ν_prior) / (ν_prior + var_in)
+      * var_out = (ν_prior * var_in) / (ν_prior + var_in)
+    - Bernoulli-Gaussian (BG) Estimator:
+      * Used for sparsity. Requires calculating the posterior activity probability π_hat.
+      * Formula: π_hat = [1 + ((1-λ)/λ) * (N(0; mean_in, ν_prior + var_in) / N(mean_in; 0, var_in))]^-1.
+      * mean_out = π_hat * [ (mean_in * ν_prior) / (ν_prior + var_in) ].
+    - PIAWGN Likelihood:
+      * For (m,l) ∈ Ω: Use AWGN estimator (z_hat = (y*νp + p_hat*νw)/(νp + νw)).
+      * For (m,l) ∉ Ω: Pass through (z_hat = p_hat, νz = νp).
+
+    3. ADAPTIVE DAMPING & COST (core/damping.py)
+    To prevent divergence, implement the Bethe Free Energy approximation J(t).
+    - J(t) = Σ D_KL(p_post || p_prior) - E_z[log p(y|z)].
+    - For AWGN, J(t) simplifies to a quadratic penalty on (z_hat - p_hat) and log-variance terms.
+    - Logic: If J(t) > J_threshold, reject the step, decrease step size β (e.g., β = β * 0.5), and recompute. If J(t) improves, increase β (e.g., β = min(β * 1.1, 1.0)).
+
+    4. EM HYPERPARAMETER TUNING (utils/em_tuner.py)
+    Update parameters θ after every K BiG-AMP iterations (or upon convergence).
+    - Noise Variance (νw): νw = (1/|Ω|) * Σ [(y - z_hat)^2 + νz].
+    - Prior Variances (νa, νx): νx = (1/NL) * Σ [x_hat^2 + νx].
+    - Sparsity Rate (λ): λ = (1/NL) * Σ [π_hat].
+
+    5. RANK SELECTION (utils/rank_logic.py)
+    - Rank Contraction: Start with a large N. After initial EM iterations, perform SVD on X_hat. If singular values drop below a threshold, reduce N and truncate matrices.
+    - AICc: Compute the corrected Akaike Information Criterion to compare models with different inner dimensions N.
+
+  # SECTION 3: Validation & Evaluation
+  validation_approach: |
+    Validation is split into three tiers to match the paper's results:
+
+    1. SYNTHETIC PHASE TRANSITIONS (Fig 2)
+    - Setup: Generate low-rank matrices Y = AX + W. Vary sampling ratio (M*L/|Ω|) and rank ratio (N(M+L)/|Ω|).
+    - Success Criteria: BiG-AMP must recover the "white" region of the PTC where NMSE < -60dB.
+    - Comparison: Plot against the "Theoretical Boundary" provided in Section VI-A.
+
+    2. MATRIX COMPLETION: MOVIELENS 100K (Fig 7)
+    - Data: Standard MovieLens 100k dataset (943 users, 1682 items).
+    - Model: Use PIAWLN (Possibly Incomplete Additive White Laplacian Noise) to handle outliers.
+    - Metric: Normalized Mean Absolute Error (NMAE).
+    - Expected Result: NMAE ≈ 0.185 - 0.190, outperforming LMaFit and matching the paper's reported performance.
+
+    3. ROBUST PCA: VIDEO SEPARATION (Fig 11)
+    - Data: 'Mall' video sequence (200 frames, 128x160).
+    - Model: Y = A + X, where A is low-rank (background) and X is sparse (foreground).
+    - Procedure: Use the Augmented Matrix formulation (Eq 127) where one matrix is fixed as Identity.
+    - Success Criteria: Visual verification of clean background extraction and foreground moving object detection.
+
+    4. DICTIONARY LEARNING (Fig 12)
+    - Setup: Recover a sparse X and dictionary A from Y = AX.
+    - Success Criteria: Achieve NMSE < -50dB for N=M=L=100 with sparsity λ=0.1. Verify the "Permutation and Scale" invariance by checking the correlation between columns of recovered A and true A.
+
+  # SECTION 4: Environment & Dependencies
+  environment_setup: |
+    - Language: Python 3.9+
+    - Core Libraries:
+      * numpy>=1.21.0 (Heavy use of vectorized matrix operations)
+      * scipy>=1.7.0 (For sparse matrix support in MC and SVD in Rank Selection)
+      * matplotlib>=3.4.0 (For PTC and video frame plotting)
+    - Hardware Requirements:
+      * Minimum 16GB RAM for MovieLens/Video experiments.
+      * No GPU required, but `cupy` can be substituted for `numpy` in `core/engine.py` for 10x speedup on large matrices.
+    - Installation:
+      `pip install numpy scipy matplotlib`
+
+  # SECTION 5: Implementation Strategy
+  implementation_strategy: |
+    PHASE 1: CORE ENGINE & BASIC ESTIMATORS
+    - Implement the `BaseEstimator` interface.
+    - Implement `GaussianEstimator` and `PIAWGNEstimator`.
+    - Code the BiG-AMP loop from Table III.
+    - Verification: Test on a small 10x10 noise-free matrix factorization. NMSE should reach machine epsilon.
+
+    PHASE 2: STABILIZATION
+    - Implement the `AdaptiveDamping` class.
+    - Integrate the Cost Function J(t) into the main loop.
+    - Verification: Run on a "difficult" ill-conditioned matrix; ensure the damping prevents the "explosion" of variances.
+
+    PHASE 3: AUTOMATION (EM & RANK)
+    - Implement `EMTuner` for noise and prior variance updates.
+    - Implement Rank Contraction logic using `scipy.linalg.svd`.
+    - Verification: Run synthetic tests where the initial rank N is 2x the true rank; ensure the system contracts to the correct N.
+
+    PHASE 4: APPLICATION WRAPPERS
+    - Build `MatrixCompletion` wrapper (sets up priors/likelihoods).
+    - Build `RobustPCA` wrapper (handles the augmented matrix logic).
+    - Build `DictionaryLearning` wrapper (implements Bernoulli-Gaussian priors).
+
+    PHASE 5: REPRODUCTION & BENCHMARKING
+    - Execute `run_synthetic_ptc.py` to generate Phase Transition Curves.
+    - Execute `run_movielens.py` and compare NMAE against paper values.
+    - Finalize `README.md` with instructions on how to toggle between "General" and "Scalar Variance" modes.
+```

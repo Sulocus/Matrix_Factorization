@@ -237,6 +237,9 @@ def config_to_dict(config) -> Dict[str, Any]:
         'spreading': {
             'f_distribution': config.spreading.f_distribution if config.spreading else 'rademacher',
         } if config.spreading else None,
+        'teacher': {
+            'init_distribution': config.teacher.init_distribution,
+        } if getattr(config, 'teacher', None) else None,
         'experiment_name': config.experiment_name,
     }
 
@@ -253,7 +256,7 @@ def dict_to_config(d: Dict[str, Any]):
     """
     from smf.core.experiment.config import (
         ExperimentConfig, MatrixParams, TrainingParams, 
-        ScanConfig, SeedConfig, AlgorithmParams, SpreadingConfig
+        ScanConfig, SeedConfig, AlgorithmParams, SpreadingConfig, TeacherConfig
     )
     
     matrix = MatrixParams(
@@ -288,6 +291,13 @@ def dict_to_config(d: Dict[str, Any]):
             f_distribution=d['spreading']['f_distribution'],
         )
     
+    # Teacher config (backward compatible)
+    teacher = None
+    if d.get('teacher'):
+        teacher = TeacherConfig(
+            init_distribution=d['teacher']['init_distribution'],
+        )
+    
     return ExperimentConfig(
         matrix=matrix,
         training=training,
@@ -296,6 +306,7 @@ def dict_to_config(d: Dict[str, Any]):
         seeds=seeds,
         algorithm_params=algo_params,
         spreading=spreading,
+        teacher=teacher,
         experiment_name=d['experiment_name'],
         teacher_key=d.get('teacher_key', 'standard'),
     )

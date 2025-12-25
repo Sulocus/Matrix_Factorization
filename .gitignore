@@ -53,9 +53,9 @@ Thumbs.db
 # Pickle checkpoint files
 *.pkl
 
-# Large results directories
-smf/results/
-smf/Replica_results/
+# Large results directories (now tracked)
+# smf/results/       # ENABLED: tracking results
+# smf/Replica_results/  # ENABLED: tracking Replica results
 
 # Checkpoint files
 smf/.checkpoint.pt
