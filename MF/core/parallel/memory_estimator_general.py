@@ -8,13 +8,10 @@ which has different memory patterns than Bipartite mode:
 - Different scatter/gather patterns
 """
 import math
-from typing import Optional
-import torch
 
 # Import shared components from main estimator
 from .memory_estimator import (
-    MemoryEstimator, EstimationParams, MemoryEstimate,
-    MemoryBreakdown, MemoryComponent, TensorSpec, DType
+    MemoryEstimator, EstimationParams, MemoryBreakdown, MemoryComponent, TensorSpec, DType
 )
 
 

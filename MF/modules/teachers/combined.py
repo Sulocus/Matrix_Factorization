@@ -17,7 +17,6 @@ import torch
 from ..registry import register_teacher
 from .base import TeacherBase
 from .standard import StandardTeacher
-from .scaled_variance import ScaledVarianceTeacher
 from .orthogonal import OrthogonalTeacher
 
 

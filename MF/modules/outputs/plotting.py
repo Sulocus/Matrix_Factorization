@@ -6,10 +6,9 @@ Supports Nature/Science journal formatting with proper fonts, sizing, and error 
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
 
 from ..registry import register_output
 from .base import OutputBase
@@ -23,7 +22,6 @@ from .publication_style import (
     StyleCycler,
     plot_with_error,
     auto_legend,
-    get_figure_size,
     COLORBLIND_PALETTE,
 )
 

@@ -10,7 +10,7 @@ The general graph enables triangular loops, breaking the bipartite constraint.
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 import torch
 import numpy as np
 

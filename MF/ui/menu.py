@@ -2,8 +2,6 @@
 Main menu interface using rich library.
 """
 
-from typing import Optional, Callable
-import sys
 
 try:
     from rich.console import Console

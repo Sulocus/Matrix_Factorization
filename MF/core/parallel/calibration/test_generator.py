@@ -5,7 +5,7 @@ Generates test configurations and scripts for memory estimation calibration
 across different parameter combinations.
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 from pathlib import Path
 import itertools
 
@@ -446,7 +446,7 @@ def generate_batch_test_script(
         "",
         "def main():",
         "    results = []",
-        f"    test_dir = Path(__file__).parent",
+        "    test_dir = Path(__file__).parent",
         "",
     ]
     
@@ -454,13 +454,13 @@ def generate_batch_test_script(
         script_name = f"test_{config.N}_{config.M}_{config.S}_{config.alpha_max}.py"
         script_lines.extend([
             f'    print(f"Running test {i+1}/{len(configs)}: {script_name}")',
-            f'    result = subprocess.run(',
+            '    result = subprocess.run(',
             f'        [sys.executable, test_dir / "{script_name}"],',
-            f'        capture_output=True, text=True',
-            f'    )',
-            f'    print(result.stdout)',
-            f'    if result.returncode != 0:',
-            f'        print(f"Error: {{result.stderr}}")',
+            '        capture_output=True, text=True',
+            '    )',
+            '    print(result.stdout)',
+            '    if result.returncode != 0:',
+            '        print(f"Error: {result.stderr}")',
             "",
         ])
     

@@ -10,16 +10,14 @@ This module enables LLM-driven configuration to customize outputs
 based on natural language descriptions.
 """
 
-import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
-import numpy as np
+from typing import Dict, Any, List, Optional
 
 from ..registry import register_output
 from .base import OutputBase
 from .plotting import ResultPlotter, COLORS, STYLE
 from .storage import ResultStorage
-from .publication_style import PUB_CONFIG, apply_publication_style
+from .publication_style import PUB_CONFIG
 from ...core.config import Config
 
 
@@ -201,7 +199,7 @@ class CombinedOutput(OutputBase):
         ax.set_xlabel(r"$\tilde{\alpha}$", fontsize=STYLE["fontsize"]["label"])
         ax.set_ylabel("Overlap", fontsize=STYLE["fontsize"]["label"])
 
-        title = f"Overlap vs Observation Density"
+        title = "Overlap vs Observation Density"
         if self.title_suffix:
             title += f" ({self.title_suffix})"
         ax.set_title(title, fontsize=STYLE["fontsize"]["title"])

@@ -12,7 +12,7 @@ Key Metrics:
 Higher replica overlap indicates more consistent/unique solutions.
 """
 
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 import torch
 import numpy as np
 

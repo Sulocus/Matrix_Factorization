@@ -5,9 +5,8 @@ Modern UI with 'Dynamic Capsule' aesthetic.
 """
 
 from contextlib import contextmanager
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, List
 import time
-import math
 from datetime import timedelta
 from collections import deque
 
@@ -858,6 +857,6 @@ class ProgressBridge:
     def _print_success(self, result):
         if self.console and result:
              path = getattr(result, 'result_path', 'memory')
-             self.console.print(f"\n[bold green]Experiment Complete![/bold green]")
+             self.console.print("\n[bold green]Experiment Complete![/bold green]")
              self.console.print(f"Results saved to: [cyan]{path}[/cyan]\n")
 

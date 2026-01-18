@@ -12,10 +12,8 @@ Flow design:
 4. Option to run in background (nohup)
 """
 
-from typing import Optional, List, Tuple, Dict, TypedDict
+from typing import Optional, List, Dict, TypedDict
 from pathlib import Path
-import sys
-import os
 import subprocess
 
 try:
@@ -33,8 +31,8 @@ except ImportError:
 from ..core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, ExecutionConfig, SpreadingConfig
 from ..modules.registry import list_algorithms, list_graphs, list_teachers
 from ..core.llm_advisor import get_config_advisor, AnalysisResult
-from ..core.execution_plan import build_execution_plan_from_dict, ExecutionPlan
-from .theme import format_menu_item, THEME
+from ..core.execution_plan import build_execution_plan_from_dict
+from .theme import THEME
 
 
 # ============================================================
@@ -1159,7 +1157,6 @@ def run_in_background(config: Config, log_file: str = None) -> str:
         Log file path
     """
     from datetime import datetime
-    import json as json_module
 
     if log_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

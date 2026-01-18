@@ -8,7 +8,6 @@ Supports WSL (Windows Subsystem for Linux).
 import subprocess
 import sys
 import os
-import platform
 from pathlib import Path
 from typing import Union
 

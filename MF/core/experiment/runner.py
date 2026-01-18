@@ -21,7 +21,7 @@ import time
 import logging
 import torch
 
-from .config import ExperimentConfig, ScanConfig, ScanDimension, MatrixParams
+from .config import ExperimentConfig, MatrixParams
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
 
@@ -170,7 +170,6 @@ class ExperimentRunner:
         # Normalize config (handle legacy Config object)
         if not hasattr(config, 'scan'):
             # Construct synthetic ScanConfig from legacy AlphaConfig
-            from .config import ScanConfig
             vals = config.alpha.get_values()
             # If quick run or default, it's usually an alpha scan
             # But wait, does legacy support steps scan? 
@@ -409,7 +408,7 @@ class ExperimentRunner:
             remaining_alphas = [a for a in batch_alpha_values if a not in completed_alphas]
             if not remaining_alphas:
                 if self.verbose and not skipped_msg_printed:
-                    print(f"  ⏭️ Skipping completed batch(es)...")
+                    print("  ⏭️ Skipping completed batch(es)...")
                     skipped_msg_printed = True
                 global_point_idx += len(batch_alpha_values)
                 continue
@@ -560,12 +559,12 @@ class ExperimentRunner:
                 remaining_count = total_points - len(completed_alphas)
                 
                 if self.verbose:
-                    print(f"\n" + "=" * 60)
-                    print(f"💾 Progress saved to checkpoint!")
+                    print("\n" + "=" * 60)
+                    print("💾 Progress saved to checkpoint!")
                     print(f"   Completed: {len(completed_alphas)}/{total_points} alphas")
                     print(f"   Remaining: {remaining_count} alphas")
-                    print(f"\n💡 To continue, run: smf resume")
-                    print(f"   This restarts the process with clean GPU memory.")
+                    print("\n💡 To continue, run: smf resume")
+                    print("   This restarts the process with clean GPU memory.")
                     print("=" * 60)
                 
                 # Exit gracefully instead of trying to continue

@@ -11,7 +11,7 @@ Physical motivation:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional, TYPE_CHECKING
+from typing import Tuple, TYPE_CHECKING
 import torch
 
 from ..registry import register_teacher

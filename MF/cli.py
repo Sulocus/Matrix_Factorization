@@ -297,7 +297,7 @@ def handle_resume(resume_dir: str = None):
         output_options = ckpt_data.output_options
         print("   配置来源: 旧版 checkpoint")
     
-    print(f"📂 找到 checkpoint: smf/.checkpoint.pt")
+    print("📂 找到 checkpoint: smf/.checkpoint.pt")
     print(f"   已完成 alpha: {len(completed_alphas)}")
     if completed_alphas:
         print(f"   Alpha 范围: {min(completed_alphas):.2f} - {max(completed_alphas):.2f}")
@@ -428,7 +428,7 @@ def main():
         config_path = Path(args.config)
         if not config_path.exists():
             print(f"❌ Error: Config file not found: {args.config}")
-            print(f"   Tip: Use full path like 'MF/config_template.yaml'")
+            print("   Tip: Use full path like 'MF/config_template.yaml'")
             sys.exit(1)
         print(f"📄 Loading: {args.config}")
         config, output_options, raw_yaml = load_yaml_config(config_path)
@@ -597,7 +597,7 @@ def main():
                 output_options=output_options,
             )
         
-        print(f"\n📊 Generating Hysteresis Plots...")
+        print("\n📊 Generating Hysteresis Plots...")
         
         # 绘制对比图
         from MF.modules.outputs.plotting import plot_multi_metric_comparison

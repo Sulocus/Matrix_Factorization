@@ -11,8 +11,6 @@ The generated scripts are completely standalone and can be copied to Wang/.
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
-import inspect
 
 # Get project root
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -71,16 +69,6 @@ class ScriptBundler:
 
     def bundle_bigamp_train(self) -> Path:
         """Generate bigamp_train.py from smf modules."""
-        from MF.modules.graphs.uniform import Dinic, UniformGraph
-        from MF.modules.graphs.random import RandomGraph
-        from MF.modules.teachers.standard import StandardTeacher
-        from MF.modules.metrics.overlap import (
-            compute_cosine_similarity,
-            gram_overlap_normalized,
-            compute_qy,
-            compute_all_metrics,
-        )
-        from MF.modules.algorithms.bigamp import BiGAMPAlgorithm
 
         header = generate_header(
             "bigamp_train.py",

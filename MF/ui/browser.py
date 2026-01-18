@@ -3,8 +3,7 @@ Result browser - interactive browsing and filtering of saved results.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from datetime import datetime
+from typing import Dict, List
 
 try:
     from rich.console import Console

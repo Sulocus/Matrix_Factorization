@@ -7,12 +7,10 @@ Provides two interfaces:
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Optional, Callable, Any, TYPE_CHECKING
+from typing import Tuple, Optional, Callable, TYPE_CHECKING
 import torch
 
 from ...core.config import Config
-from ..graphs.base import GraphBase
-from ..teachers.base import TeacherBase
 
 if TYPE_CHECKING:
     from ...core.experiment.data_factory import ExperimentData

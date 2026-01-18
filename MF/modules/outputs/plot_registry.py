@@ -18,7 +18,7 @@ Plot Registry - 绘图指标映射表
       - curves: [C.o, C.u]
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 from dataclasses import dataclass
 import logging
 

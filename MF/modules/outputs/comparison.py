@@ -5,13 +5,12 @@ Compares multiple experiment results on the same plot.
 """
 
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .plotting import COLORS, STYLE
+from .plotting import STYLE
 from .publication_style import (
-    apply_publication_style,
     PUB_CONFIG,
     ERROR_CONFIG,
     StyleCycler,

@@ -13,7 +13,7 @@ This module enables LLM-driven configuration to select metrics
 based on natural language descriptions.
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional
 import torch
 
 from .overlap import (
@@ -21,7 +21,6 @@ from .overlap import (
     gram_overlap_normalized,
     compute_qy,
     compute_generalization_error,
-    compute_all_metrics,
     compute_physical_overlap,
 )
 from .qy_unobserved import compute_qy_unobserved, compute_qy_split

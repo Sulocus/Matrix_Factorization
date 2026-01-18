@@ -11,17 +11,13 @@ Supported algorithms:
 - bigamp_spreading_parallel (BiG-AMP with Spreading, full parallel)
 """
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Callable, Tuple, Type
-from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Callable, Tuple
 import torch
 import logging
 
 from .execution_modes import (
     EstimationParams,
     ExecutionPlan,
-    BatchConfig,
-    AllocationConfig,
-    AllocationPresets,
 )
 from .memory_estimator import MemoryEstimator
 

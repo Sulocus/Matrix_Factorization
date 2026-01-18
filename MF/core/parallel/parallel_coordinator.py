@@ -17,7 +17,6 @@ import torch
 from .execution_modes import (
     ParallelMode,
     EstimationParams,
-    MemoryEstimate,
     BatchConfig,
     AllocationConfig,
     AllocationPresets,

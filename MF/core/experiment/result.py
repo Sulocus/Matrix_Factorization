@@ -252,7 +252,6 @@ class ExperimentResult:
         - results.pt: Single unified tensor file (all alphas combined)
         - plots/: Evolution plots and heatmaps
         """
-        import numpy as np
         import matplotlib.pyplot as plt
         
         path = Path(path)

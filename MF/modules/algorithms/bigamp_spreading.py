@@ -16,7 +16,6 @@ where F is quenched random disorder that breaks loop correlations.
 """
 
 from typing import Tuple, Callable, Dict, Optional, List
-from dataclasses import dataclass
 import math
 from pathlib import Path
 import datetime
@@ -1562,7 +1561,7 @@ class BiGAMPSpreading(AlgorithmBase):
                         fullgraph=False,
                     )
                     break
-                except Exception as e:
+                except Exception:
                     if mode == compile_modes[-1]:
                         self.use_compile = False
         
@@ -2660,7 +2659,7 @@ def run_spreading_parallel(
     seed = config.training.seed
 
     if verbose:
-        print(f"[Spreading Parallel] Running with:")
+        print("[Spreading Parallel] Running with:")
         print(f"  Matrix: {m.N1}x{m.N2}, M={m.M}")
         print(f"  Alpha: {alpha_values[0]:.2f} ~ {alpha_values[-1]:.2f} ({len(alpha_values)} points)")
         print(f"  Samples: {S}")

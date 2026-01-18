@@ -8,7 +8,7 @@ All experiment parameters are defined here, enabling:
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Any, Optional, Dict, Union
+from typing import List, Any, Optional, Dict
 from enum import Enum
 import json
 from pathlib import Path

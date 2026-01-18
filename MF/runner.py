@@ -6,12 +6,10 @@ execution engine (ExperimentRunner). It sets up the ProgressBridge to ensure
 UI updates are event-driven and robust.
 """
 
-from typing import Optional, Dict, Any
-from pathlib import Path
+from typing import Dict, Any
 
 from MF.core.experiment.config import ExperimentConfig
 from MF.core.experiment.runner import ExperimentRunner
-from MF.core.experiment.result import ExperimentResult
 from MF.core.progress import ProgressBridge
 
 def run_experiment(

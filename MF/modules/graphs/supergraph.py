@@ -15,7 +15,7 @@ This approach:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 import torch
 import numpy as np
 
@@ -117,7 +117,6 @@ def create_supergraph(
         SuperGraphData with pre-computed indices and masks
     """
     import concurrent.futures
-    import multiprocessing
     
     alpha_values = np.array(alpha_values)
     A = len(alpha_values)

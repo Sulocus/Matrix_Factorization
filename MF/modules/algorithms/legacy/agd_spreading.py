@@ -22,16 +22,13 @@ Algorithm:
         X = X - lr * grad_X
 """
 
-from typing import Tuple, Callable, Dict, Optional, List
-from dataclasses import dataclass
+from typing import Tuple, Optional, List
 import math
-from pathlib import Path
-import datetime
 import torch
 
 from ..registry import register_algorithm
 from .base import AlgorithmBase
-from ..graphs.supergraph import SuperGraphData, create_supergraph
+from ..graphs.supergraph import create_supergraph
 from ..teachers.random_spreading import SpreadingDataParallel
 
 # Import reusable functions from BiGAMP Spreading
@@ -39,7 +36,6 @@ from .bigamp_spreading import (
     generate_F_super,
     compute_Y_super,
     compute_offset_indices,
-    F_GENERATORS,
 )
 
 
@@ -630,8 +626,8 @@ def _test_gradient_step():
     )
     
     # Check output shapes
-    assert W_new.shape == W_flat.shape, f"W shape mismatch"
-    assert X_new.shape == X_flat.shape, f"X shape mismatch"
+    assert W_new.shape == W_flat.shape, "W shape mismatch"
+    assert X_new.shape == X_flat.shape, "X shape mismatch"
     
     # Check no NaN
     assert not torch.isnan(W_new).any(), "Gradient step produced NaN in W"

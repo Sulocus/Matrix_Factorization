@@ -5,7 +5,7 @@ Provides decorators for registering modules and functions for retrieving them.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Type
 
 
 @dataclass

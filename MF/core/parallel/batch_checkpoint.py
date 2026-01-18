@@ -11,7 +11,7 @@ Fixed path: smf/.checkpoint.pt
 
 import torch
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import logging

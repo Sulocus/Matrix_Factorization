@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from .execution_plan import ExecutionPlan, ExecutionStep
+from .execution_plan import ExecutionPlan
 from .config import Config
 from .parameter_space import merge_config
 

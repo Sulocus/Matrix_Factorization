@@ -2,7 +2,6 @@
 UI Theme and styling for SMF terminal interface.
 """
 
-from typing import Optional
 
 
 # Color scheme for Rich markup

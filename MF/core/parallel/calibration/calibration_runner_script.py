@@ -301,13 +301,13 @@ def run_calibration_suite(
     
     if passed:
         errors = [r.error_pct for r in passed]
-        print(f"\n  Error Statistics (passed tests):")
+        print("\n  Error Statistics (passed tests):")
         print(f"    Min:  {min(errors):+.1f}%")
         print(f"    Max:  {max(errors):+.1f}%")
         print(f"    Mean: {sum(errors)/len(errors):+.1f}%")
     
     if failed:
-        print(f"\n  Failed Tests:")
+        print("\n  Failed Tests:")
         for r in failed:
             print(f"    {r.test_case}: error={r.error_pct:+.1f}%")
     

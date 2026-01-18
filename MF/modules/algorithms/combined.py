@@ -10,14 +10,11 @@ based on natural language descriptions.
 """
 
 import re
-from typing import Dict, Any, Optional
-import torch
+from typing import Dict, Any
 
 from ..registry import register_algorithm
-from .base import AlgorithmBase
 from .bigamp import BiGAMPAlgorithm
 from .agd import AGDAlgorithm
-from ...core.config import Config
 
 
 # Default parameters for each algorithm
