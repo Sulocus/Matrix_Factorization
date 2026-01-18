@@ -109,7 +109,11 @@ class CalibrationRunner:
             temp_dir: Directory for temporary test scripts
         """
         self.estimator = estimator
-        self.temp_dir = Path(temp_dir) if temp_dir else Path("/tmp/mf_calibration")
+        if temp_dir:
+            self.temp_dir = Path(temp_dir)
+        else:
+            import tempfile
+            self.temp_dir = Path(tempfile.gettempdir()) / "mf_calibration"
         
         # Get GPU info
         if torch.cuda.is_available():
