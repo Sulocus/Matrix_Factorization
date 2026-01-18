@@ -1,3 +1,8 @@
+# ===== 图连接模式（首要设置）=====
+# false = 二分图 (bipartite)：只有 W-X 连接（默认，内存效率高）
+# true = 一般图 (general)：允许 W-W, W-X, X-X 连接（支持三角环）
+allow_intra_connection: true
+
 # ===== 算法 (选一个数字) =====
 # 1 = bigamp
 # 2 = bigamp_spreading  
@@ -13,25 +18,26 @@ teacher: 2
 # init_distribution: 1 = gaussian (默认, N(0,1/√M))
 #                    2 = rademacher (±1/√M, 类 Ising 模型)
 teacher_config:
-  init_distribution: 1
+  init_distribution: 2  # OPTIMAL: Rademacher (stable for General Mode)
 
 # ===== 矩阵尺寸 =====
 matrix:
-  N1: 200
-  N2: 200
-  M: 50
+  N1: 1500
+  N2: 1500
+  M: 500
 
 # ===== 扫描模式 (选一个数字) =====
 # 1 = alpha 扫描 (固定 steps，扫描 alpha)
 # 2 = steps 扫描 (固定 alpha，扫描 steps)
 # 3 = nested 嵌套扫描 (外层 N/M，内层 alpha)
+# 4 = hysteresis (Cold vs Warm Start)
 scan_mode: 1
 
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
   start: 0
-  stop: 4
-  step: 0.1             
+  stop: 3
+  step: 0.1             # RESTORED             
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
 steps_scan:
@@ -48,19 +54,25 @@ scan:
 
 # --- 嵌套扫描配置 (scan_mode = 3) ---
 nested_scan:
-  sizes:                 # [N, M] 列表
-    - [1000, 250]
+  sizes: [[200, 50], [400, 100]]
   alpha:
     start: 0
-    stop: 4.0
-    step: 0.05
+    stop: 3
+    step: 0.1
 
-# 训练参数
+# 4 = hysteresis (Cold vs Warm Start)
+hysteresis_scan:
+  init_overlaps: [0.0, 0.98]  # 比对列表: 0=Cold, >0=Warm
+  alpha:
+    start: 0
+    stop: 4
+    step: 0.1
+
 training:
-  samples_per_alpha: 10
-  max_steps: 5000
-  max_epochs: 20000
-  num_workers: 24
+  samples_per_alpha: 1   # RESTORED
+  max_steps: 30000         # RESTORED
+  # max_epochs: 40000
+  # num_workers: 24
 
 # 随机种子
 seeds:
@@ -69,7 +81,7 @@ seeds:
 
 # ===== 算法参数 =====
 algorithm_params:
-  damping: 0.3
+  damping: 0.2  # OPTIMAL: Based on 9-point sweep (score=0.0126)
   noise_var: 1.0e-5
   learning_rate: 0.01
   use_compile: true
@@ -79,20 +91,37 @@ algorithm_params:
   default_alpha: 1.0
   
   # Adaptive Damping
-  adaptive_damping: true
-  step_min: 0.1
-  step_max: 1.0
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 1
   step_incr: 1.1
-  step_decr: 0.5
+  step_decr: 0.9
   step_window: 1
   max_bad_steps: 10
+  
+  # Adaptive Warm Restart
+  adaptive_restart: true
+  restart_patience: 50
+  restart_noise: 0.1
+  
+  # Adaptive Tolerance (Metropolis-like)
+  # Allow likelihood to drop by this amount (try 1.0 - 100.0)
+  acceptance_tolerance: 50
+  
+  # Teacher-Assisted Initialization (Hysteresis Analysis)
+  # init_mode: "random" = Cold Start, "teacher" = Warm Start
+  # init_overlap: Initial overlap with teacher (0.9 - 0.99)
+  init_mode: random
+  init_overlap: 0
 
 # ===== Spreading 专用 (algorithm = 2) =====
 # f_distribution: 1 = rademacher, 2 = gaussian
 spreading:
   f_distribution: 1
   seed: 12345
-  onsager_correction: true # Disable Onsager correction (V * prev_s)
+  onsager_correction: false  # CRITICAL: Must be OFF for General Mode
+  chunk_size: 262144  # General模式分块大小 (0=禁用，使用旧版串行方式)
+  # 注意: allow_intra_connection 已移至文件顶层
 
 # ===== 输出设置 =====
 output:
@@ -118,7 +147,8 @@ output:
   # 示例: curves: [A.y, A.w, A.y:R] = Q_Y, Q_W, Q_Y(replica) 画同一张图
   
   plots:
-    - curves: [B.w, C.o]      # Q_Y + 归一化 overlap
+    - curves: [A.y]      # Q_Y + 归一化 overlap
+    - curves: [D.y]
     # - curves: [C.o, C.u, C.u:R]           # observed vs unobserved
     # - curves: [A.y, A.y:R]
     # - curves: [B.w, B.w:R]

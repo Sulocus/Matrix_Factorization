@@ -1,0 +1,44 @@
+# ===== Warm Start (Teacher-Assisted Initialization) =====
+# 从 Teacher 附近初始化进行 Hysteresis Analysis
+
+algorithm: 2  # bigamp_spreading
+teacher: 2    # standard
+
+allow_intra_connection: false  # bipartite mode
+
+matrix:
+  N1: 500
+  N2: 500
+  M: 50
+
+scan_mode: 1
+alpha_scan:
+  start: 0
+  stop: 4
+  step: 0.2
+
+training:
+  samples_per_alpha: 5
+  max_steps: 10000
+
+algorithm_params:
+  damping: 0.3
+  noise_var: 1.0e-5
+  use_compile: true
+  use_bf16: true
+  
+  # ===== WARM START CONFIGURATION =====
+  init_mode: teacher     # "teacher" = Warm Start
+  init_overlap: 0.99     # High overlap (close to ground truth)
+
+spreading:
+  f_distribution: 1      # rademacher
+  onsager_correction: false
+
+teacher_config:
+  init_distribution: 2   # rademacher
+
+output:
+  storage_mode: lightweight
+  plots:
+    - curves: [D.y]

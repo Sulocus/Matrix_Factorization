@@ -486,6 +486,10 @@ class UnifiedProgress:
             for _ in range(num_in_batch):
                 self._alpha_times.append(time_per_alpha)
 
+        # Record batch completion time for adaptive ETA calibration
+        if self._physics_eta:
+            self._physics_eta.end_batch(self._current_batch_idx)
+
         self._completed_batches += 1
         self._completed_alphas += len(self._current_batch_alphas) if self._current_batch_alphas else 1
         # Step progress should show 100% when batch completes

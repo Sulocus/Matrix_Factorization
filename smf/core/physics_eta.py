@@ -1,32 +1,32 @@
 """
-Physics-aware ETA estimation for BiG-AMP training.
+Adaptive ETA estimation for BiG-AMP training.
 
-Complexity model: T ∝ S × C_max = S × α × M × N1
-Since S, M, N1 are constants within a run, T ∝ α (max alpha in each batch).
+Uses dynamic calibration based on measured batch times to predict remaining time.
+Initial prediction uses theoretical weights (α_max), then calibrates using
+actual measurements as batches complete.
 
-This module provides accurate ETA estimation that accounts for the varying
-computational load of different alpha batches, which is essential after
-the Phase 2 optimization (Per-Batch SuperGraph).
+Key improvement over previous version:
+- Records actual batch completion times
+- Calculates calibration factor k = actual_time / α_max
+- Uses k to predict remaining batch times more accurately
 """
 
 import time
 from collections import deque
 from typing import List, Tuple, Optional
-import numpy as np
 
 
 class PhysicsAwareETA:
     """
-    ETA estimator based on computational complexity (α-weighted workload).
+    Adaptive ETA estimator with dynamic calibration.
     
-    Key insight: After Phase 2 optimization, computation time for each batch
-    scales with max(α) in that batch, not with the number of alphas.
+    Uses theoretical weights initially (batch time ∝ α_max), then
+    calibrates predictions using actual measured batch times.
     
-    Traditional ETA (avg_batch_time × remaining_batches) fails because:
-    - Small α batch (α=0.5~1.0): 1.5s
-    - Large α batch (α=3.0~4.0): 6.0s
-    
-    This estimator uses α_max as workload weight for accurate prediction.
+    This provides accurate ETA estimation regardless of:
+    - Algorithm type (Spreading, AGD, BiGAMP)
+    - Execution mode (Bipartite, General)
+    - Hardware characteristics
     """
     
     def __init__(
@@ -36,52 +36,37 @@ class PhysicsAwareETA:
         window_size: int = 20,
     ):
         """
-        Initialize the ETA estimator with Relative Ratio Logic.
+        Initialize the adaptive ETA estimator.
         
         Args:
             batch_assignments: List of (start_idx, end_idx, max_alpha_in_batch)
             algorithm_name: 'bigamp_spreading', 'bigamp', 'agd', etc.
-            window_size: Sliding window for rate smoothing
+            window_size: Unused, kept for API compatibility
         """
         self.algorithm_name = algorithm_name.lower()
-        
-        # 1. Calculate Complexity Weights based on Algorithm
-        # User's model: "Batch 1 is 1.0, Batch 2 is 1.2..."
-        self.batch_weights = []
-        for _, _, alpha_max in batch_assignments:
-            if 'spreading' in self.algorithm_name:
-                # Spreading complexity ~ Alpha * M * N
-                # Since M, N are constant, Weight ~ Alpha
-                # We use max(0.1, alpha_max) to avoid zero weight
-                weight = max(0.1, float(alpha_max))
-            else:
-                # Standard BiG-AMP / AGD: Complexity ~ N * M (Constant across alphas)
-                weight = 1.0
-            self.batch_weights.append(weight)
-            
-        # 2. Normalize to Relative Ratios (for clarity/logging)
-        base_weight = self.batch_weights[0] if self.batch_weights else 1.0
-        self.ratios = [w / base_weight for w in self.batch_weights]
-        
-        # 3. Total Workload
-        self.total_workload = sum(self.batch_weights)
         self.num_batches = len(batch_assignments)
         
-        # Runtime State
-        self.processed_workload = 0.0 # Workload of COMPLETED batches
+        # Store batch info for calibration
+        self.batch_alpha_max = []
+        for _, _, alpha_max in batch_assignments:
+            self.batch_alpha_max.append(max(0.1, float(alpha_max)))
         
-        # Session Tracking (for Resume Support)
-        # Session = from when this estimator was created until now
+        # Theoretical weights (initial assumption: time ∝ α_max)
+        self.batch_weights = self.batch_alpha_max.copy()
+        self.total_workload = sum(self.batch_weights)
+        
+        # Calibration data: list of (alpha_max, actual_time) for completed batches
+        self.completed_batches_data: List[Tuple[float, float]] = []
+        self.calibration_factor: Optional[float] = None  # k = time / α
+        
+        # Runtime state
         self.session_start_time = time.time()
-        self.session_start_workload = None  # Set on first update
-        self.start_time = self.session_start_time  # Alias for compatibility
-        
-        self.batch_start_time = None
+        self.start_time = self.session_start_time
+        self.batch_start_time: Optional[float] = None
         self.current_batch_idx = -1
-                
-        # Print the Plan for the user (Transparency)
-        # We can't print easily here as it might break UI, but we can log
-        # or expose it.
+        
+        # For warmup period
+        self.warmup_duration = 10.0  # seconds
         
     def start_batch(self, batch_idx: int):
         """Called when starting a new batch."""
@@ -89,106 +74,107 @@ class PhysicsAwareETA:
         self.batch_start_time = time.time()
     
     def end_batch(self, batch_idx: int):
-        """Called when a batch completes."""
-        if 0 <= batch_idx < len(self.batch_weights):
-            pass
-
-    def update_progress(self, batch_idx: int, step_pct: float = 0.0):
         """
-        Update rate estimation based on SESSION performance.
+        Called when a batch completes. Records actual time for calibration.
         
-        Logic (User's Request - Simple and Correct):
-        - Session Start Workload = Workload at moment Resume started
-        - Session Work Done = Current Workload - Session Start Workload
-        - Session Time = Now - Session Start Time
-        - Rate = Session Work Done / Session Time
+        This is the KEY improvement: we measure actual batch time and use
+        it to calibrate future predictions.
         """
-        if self.current_batch_idx < 0:
-            return
-
-        now = time.time()
-        session_elapsed = now - self.session_start_time
-        
-        # Skip the first 5 seconds (warmup for rate calculation)
-        if session_elapsed < 5.0:
-            return
-
-        # Calculate Current Total Workload (absolute)
-        current_workload = sum(self.batch_weights[:batch_idx])
-        if 0 <= batch_idx < len(self.batch_weights):
-             current_weight = self.batch_weights[batch_idx]
-             pct = max(0.0, min(1.0, step_pct))
-             current_workload += current_weight * pct
-
-        # On first valid update (after warmup), record the baseline
-        if self.session_start_workload is None:
-            self.session_start_workload = current_workload
-            self.session_start_time = now  # Reset session start to this moment
+        if self.batch_start_time is None:
             return
         
-        # Calculate Session-Based Rate (Simple Cumulative Average)
-        session_work = current_workload - self.session_start_workload
-        
-        if session_work > 0 and session_elapsed > 0:
-            self.current_session_rate = session_work / session_elapsed
-        else:
-            self.current_session_rate = 0.0
-
-    def predict_eta(self) -> float:
-        """
-        Predict remaining time based on current rate.
-        Stateless: does not modify internal counters.
-        """
-        # This method is effectively superseded by get_status for prediction.
-        # If it were to be used, it would need to rely on a stored 'processed_workload'
-        # or re-calculate it based on the last known state.
-        # For now, we remove the 'pass' as per the user's implicit instruction
-        # (by providing a new get_status but no new predict_eta).
-        if not self.rates:
-            return 0.0
+        if 0 <= batch_idx < len(self.batch_alpha_max):
+            actual_time = time.time() - self.batch_start_time
+            alpha_max = self.batch_alpha_max[batch_idx]
             
-        # Use average of recent rates
-        avg_rate = sum(self.rates) / len(self.rates)
+            # Record for calibration
+            self.completed_batches_data.append((alpha_max, actual_time))
+            
+            # Update calibration factor (average k = time / α)
+            self._update_calibration()
+    
+    def _update_calibration(self):
+        """Update calibration factor based on completed batch data."""
+        if not self.completed_batches_data:
+            return
         
-        # Calculate true remaining workload
-        # We need to know current state. We assume update_progress was called recently.
-        # But predict_eta doesn't take args. 
-        # So we should rely on processed_workload updated by update_progress?
-        # Actually, let's make predict_eta state-independent if possible, 
-        # but rate depends on history.
+        # Calculate k = Σ(time / α) / n
+        # This gives us the average time per unit α
+        total_k = sum(actual_time / alpha_max 
+                      for alpha_max, actual_time in self.completed_batches_data)
+        self.calibration_factor = total_k / len(self.completed_batches_data)
+    
+    def _predict_batch_time(self, batch_idx: int) -> float:
+        """Predict time for a specific batch using calibration."""
+        if batch_idx >= len(self.batch_alpha_max):
+            return 0.0
         
-        # Simpler: update_progress updates self.processed_workload snapshot
-        # The original 'pass' is removed as per the user's instruction.
-        return 0.0 # Placeholder, as get_status is the primary prediction method now.
+        alpha_max = self.batch_alpha_max[batch_idx]
+        
+        if self.calibration_factor is not None:
+            # Use calibrated prediction
+            return self.calibration_factor * alpha_max
+        else:
+            # No calibration yet, use theoretical weight as relative value
+            # Return -1 to signal unknown
+            return -1.0
 
     def get_status(self, batch_idx: int, step_pct: float) -> Tuple[float, float]:
         """
-        Get (ETA, Progress) using Session-Based Rate.
+        Get (ETA, Progress) using adaptive calibration.
         
-        Rate = (Current Workload - Session Start Workload) / Session Elapsed Time
-        ETA = Remaining Workload / Rate
+        Strategy:
+        1. For completed batches: use actual recorded times
+        2. For current batch: use step progress within calibrated prediction
+        3. For future batches: use calibrated predictions (k × α_max)
         """
-        # 1. Update internal state
-        self.update_progress(batch_idx, step_pct)
+        now = time.time()
+        elapsed = now - self.session_start_time
         
-        # 2. Check if we have a valid rate yet
-        if not hasattr(self, 'current_session_rate') or self.current_session_rate <= 0:
-             return -1.0, 0.0 # Signal unknown
+        # Warmup period
+        if elapsed < self.warmup_duration:
+            return -1.0, 0.0
         
-        # 3. Calculate Current Workload and Remaining
-        current_workload = sum(self.batch_weights[:batch_idx])
-        if 0 <= batch_idx < len(self.batch_weights):
-             current_workload += self.batch_weights[batch_idx] * max(0.0, min(1.0, step_pct))
-              
-        remaining_workload = max(0.0, self.total_workload - current_workload)
+        # Calculate progress (batch-weighted)
+        completed_weight = sum(self.batch_weights[:batch_idx])
+        current_weight = self.batch_weights[batch_idx] if 0 <= batch_idx < len(self.batch_weights) else 0
+        current_progress = current_weight * max(0.0, min(1.0, step_pct))
+        total_progress_weight = completed_weight + current_progress
+        progress = total_progress_weight / self.total_workload if self.total_workload > 0 else 0.0
         
-        # 4. Predict ETA
-        eta = remaining_workload / self.current_session_rate
-        progress = current_workload / self.total_workload if self.total_workload > 0 else 0.0
+        # ===== ETA Calculation =====
         
-        return eta, progress
+        # Method 1: If we have calibration data, use it
+        if self.calibration_factor is not None and self.calibration_factor > 0:
+            # Current batch remaining time
+            if self.batch_start_time and 0 <= batch_idx < len(self.batch_alpha_max):
+                current_batch_elapsed = now - self.batch_start_time
+                current_batch_predicted = self.calibration_factor * self.batch_alpha_max[batch_idx]
+                current_batch_remaining = max(0, current_batch_predicted - current_batch_elapsed)
+            else:
+                current_batch_remaining = 0
+            
+            # Future batches predicted time
+            future_time = 0.0
+            for j in range(batch_idx + 1, len(self.batch_alpha_max)):
+                future_time += self.calibration_factor * self.batch_alpha_max[j]
+            
+            eta = current_batch_remaining + future_time
+            return eta, progress
+        
+        # Method 2: No calibration yet, use simple elapsed-based estimation
+        # This is less accurate but works for warmup period
+        if progress > 0.01:
+            total_time_estimate = elapsed / progress
+            eta = max(0, total_time_estimate - elapsed)
+            return eta, progress
+        
+        return -1.0, progress
 
-    # ... keep helpers ...
+    def update_progress(self, batch_idx: int, step_pct: float = 0.0):
+        """Backward compatibility - no longer needed with new design."""
+        pass
+
 
 def create_eta_estimator(
     alpha_values: List[float],
@@ -196,7 +182,7 @@ def create_eta_estimator(
     algorithm_name: str = "bigamp_spreading",
 ) -> PhysicsAwareETA:
     """Factory with algorithm awareness."""
-    if dynamic_batches == None:
+    if dynamic_batches is None:
         alpha_max = max(alpha_values) if alpha_values else 1.0
         dynamic_batches = [(0, len(alpha_values), alpha_max)]
     

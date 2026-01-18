@@ -1,0 +1,47 @@
+[
+  {
+    "damping": 0.1,
+    "elapsed_seconds": 20.2970712184906,
+    "metrics": null
+  },
+  {
+    "damping": 0.15000000000000002,
+    "elapsed_seconds": 19.545844793319702,
+    "metrics": null
+  },
+  {
+    "damping": 0.2,
+    "elapsed_seconds": 21.755847930908203,
+    "metrics": null
+  },
+  {
+    "damping": 0.25,
+    "elapsed_seconds": 19.68111538887024,
+    "metrics": null
+  },
+  {
+    "damping": 0.30000000000000004,
+    "elapsed_seconds": 19.462480783462524,
+    "metrics": null
+  },
+  {
+    "damping": 0.35,
+    "elapsed_seconds": 21.239258527755737,
+    "metrics": null
+  },
+  {
+    "damping": 0.4,
+    "elapsed_seconds": 20.162677764892578,
+    "metrics": null
+  },
+  {
+    "damping": 0.45000000000000007,
+    "elapsed_seconds": 20.559654712677002,
+    "metrics": null
+  },
+  {
+    "damping": 0.5,
+    "elapsed_seconds": 19.686944246292114,
+    "metrics": null
+  }
+]

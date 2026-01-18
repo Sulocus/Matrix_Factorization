@@ -43,6 +43,8 @@ class EstimationParams:
     use_compile: bool = True
     use_bf16: bool = False
     f_distribution: str = 'rademacher'  # 'gaussian' or 'rademacher'
+    adaptive_damping: bool = False  # Whether using adaptive damping (doubles memory for backtracking)
+    allow_intra_connection: bool = False  # General Graph mode (W-W, X-X connections)
     
     @property
     def alpha_max(self) -> float:
@@ -129,20 +131,20 @@ class AllocationPresets:
     use the actual GPU memory. Set it explicitly only if you want a hard limit.
     """
     
-    # Conservative: 60% allocation with batch recovery protection
+    # Conservative: 75% allocation (optimized for 32GB GPUs)
     CONSERVATIVE = AllocationConfig(
-        allocation_ratio=0.60,  # Reduced from 0.85 to provide true safety buffer
+        allocation_ratio=0.75,
         max_allocation_gb=None,
         warning_threshold=0.85,
         critical_threshold=0.95,
         safety_margin=1.1
     )
     
-    # Balanced: Moderate buffer (75% of available)
+    # Balanced: Moderate buffer (85% of available)
     BALANCED = AllocationConfig(
-        allocation_ratio=0.75,
+        allocation_ratio=0.85,
         max_allocation_gb=None,
-        warning_threshold=0.85,
+        warning_threshold=0.90,
         critical_threshold=0.95,
         safety_margin=1.1
     )

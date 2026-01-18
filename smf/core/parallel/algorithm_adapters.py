@@ -181,10 +181,12 @@ class SpreadingAlgorithmAdapter(BaseAlgorithmAdapter):
         algorithm: Any,
         algorithm_key: str = "bigamp_spreading_parallel",
         f_distribution: str = "rademacher",
+        allow_intra_connection: bool = False,
     ):
         super().__init__(algorithm)
         self.algorithm_key = algorithm_key
         self.f_distribution = f_distribution
+        self.allow_intra_connection = allow_intra_connection
     
     def create_estimation_params(
         self,
@@ -206,6 +208,7 @@ class SpreadingAlgorithmAdapter(BaseAlgorithmAdapter):
             use_compile=kwargs.get('use_compile', True),
             use_bf16=kwargs.get('use_bf16', True),
             f_distribution=kwargs.get('f_distribution', self.f_distribution),
+            allow_intra_connection=self.allow_intra_connection,
         )
     
     def run_with_plan(
@@ -308,11 +311,20 @@ def get_adapter(algorithm: Any) -> BaseAlgorithmAdapter:
     """
     class_name = type(algorithm).__name__.lower()
     
+    # Extract allow_intra_connection from algorithm if available
+    allow_intra_connection = getattr(algorithm, 'allow_intra_connection', False)
+    
     # Detect algorithm type
     if 'spreading' in class_name and 'parallel' in class_name:
-        return SpreadingAlgorithmAdapter(algorithm, 'bigamp_spreading_parallel')
+        return SpreadingAlgorithmAdapter(
+            algorithm, 'bigamp_spreading_parallel',
+            allow_intra_connection=allow_intra_connection
+        )
     elif 'spreading' in class_name:
-        return SpreadingAlgorithmAdapter(algorithm, 'bigamp_spreading')
+        return SpreadingAlgorithmAdapter(
+            algorithm, 'bigamp_spreading',
+            allow_intra_connection=allow_intra_connection
+        )
     elif 'agd' in class_name:
         return DenseAlgorithmAdapter(algorithm, 'agd')
     elif 'bigamp' in class_name:
@@ -327,6 +339,7 @@ def create_adapter(
     algorithm: Any,
     algorithm_key: Optional[str] = None,
     f_distribution: str = 'rademacher',
+    allow_intra_connection: bool = False,
 ) -> BaseAlgorithmAdapter:
     """
     Create adapter with explicit configuration.
@@ -335,13 +348,16 @@ def create_adapter(
         algorithm: Algorithm instance
         algorithm_key: Override algorithm key detection
         f_distribution: F distribution for spreading algorithms
+        allow_intra_connection: Whether General Graph mode is enabled
         
     Returns:
         Configured adapter instance
     """
     if algorithm_key:
         if 'spreading' in algorithm_key:
-            return SpreadingAlgorithmAdapter(algorithm, algorithm_key, f_distribution)
+            return SpreadingAlgorithmAdapter(
+                algorithm, algorithm_key, f_distribution, allow_intra_connection
+            )
         else:
             return DenseAlgorithmAdapter(algorithm, algorithm_key)
     

@@ -47,6 +47,7 @@ class SpreadingConfig:
     f_distribution: str = "gaussian"  # gaussian | rademacher
     seed: int = 12345                 # Seed for F generation
     teacher_type: str = "standard"    # standard | orthogonal (for W/X generation)
+    allow_intra_connection: bool = False  # Allow W-W and X-X connections (general graph)
 
 
 @dataclass

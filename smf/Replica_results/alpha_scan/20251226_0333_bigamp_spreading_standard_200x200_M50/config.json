@@ -1,0 +1,51 @@
+{
+  "matrix": {
+    "N1": 200,
+    "N2": 200,
+    "M": 50
+  },
+  "training": {
+    "samples_per_alpha": 50,
+    "max_steps": 500,
+    "max_epochs": 20000,
+    "num_workers": 1
+  },
+  "algorithm_key": "bigamp_spreading",
+  "scan": {
+    "dimension": "alpha",
+    "values": [
+      1.0
+    ]
+  },
+  "seeds": {
+    "base_seed": 42,
+    "teacher_seed": 12345,
+    "spreading_seed": 99999,
+    "student_seed": 0
+  },
+  "algorithm_params": {
+    "damping": 0.5,
+    "noise_var": 1e-05,
+    "learning_rate": 0.01,
+    "use_compile": true,
+    "use_bf16": true,
+    "use_early_stop": false,
+    "target_loss_threshold": 1e-08,
+    "default_alpha": 1.0,
+    "adaptive_damping": false,
+    "step_min": 0.05,
+    "step_max": 1.0,
+    "step_incr": 1.1,
+    "step_decr": 0.5,
+    "step_window": 1,
+    "max_bad_steps": 10
+  },
+  "spreading": {
+    "f_distribution": "rademacher",
+    "onsager_correction": true
+  },
+  "teacher": null,
+  "experiment_name": "bigamp_spreading_standard_200x200_M50",
+  "teacher_key": "standard",
+  "notes": ""
+}

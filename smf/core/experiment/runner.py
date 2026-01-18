@@ -332,6 +332,9 @@ class ExperimentRunner:
         if config.spreading:
             f_dist = config.spreading.f_distribution
         
+        # CRITICAL: Pass allow_intra_connection for correct General mode estimation
+        allow_intra = getattr(config.spreading, 'allow_intra_connection', False) if config.spreading else False
+        
         params = EstimationParams(
             N1=config.matrix.N1,
             N2=config.matrix.N2,
@@ -342,6 +345,8 @@ class ExperimentRunner:
             use_compile=config.algorithm_params.use_compile,
             use_bf16=True,  # BF16 is always enabled for spreading algorithm
             f_distribution=f_dist,
+            adaptive_damping=config.algorithm_params.adaptive_damping,
+            allow_intra_connection=allow_intra,  # Enable General mode estimation
         )
         
         # Get execution plan from ParallelCoordinator
@@ -840,6 +845,8 @@ class ExperimentRunner:
             Physical_X_list = []
             # Y metrics
             Q_Y_list = []
+            MSE_list = []
+            Physical_Y_list = []
             Q_Y_observed_list = []
             Q_Y_unobserved_list = []
             
@@ -872,6 +879,14 @@ class ExperimentRunner:
                 
                 # Q_Y
                 Q_Y_list.append(compute_qy(Y_students[s], Y_teacher))
+                
+                # MSE
+                MSE_list.append(float((Y_students[s] - Y_teacher).pow(2).mean()))
+                
+                # D类: Physical Overlap Y
+                y_dot = (Y_students[s] * Y_teacher).sum()
+                y_norm_sq = (Y_teacher ** 2).sum() + 1e-12
+                Physical_Y_list.append(float(y_dot / y_norm_sq))
                 
                 # C类: Observed/Unobserved
                 if data.masks is not None:
@@ -906,6 +921,8 @@ class ExperimentRunner:
                 'Q_X_std': float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
                 'Q_Y_mean': float(np.mean(Q_Y_list)),
                 'Q_Y_std': float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
+                'MSE': float(np.mean(MSE_list)),
+                'MSE_std': float(np.std(MSE_list, ddof=1)) if len(MSE_list) > 1 else 0.0,
                 # B类: Prime
                 'Q_W_prime_mean': float(np.mean(Q_W_prime_list)),
                 'Q_W_prime_std': float(np.std(Q_W_prime_list, ddof=1)) if len(Q_W_prime_list) > 1 else 0.0,
@@ -921,6 +938,8 @@ class ExperimentRunner:
                 'physical_overlap_W_std': float(np.std(Physical_W_list, ddof=1)) if len(Physical_W_list) > 1 else 0.0,
                 'physical_overlap_X_mean': float(np.mean(Physical_X_list)),
                 'physical_overlap_X_std': float(np.std(Physical_X_list, ddof=1)) if len(Physical_X_list) > 1 else 0.0,
+                'physical_overlap_Y_mean': float(np.mean(Physical_Y_list)),
+                'physical_overlap_Y_std': float(np.std(Physical_Y_list, ddof=1)) if len(Physical_Y_list) > 1 else 0.0,
             }
             
             # C类: Observed/Unobserved
@@ -963,6 +982,7 @@ class ExperimentRunner:
             noise_var: float = config.algorithm_params.noise_var
             learning_rate: float = config.algorithm_params.learning_rate
             use_compile: bool = config.algorithm_params.use_compile
+            adaptive_damping: bool = config.algorithm_params.adaptive_damping
         
         @dc
         class TrainConfig:
@@ -975,6 +995,7 @@ class ExperimentRunner:
         class SpreadConfig:
             f_distribution: str = config.spreading.f_distribution if config.spreading else "rademacher"
             onsager_correction: bool = config.spreading.onsager_correction if config.spreading else False
+            allow_intra_connection: bool = config.spreading.allow_intra_connection if config.spreading else False
             seed: int = config.seeds.spreading_seed
         
         @dc

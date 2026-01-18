@@ -1266,3 +1266,158 @@ def plot_custom_curves(
     plt.close(fig)
     
     return output_path
+
+def plot_multi_metric_comparison(
+    results_list: List[Dict[str, Any]],
+    labels: List[str],
+    output_path: Path,
+    metrics: List[str],
+    title: str = None,
+    # Style options
+    legend_loc: str = 'best',
+    format: str = 'png',
+    dpi: int = None,
+) -> Path:
+    """
+    Plot comparison of multiple metrics across multiple experiments on a SINGLE plot.
+    
+    Styling Strategy:
+    - Color: Distinguished by Metric (e.g. Q_Y=Red, Q_W=Blue)
+    - LineStyle/Marker: Distinguished by Experiment (e.g. Cold=Solid, Warm=Dashed)
+    
+    Args:
+        results_list: List of results dictionaries
+        labels: Labels for each experiment (e.g. ['Cold Start', 'Warm Start'])
+        output_path: Output file path
+        metrics: List of metric keys to plot (e.g. ['Q_Y_mean', 'Q_W_prime_mean'])
+        title: Plot title
+        legend_loc: Legend location
+        format: Output format
+        dpi: Output DPI
+        
+    Returns:
+        Path to saved plot
+    """
+    if dpi is None:
+        dpi = DEFAULT_DPI
+        
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Metric-to-Color Map (Extend global COLORS with fallback)
+    # Using specific colors for standard metrics to maintain consistency
+    METRIC_STYLE = {
+        'Q_Y_mean': {'color': COLORS['Q_Y'], 'label': '$Q_Y$'},
+        'Q_Y': {'color': COLORS['Q_Y'], 'label': '$Q_Y$'},
+        
+        'Q_W_prime_mean': {'color': COLORS['Q_W_prime'], 'label': "$Q'_W$"},
+        'Q_W_prime': {'color': COLORS['Q_W_prime'], 'label': "$Q'_W$"},
+        
+        'Q_W_mean': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
+        'Q_W': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
+        
+        'Q_X_prime_mean': {'color': COLORS['Q_X_prime'], 'label': "$Q'_X$"},
+        'Q_X_prime': {'color': COLORS['Q_X_prime'], 'label': "$Q'_X$"},
+        
+        'MSE': {'color': '#2ca02c', 'label': 'MSE'},
+        'D.y': {'color': '#2ca02c', 'label': 'MSE'},
+        
+        'physical_overlap_Y_mean': {'color': '#bcbd22', 'label': 'Phys-$Q_Y$'},
+        'physical_overlap_W_mean': {'color': '#8c564b', 'label': 'Phys-$Q_W$'},
+    }
+    
+    # Experiment-to-Style Map
+    # Index 0 (Cold): Solid line, Circle
+    # Index 1 (Warm): Dashed line, Triangle/Square
+    EXP_STYLES = [
+        {'linestyle': '-', 'marker': 'o'},     # Exp 1 (Cold)
+        {'linestyle': '--', 'marker': 's'},    # Exp 2 (Warm)
+        {'linestyle': ':', 'marker': '^'},     # Exp 3
+        {'linestyle': '-.', 'marker': 'D'},    # Exp 4
+    ]
+
+    for metric in metrics:
+        # Resolve Metric Style
+        # Remove '_mean' suffix for checking fallback if needed
+        base_key = metric.replace('_mean', '')
+        
+        if metric in METRIC_STYLE:
+            m_style = METRIC_STYLE[metric]
+        elif base_key in METRIC_STYLE:
+             m_style = METRIC_STYLE[base_key]
+        else:
+             # Fallback color from palette if not defined
+             import hashlib
+             idx = int(hashlib.md5(metric.encode()).hexdigest(), 16) % len(COLORBLIND_PALETTE)
+             m_style = {'color': COLORBLIND_PALETTE[idx], 'label': metric.replace('_', ' ')}
+        
+        metric_color = m_style['color']
+        metric_label_base = m_style['label']
+        
+        # Iterate Experiments
+        for i, (results, exp_label) in enumerate(zip(results_list, labels)):
+            alphas = sorted([float(a) for a in results.keys()])
+            
+            # Allow metric lookup fallbacks (e.g. Q_Y vs Q_Y_mean)
+            if metric in results[alphas[0]]:
+                key = metric
+            else:
+                # Try simple variations
+                alt_keys = [metric + '_mean', metric.replace('_mean', '')]
+                found = False
+                for k in alt_keys:
+                    if k in results[alphas[0]]:
+                        key = k
+                        found = True
+                        break
+                if not found:
+                    print(f"⚠️ Metric {metric} not found for {exp_label}")
+                    continue
+            
+            values = [results[a][key] for a in alphas]
+            std_key = key.replace('_mean', '_std')
+            stds = [results[a].get(std_key, 0) for a in alphas]
+            
+            # Resolve Experiment Style
+            exp_style = EXP_STYLES[i % len(EXP_STYLES)]
+            
+            combined_label = f"{exp_label} ({metric_label_base})"
+            
+            # Plot
+            # Only show error bars if significant
+            has_error = any(s > 0.001 for s in stds)
+            
+            ax.errorbar(
+                alphas, values, yerr=stds if has_error else None,
+                color=metric_color,
+                linestyle=exp_style['linestyle'],
+                marker=exp_style['marker'],
+                label=combined_label,
+                linewidth=STYLE['linewidth'],
+                markersize=STYLE['markersize'],
+                capsize=STYLE['capsize'] if has_error else 0,
+                alpha=0.9
+            )
+
+    ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
+    ax.set_ylabel('Value', fontsize=STYLE['fontsize']['label'])
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+    
+    if legend_loc == 'outside right':
+        ax.legend(fontsize=STYLE['fontsize']['legend'], bbox_to_anchor=(1.05, 1), loc='upper left')
+    else:
+        ax.legend(fontsize=STYLE['fontsize']['legend'], loc=legend_loc)
+        
+    if title:
+        ax.set_title(title, fontsize=STYLE['fontsize']['title'])
+        
+    plt.tight_layout()
+    
+    if format != 'png':
+        output_path = output_path.with_suffix(f'.{format}')
+        
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=dpi, bbox_inches='tight', format=format)
+    plt.close(fig)
+    
+    return output_path

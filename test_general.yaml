@@ -1,0 +1,47 @@
+# 性能测试配置 - General 模式
+allow_intra_connection: true
+
+algorithm: 2   # bigamp_spreading
+teacher: 2     # standard
+
+teacher_config:
+  init_distribution: 1  # gaussian
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan_mode: 1
+
+alpha_scan:
+  start: 0
+  stop: 4
+  step: 0.1
+
+training:
+  samples_per_alpha: 50
+  max_steps: 100  # 短测试
+
+seeds:
+  base_seed: 42
+
+algorithm_params:
+  damping: 0.3   # General 需要更强阻尼
+  noise_var: 1.0e-5
+  use_compile: true
+  use_bf16: true
+
+spreading:
+  f_distribution: rademacher
+  onsager_correction: false
+  chunk_size: 262144
+
+output:
+  name: "perf_test_general"
+  storage_mode: lightweight
+  enable_heatmap: false
+  rsb_ordering: true
+  uniform_colormap: true
+  plots:
+    - curves: [D.y]

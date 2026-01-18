@@ -73,8 +73,9 @@ class MemoryGuard:
     """
     
     # Default thresholds (can be overridden in constructor)
-    DEFAULT_WARNING_THRESHOLD = 0.85  # Normal allocation upper limit
-    DEFAULT_CRITICAL_THRESHOLD = 0.95  # Trigger batch recovery
+    # Default thresholds (can be overridden in constructor)
+    DEFAULT_WARNING_THRESHOLD = 0.90  # Normal allocation upper limit
+    DEFAULT_CRITICAL_THRESHOLD = 0.98  # Trigger batch recovery
     
     def __init__(
         self,
@@ -262,18 +263,19 @@ class MemoryGuard:
             return None
         
         # 1. Try pynvml (Most accurate & efficient)
-        try:
-            import pynvml
-            pynvml.nvmlInit()
-            device_id = torch.cuda.current_device()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            return {
-                'used': info.used / (1024**3),
-                'total': info.total / (1024**3),
-            }
-        except (ImportError, Exception):
-            pass
+        # 1. Try pynvml (DISABLED for WSL stability)
+        # try:
+        #     import pynvml
+        #     pynvml.nvmlInit()
+        #     device_id = torch.cuda.current_device()
+        #     handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
+        #     info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        #     return {
+        #         'used': info.used / (1024**3),
+        #         'total': info.total / (1024**3),
+        #     }
+        # except (ImportError, Exception):
+        #     pass
             
         # 2. Try torch.cuda (Fastest, in-process)
         # Note: memory_reserved is what actually occupies VRAM from OS perspective

@@ -23,12 +23,16 @@ from pathlib import Path
 from datetime import datetime
 import numpy as np
 
+# Configure CUDA Memory Pool for better performance (reduce fragmentation/stuttering)
+if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smf.core.experiment import (
     ExperimentConfig, ExperimentRunner,
     MatrixParams, TrainingParams, SeedConfig, ScanConfig, 
-    AlgorithmParams, SpreadingConfig
+    AlgorithmParams, SpreadingConfig, TeacherConfig
 )
 from smf.core.progress import ProgressBridge
 
@@ -43,7 +47,7 @@ def load_yaml_config(yaml_path: Path):
     # 数字选项映射
     ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd'}
     TEACHER_MAP = {1: 'orthogonal', 2: 'standard', 'orthogonal': 'orthogonal', 'standard': 'standard'}
-    SCAN_MODE_MAP = {1: 'alpha', 2: 'steps', 3: 'nested', 'alpha': 'alpha', 'steps': 'steps', 'nested': 'nested'}
+    SCAN_MODE_MAP = {1: 'alpha', 2: 'steps', 3: 'nested', 4: 'hysteresis', 'alpha': 'alpha', 'steps': 'steps', 'nested': 'nested', 'hysteresis': 'hysteresis'}
     F_DIST_MAP = {1: 'rademacher', 2: 'gaussian', 'rademacher': 'rademacher', 'gaussian': 'gaussian'}
     
     algorithm_key = ALGORITHM_MAP.get(cfg.get('algorithm', 1), 'bigamp')
@@ -56,20 +60,34 @@ def load_yaml_config(yaml_path: Path):
     
     # 训练
     t = cfg.get('training', {})
-    training = TrainingParams(samples_per_alpha=t.get('samples', 50), max_steps=t.get('max_steps', 2000))
+    training = TrainingParams(
+        samples_per_alpha=t.get('samples_per_alpha', t.get('samples', 50)),
+        max_steps=t.get('max_steps', 2000)
+    )
     
     # 算法参数
     a = cfg.get('algorithm_params', {})
-    algo_params = AlgorithmParams(damping=a.get('damping', 0.5), noise_var=a.get('noise_var', 1e-10), use_compile=a.get('use_compile', True))
+    algo_params = AlgorithmParams(**a)
     
     # Spreading
     spreading = None
-    if algorithm_key == 'bigamp_spreading':
+    # allow_intra_connection is now properly inside spreading section
+    if 'spreading' in algorithm_key:
         s = cfg.get('spreading', {})
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
         onsager = s.get('onsager_correction', False)
-        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager)
+        # allow_intra_connection: 优先顶层，回退到 spreading 节点
+        allow_intra = cfg.get('allow_intra_connection', s.get('allow_intra_connection', False))
+        chunk_size = s.get('chunk_size', 131072)  # Edges per chunk for General mode
+        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager, allow_intra_connection=allow_intra, chunk_size=chunk_size)
     
+    INIT_DIST_MAP = {1: 'gaussian', 2: 'rademacher', 'gaussian': 'gaussian', 'rademacher': 'rademacher'}
+    
+    # Teacher Config (Fixed Bug: was ignored previously)
+    teacher_cfg_dict = cfg.get('teacher_config', {})
+    init_dist = INIT_DIST_MAP.get(teacher_cfg_dict.get('init_distribution', 1), 'gaussian')
+    teacher_config = TeacherConfig(init_distribution=init_dist)
+
     # 输出选项 (完整解析)
     output_cfg = cfg.get('output', {})
     output_options = {
@@ -90,7 +108,8 @@ def load_yaml_config(yaml_path: Path):
             alpha_cfg.get('step', 0.05)
         ))
         scan = ScanConfig(dimension='alpha', values=alpha_values)
-        name = f"{algorithm_key}_{teacher_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}"
+        graph_mode = 'general' if allow_intra else 'bipartite'
+        name = f"{algorithm_key}_{teacher_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_{graph_mode}"
         
         return ExperimentConfig(
             matrix=matrix,
@@ -102,6 +121,7 @@ def load_yaml_config(yaml_path: Path):
             spreading=spreading,
             experiment_name=name,
             teacher_key=teacher_key,
+            teacher=teacher_config, # Pass the parsed config!
         ), output_options, raw_yaml
     
     elif scan_mode == 'steps':
@@ -125,7 +145,8 @@ def load_yaml_config(yaml_path: Path):
         
         step_values = [int(v * multiplier) for v in step_values]  # Apply multiplier
         scan = ScanConfig(dimension='steps', values=step_values)
-        name = f"{algorithm_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_steps_alpha{fixed_alpha}"
+        graph_mode = 'general' if allow_intra else 'bipartite'
+        name = f"{algorithm_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_steps_alpha{fixed_alpha}_{graph_mode}"
         
         # 把 fixed_alpha 存到 algorithm_params 里
         algo_params.default_alpha = fixed_alpha
@@ -140,6 +161,7 @@ def load_yaml_config(yaml_path: Path):
             spreading=spreading,
             experiment_name=name,
             teacher_key=teacher_key,
+            teacher=teacher_config, # Pass parsed config
         ), output_options, raw_yaml
     
     elif scan_mode == 'nested':
@@ -160,9 +182,42 @@ def load_yaml_config(yaml_path: Path):
             'training': training,
             'algorithm_key': algorithm_key,
             'teacher_key': teacher_key,
+            'teacher': teacher_config, # Pass parsed config
             'seeds': SeedConfig(base_seed=t.get('seed', 42)),
             'algorithm_params': algo_params,
             'spreading': spreading,
+        }, output_options, raw_yaml
+
+    elif scan_mode == 'hysteresis':
+        hyst_cfg = cfg.get('hysteresis_scan', {})
+        # 默认对比: [Cold Start (0.0), Warm Start (0.95)]
+        init_overlaps = hyst_cfg.get('init_overlaps', [0.0, 0.95])
+        
+        # Alpha 扫描范围
+        alpha_cfg = hyst_cfg.get('alpha', cfg.get('alpha_scan', {}))
+        alpha_values = list(np.arange(
+            alpha_cfg.get('start', 0.0),
+            alpha_cfg.get('stop', 4.0) + 0.01,
+            alpha_cfg.get('step', 0.05)
+        ))
+        
+        return {
+            'mode': 'hysteresis',
+            'init_overlaps': init_overlaps,
+            'alpha_values': alpha_values,
+            'base_config': ExperimentConfig(
+                matrix=matrix,
+                training=training,
+                algorithm_key=algorithm_key,
+                scan=ScanConfig(dimension='alpha', values=alpha_values), # Placeholder
+                seeds=SeedConfig(base_seed=t.get('seed', 42)),
+                algorithm_params=algo_params,
+                spreading=spreading,
+                experiment_name='hysteresis_placeholder',
+                teacher_key=teacher_key,
+                teacher=teacher_config,
+            ),
+            'output_plots': output_cfg.get('plots', []) # Pass output plots config
         }, output_options, raw_yaml
     
     else:
@@ -410,7 +465,10 @@ def main():
         )
         
         # 运行嵌套扫描
+        # For nested scan, we use a single runner instance
+        runner = ExperimentRunner(verbose=False)
         output_path = Path(args.output_dir) / "nested_scan" / f"{timestamp}_nested_sweep"
+        output_path.mkdir(parents=True, exist_ok=True)
         results = runner.run_scaling_sweep(
             base_config=base_config,
             matrix_sizes=config['sizes'],
@@ -423,8 +481,195 @@ def main():
         print(f"✅ Done! {len(results)} sizes completed")
         print(f"   Saved to: {output_path}")
         print("=" * 60)
-    
+
+    elif isinstance(config, dict) and config.get('mode') == 'hysteresis':
+        print()
+        print("=" * 60)
+        print("🚀 Hysteresis Analysis (Cold vs Warm)")
+        print("=" * 60)
+        
+        base_config = config['base_config']
+        init_overlaps = config['init_overlaps']
+        output_plots = config.get('output_plots', [])
+        
+        METRIC_MAP = {
+            'A.y': 'Q_Y_mean', 'A.w': 'Q_W_mean', 'A.x': 'Q_X_mean',
+            'B.w': 'Q_W_prime_mean', 'B.x': 'Q_X_prime_mean',
+            'D.y': 'physical_overlap_Y_mean', 
+            'D.w': 'physical_overlap_W_mean', 'D.x': 'physical_overlap_X_mean',
+            'E.e': 'MSE',
+            'Physical.y': 'physical_overlap_Y_mean',
+            'Physical.w': 'physical_overlap_W_mean',
+        }
+        
+        # 结果容器
+        results_list = []
+        labels = []
+        
+        # 创建输出目录
+        output_path = Path(args.output_dir) / "hysteresis_scan" / f"{timestamp}_{base_config.experiment_name}"
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        for overlap in init_overlaps:
+            # 修改配置
+            import copy
+            run_config = copy.deepcopy(base_config)
+            
+            if overlap <= 1e-6:
+                mode_name = "Cold Start"
+                init_mode_val = "random"
+            else:
+                mode_name = f"Warm Start (m={overlap})"
+                init_mode_val = "teacher"
+            
+            # --------------------------------------------------------------------------------
+            # CRITICAL FIX: Ensure parameter propagation
+            # ExperimentRunner might use run_config.algorithm OR run_config.algorithm_params
+            # We must update BOTH to ensure init_mode is correctly passed.
+            # --------------------------------------------------------------------------------
+            
+            # 1. Update algorithm_params (if exists)
+            if hasattr(run_config, 'algorithm_params'):
+                run_config.algorithm_params.init_mode = init_mode_val
+                if init_mode_val == 'teacher':
+                    run_config.algorithm_params.init_overlap = overlap
+
+            # 2. Update algorithm (if exists - this is often the one used by internal logic)
+            if hasattr(run_config, 'algorithm'):
+                try:
+                    # Config objects might be nested or frozen, try direct attribute set
+                    run_config.algorithm.init_mode = init_mode_val
+                    if init_mode_val == 'teacher':
+                        run_config.algorithm.init_overlap = overlap
+                except Exception as e:
+                    print(f"Warning: Could not update run_config.algorithm: {e}")
+
+            # Debug Log to confirm what we set
+            def get_val(obj, attr, default):
+                return getattr(obj, attr, default)
+
+            curr_mode = get_val(getattr(run_config, 'algorithm_params', None), 'init_mode', 'N/A')
+            curr_overlap = get_val(getattr(run_config, 'algorithm_params', None), 'init_overlap', 'N/A')
+            algo_mode = get_val(getattr(run_config, 'algorithm', None), 'init_mode', 'N/A')
+            
+            print(f"▶ Running: {mode_name}")
+            
+            # --------------------------------------------------------------------------------
+            # CRITICAL FIX: Instantiate fresh Runner for each iteration
+            # ExperimentRunner caches algorithm instances based on algorithm_key.
+            # Since both Cold and Warm start use the same key ('bigamp_spreading'),
+            # the Runner would reuse the Cold Start instance (random init) for Warm Start
+            # and ignore the config change.
+            # We MUST create a new runner to bypass this cache.
+            # --------------------------------------------------------------------------------
+            loop_runner = ExperimentRunner(verbose=False)
+
+            # 运行实验
+            result = loop_runner.run(
+                config=run_config,
+                observer=bridge.on_event,
+                output_options=output_options,
+            )
+            
+            # Clean up
+            del loop_runner
+            import gc
+            gc.collect()
+
+            # 存储结果 (Metrics are in result.metrics)
+            # ExperimentResult.results 是按 scan_value (alpha) 索引的 metrics 字典
+            # 我们需要把它展平，方便绘图
+            # plot_comparison 需要 list of dict: alpha -> metrics
+            results_dict = {}
+            for res_item in result.results.values():
+                results_dict[res_item.scan_value] = res_item.metrics
+            
+            results_list.append(results_dict)
+            labels.append(mode_name)
+            
+            # 单独保存这一轮的结果
+            sub_output_path = output_path / mode_name.replace(" ", "_").replace("(", "").replace(")", "").replace("=", "")
+            result.save(
+                sub_output_path,
+                save_tensors=output_options.get('save_tensors', True),
+                rsb_ordering=output_options.get('rsb_ordering', False),
+                uniform_colormap=output_options.get('uniform_colormap', False),
+                output_options=output_options,
+            )
+        
+        print(f"\n📊 Generating Hysteresis Plots...")
+        
+        # 绘制对比图
+        from smf.modules.outputs.plotting import plot_multi_metric_comparison
+        
+        # 1. 解析要绘制的图表组
+        plot_groups = []
+        if not output_plots:
+            # 默认 fallback
+            plot_groups.append({'metrics': ['Q_Y_mean'], 'filename': 'hysteresis_comparison_Q_Y_mean.png'})
+        else:
+            for idx, plot_cfg in enumerate(output_plots):
+                curves = plot_cfg.get('curves', [])
+                group_metrics = []
+                for curve in curves:
+                    # 查找映射
+                    metric_key = METRIC_MAP.get(curve, curve)
+                    # 处理后缀 (e.g. :R) - 目前简单去除，未来可支持 Replica 曲线
+                    if ':' in metric_key:
+                        metric_key = metric_key.split(':')[0]
+                    group_metrics.append(metric_key)
+                
+                if group_metrics:
+                    # 生成文件名
+                    if len(group_metrics) == 1:
+                        fname = f"hysteresis_comparison_{group_metrics[0]}.png"
+                    else:
+                        # 对于组合图，使用 custom_plot_N 命名，或尝试拼接
+                        fname = f"custom_plot_{idx+1}.png"
+                    plot_groups.append({'metrics': group_metrics, 'filename': fname})
+
+        # 2. 循环绘制每个组
+        for grp in plot_groups:
+            metrics = grp['metrics']
+            filename = grp['filename']
+            plot_path = output_path / filename
+            
+            # 检查 metrics 是否存在 (至少一个)
+            first_results = results_list[0]
+            first_data = first_results[next(iter(first_results))]
+            valid_metrics = [m for m in metrics if m in first_data or m.replace('_mean', '') in first_data]
+            
+            if not valid_metrics:
+                 print(f"⚠️  No valid metrics found for plot {filename}, skipping.")
+                 print(f"    Requested: {metrics}")
+                 print(f"    Available: {list(first_data.keys())}")
+                 continue
+
+            print(f"   Writing {filename} ({', '.join(valid_metrics)})...")
+            
+            try:
+                plot_multi_metric_comparison(
+                    results_list=results_list,
+                    labels=labels,
+                    output_path=plot_path,
+                    metrics=valid_metrics,
+                    legend_loc='best',
+                    dpi=300
+                )
+            except Exception as e:
+                print(f"   ❌ Failed to plot {filename}: {e}")
+        
+        # 链接到最新结果 (Symbolic Link or Copy)
+        # ...
+        
+        print()
+        print("=" * 60)
+        print("✅ Hysteresis Analysis Complete!")
+        print(f"   Results saved to: {output_path}")
+        print("=" * 60)
+
     else:
+
         # 单一扫描模式 (alpha 或 steps)
         print()
         print("=" * 60)

@@ -266,6 +266,7 @@ def compute_all_metrics_spreading_parallel(
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_total_all = torch.zeros(S, output_A, device=device)
     Physical_Y_total_all = torch.zeros(S, output_A, device=device)
+    MSE_all = torch.zeros(S, output_A, device=device)
 
     # 计算教师的完整 Y 矩阵（标准乘法，F=1）
     Y_teacher_full = W_teacher @ X_teacher  # (N1, N2)
@@ -341,6 +342,9 @@ def compute_all_metrics_spreading_parallel(
             # b) Physical Overlap Mean (average of point-wise overlaps)
             overlap_pointwise = (Y_student_full * Y_teacher_full) / y_t_sq
             Physical_Y_total_all[s, out_idx] = overlap_pointwise.mean()
+
+            # c) MSE
+            MSE_all[s, out_idx] = (y_t_flat - y_s_flat).pow(2).mean()
             
             # c) Unobserved
             # Create mask for observed
@@ -404,6 +408,8 @@ def compute_all_metrics_spreading_parallel(
         'physical_overlap_W_std': Physical_W_all.std(dim=0),
         'physical_overlap_X_mean': Physical_X_all.mean(dim=0),
         'physical_overlap_X_std': Physical_X_all.std(dim=0),
+        'MSE': MSE_all.mean(dim=0),
+        'MSE_std': MSE_all.std(dim=0),
         'Q_W_replica_mean': Q_W_replica_all,
         'Q_X_replica_mean': Q_X_replica_all,
         'Q_W_prime_replica_mean': Q_W_prime_replica_all,

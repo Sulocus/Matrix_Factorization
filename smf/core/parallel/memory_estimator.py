@@ -564,6 +564,8 @@ def estimate_spreading_parallel(params: EstimationParams) -> float:
     """
     BiG-AMP Spreading Parallel VRAM estimation using modular tensor components.
     
+    Automatically detects General vs Bipartite mode and uses appropriate estimation.
+    
     MODULAR DESIGN:
     - Each tensor is defined with explicit dtype
     - Easy to change dtype (e.g., FP32 -> BF16 -> INT8) by modifying the dtype field
@@ -571,6 +573,11 @@ def estimate_spreading_parallel(params: EstimationParams) -> float:
     
     See get_spreading_parallel_breakdown() for detailed component analysis.
     """
+    # Check for General Graph mode
+    if getattr(params, 'allow_intra_connection', False):
+        from .memory_estimator_general import estimate_general_spreading
+        return estimate_general_spreading(params)
+    
     breakdown = get_spreading_parallel_breakdown(params)
     return breakdown.total_gb
 
@@ -592,7 +599,10 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     alpha_max = params.alpha_max
     
     # Compute derived dimensions
-    C_max = max(1, int(alpha_max * M * N1))  # Max edges per sample
+    # C_max = max edges per sample = ceil(alpha * N1 * N2 / M)
+    # NOTE: Formula FIXED - was incorrectly using alpha_max * M * N1, causing 12.5x overestimation
+    import math
+    C_max = max(1, int(math.ceil(alpha_max * N1 * N2 / M)))  # Correct formula
     SC = S * C_max  # Total edges
     SN1 = S * N1  # Flattened row dim
     SN2 = S * N2  # Flattened col dim
@@ -601,8 +611,9 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
     f_dtype = DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32
     
-    # PRECISE CALCULATION: No static margin, overheads added dynamically in estimate()
-    breakdown = MemoryBreakdown(algorithm_key="bigamp_spreading", safety_margin=1.0)
+    # Adaptive mode needs slight margin due to extra intermediates (now accurate, was 1.8x when formula was wrong)
+    adaptive_margin = 1.2 if params.adaptive_damping else 1.0
+    breakdown = MemoryBreakdown(algorithm_key="bigamp_spreading", safety_margin=adaptive_margin)
     
     # =========================================================================
     # COMPONENT 1: Student Parameters
@@ -752,6 +763,45 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
         notes="Contribution tensor for scatter_add"
     ))
     breakdown.add_component(scatter)
+    
+    # =========================================================================
+    # COMPONENT 6: Adaptive Damping Backtracking
+    # W_safe, X_safe, W_var_safe, X_var_safe
+    # DTYPE: storage_dtype
+    # =========================================================================
+    if params.adaptive_damping:
+        adaptive = MemoryComponent(
+            name="Adaptive Backtracking",
+            notes="Safe state copies + Raw updates: W_safe/raw, X_safe/raw, W_var_safe/raw, X_var_safe/raw"
+        )
+        # Safe state copies (4 tensors)
+        adaptive.add(TensorSpec(
+            name="Safe State Copies",
+            shape=(B, SN1 + SN2, M),
+            shape_formula="4 × (B, S*N, M)",
+            dtype=storage_dtype,
+            count=4,
+            notes="W_safe, X_safe, W_var_safe, X_var_safe"
+        ))
+        # Raw update tensors returned by step function (4 tensors: W_raw, X_raw, W_var_raw, X_var_raw)
+        adaptive.add(TensorSpec(
+            name="Raw Update Tensors",
+            shape=(B, SN1 + SN2, M),
+            shape_formula="4 × (B, S*N, M)",
+            dtype=storage_dtype,
+            count=4,
+            notes="W_raw, X_raw, W_var_raw, X_var_raw from step function"
+        ))
+        # Additional intermediate: Z_hat, V, s_vals (edge-level)
+        adaptive.add(TensorSpec(
+            name="Adaptive Intermediates",
+            shape=(B, SC),
+            shape_formula="3 × (B, S*C_max)",
+            dtype=storage_dtype,
+            count=3,
+            notes="Z_hat, V, s_vals for log-likelihood computation"
+        ))
+        breakdown.add_component(adaptive)
     
     # =========================================================================
     # NOTE: No fixed CUDA overhead added
@@ -933,8 +983,6 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     breakdown.add_component(pred_res)
     
     return breakdown
-
-
 
 
 

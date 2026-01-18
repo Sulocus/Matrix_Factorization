@@ -14,8 +14,8 @@ Usage:
 # =============================================================================
 # ★★★ 配置参数 - 在这里修改 N 和 M ★★★
 # =============================================================================
-N = 500           # 矩阵大小 (N1 = N2 = N)
-M = 50            # 隐藏维度
+N = 10000           # 矩阵大小 (N1 = N2 = N)
+M = 100         # 隐藏维度
 SEED = 42          # 随机种子
 DEVICE = 'cuda'    # 计算设备: 'cuda' 或 'cpu'
 
@@ -659,20 +659,39 @@ def main():
             else:
                 continue
             
-            # 收集特征值 (根据物理类型选择正确的方法)
-            Y, X = matrices.Y, matrices.X
+            # 收集特征值 (统一使用 Y^T @ Y 分析)
+            # 
+            # 物理解释：
+            # - Standard/Orthogonal: Y = (1/√M) W @ X，所以 Y 的秩只有 M，
+            #   Y^T Y 会有 N-M 个零特征值。
+            # - Spreading: Y 是满秩的 N×N 矩阵。
+            #
+            # 缩放问题：
+            # - 对于 Standard，W^T W ≈ N * I，所以 Y^T Y 的非零特征值
+            #   会比原来的 X @ X^T 大 N/M 倍。
+            # - 为了让图贴合 MP 理论曲线，需要乘以 scaling_factor = M/N。
+            
+            Y = matrices.Y
             is_spreading = 'spreading' in matrix_type
             
+            # 统一计算 N×N 的 Gram 矩阵
+            gram = (1.0 / args.N) * (Y.T @ Y)
+            all_eigs = torch.linalg.eigvalsh(gram.float()).cpu().numpy()
+            del gram
+            
             if is_spreading:
-                # Spreading 矩阵是满秩的，必须用 Y^T @ Y
-                gram = (1.0 / args.N) * (Y.T @ Y)
-                eigenvalues = torch.linalg.eigvalsh(gram.float()).cpu().numpy()  # float32 for eigvalsh
-                del gram
+                # Spreading 矩阵是满秩的，直接使用全部特征值
+                eigenvalues = all_eigs
             else:
-                # 低秩矩阵 (standard/orthogonal)，使用 M×M 核心矩阵
-                core_gram = (1.0 / args.N) * (X @ X.T)
-                eigenvalues = torch.linalg.eigvalsh(core_gram.float()).cpu().numpy()  # float32 for eigvalsh
-                del core_gram
+                # 低秩矩阵 (standard/orthogonal)：
+                # 1. 过滤零特征值 - 只保留最大的 M 个（即非零部分）
+                eigs = np.sort(all_eigs)[-args.M:]
+                
+                # 2. 重新缩放 - 因为 Y^T Y 把能量集中在 M 个方向上，
+                #    导致特征值比直接算 X @ X^T 大了 N/M 倍。
+                #    乘以 M/N 让它回到 [λ_min, λ_max] 理论区间。
+                scaling_factor = args.M / args.N
+                eigenvalues = eigs * scaling_factor
             
             all_eigenvalues[matrix_type].append(eigenvalues)
             

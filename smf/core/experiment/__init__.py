@@ -33,6 +33,7 @@ from .config import (
     ScanConfig,
     SpreadingConfig,
     AlgorithmParams,
+    TeacherConfig,
 )
 
 from .result import (
@@ -54,6 +55,7 @@ __all__ = [
     'ScanConfig',
     'SpreadingConfig',
     'AlgorithmParams',
+    'TeacherConfig',
     # Result
     'ExperimentResult',
     'SingleRunResult',

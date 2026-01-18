@@ -1,0 +1,45 @@
+algorithm: 2
+teacher: 2
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+scan_mode: 1
+alpha_scan:
+  start: 0.5
+  stop: 2.5
+  step: 0.5
+training:
+  samples_per_alpha: 5
+  max_steps: 1000
+  max_epochs: 20000
+seeds:
+  model: 42
+  data: 42
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  use_compile: true
+  
+  # Adaptive settings
+  adaptive_damping: true
+  step_min: 0.2
+  step_max: 1.0
+  step_incr: 1.1
+  step_decr: 0.9
+  
+  # Restart
+  adaptive_restart: true
+  restart_patience: 30
+  restart_noise: 0.1
+  
+  # Tolerance
+  acceptance_tolerance: 0.1
+
+spreading:
+  f_distribution: 1
+  onsager_correction: false
+output:
+  name: "test_optimization_ph2"
+  storage_mode: lightweight
+  plots: []

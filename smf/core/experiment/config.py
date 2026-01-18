@@ -115,6 +115,9 @@ class SpreadingConfig:
     """Configuration specific to spreading algorithms."""
     f_distribution: str = "rademacher"  # "rademacher" or "gaussian"
     onsager_correction: bool = False  # Enable Onsager correction for Z update
+    allow_intra_connection: bool = False  # Allow W-W and X-X connections (general graph)
+    seed: int = 12345  # Spreading-specific random seed
+    chunk_size: int = 131072  # Edges per chunk for General mode memory optimization (0 = disable)
     
     def __post_init__(self):
         valid = ["rademacher", "gaussian"]
@@ -178,14 +181,26 @@ class AlgorithmParams:
     # Step scanning: fixed alpha value when scanning steps
     default_alpha: float = 1.0
 
-    # Adaptive Damping (BiGAMP)
-    adaptive_damping: bool = True
+    # Adaptive Damping
+    adaptive_damping: bool = False
     step_min: float = 0.05
-    step_max: float = 1.0
-    step_incr: float = 1.1
+    step_max: float = 0.5
+    step_incr: float = 1.05
     step_decr: float = 0.5
-    step_window: int = 1
+    step_window: int = 5
     max_bad_steps: int = 10
+    
+    # Adaptive Warm Restart
+    adaptive_restart: bool = False
+    restart_patience: int = 50
+    restart_noise: float = 0.1
+    
+    # Adaptive Tolerance
+    acceptance_tolerance: float = 0.0  # Metropolis-like relaxation
+    
+    # Teacher-Assisted Initialization (Hysteresis Analysis)
+    init_mode: str = "random"      # "random" = Cold Start, "teacher" = Warm Start
+    init_overlap: float = 0.95     # Initial overlap with teacher (0.9 - 0.99)
     
     def to_dict(self) -> Dict:
         return asdict(self)

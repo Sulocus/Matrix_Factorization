@@ -1,0 +1,42 @@
+# ===== Hysteresis Analysis (Auto Comparison) =====
+# 自动连续运行 Cold Start 和 Warm Start 并绘制对比图
+
+algorithm: 2  # bigamp_spreading
+teacher: 2    # standard
+
+scan_mode: 4  # hysteresis
+hysteresis_scan:
+  init_overlaps: [0.0, 0.99]  # 0.0=Cold, 0.99=Warm
+  alpha:
+    start: 2.0  # 聚焦在相变区域
+    stop: 4.0
+    step: 0.2
+
+allow_intra_connection: true  # general mode
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+training:
+  samples_per_alpha: 5
+  max_steps: 2000
+
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  use_compile: true
+  use_bf16: true
+
+spreading:
+  f_distribution: 1      # rademacher
+  onsager_correction: false
+
+teacher_config:
+  init_distribution: 2   # rademacher
+
+output:
+  storage_mode: lightweight
+  plots:
+    - curves: [A.y, B.w]

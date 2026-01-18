@@ -18,11 +18,14 @@ where F is quenched random disorder that breaks loop correlations.
 from typing import Tuple, Callable, Dict, Optional, List
 from dataclasses import dataclass
 import math
+from pathlib import Path
+import datetime
 import torch
 
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ..graphs.supergraph import SuperGraphData, create_supergraph
+from ..graphs.supergraph_general import SuperGraphDataGeneral, create_supergraph_general, EDGE_TYPE_WW, EDGE_TYPE_WX, EDGE_TYPE_XX
 from ..teachers.random_spreading import SpreadingDataParallel
 
 
@@ -201,6 +204,115 @@ def compute_Y_super(
         
         # Y[c] = (1/√M) Σ_μ F[c,μ] W[i,μ] X[μ,j]
         Y_super[s] = alpha_scale * (F_s * W_sel * X_sel).sum(dim=1)
+
+    return Y_super
+
+
+def generate_F_super_general(
+    supergraph: SuperGraphDataGeneral,
+    M: int,
+    base_seed: int,
+    device: torch.device,
+    f_distribution: str = 'rademacher',
+) -> torch.Tensor:
+    """
+    Generate spreading coefficients F for the general super-graph.
+    Similar to generate_F_super but takes SuperGraphDataGeneral.
+    """
+    S = supergraph.seeds.shape[0]
+    C_max = supergraph.C_max
+    
+    # Store as int8 for memory efficiency if rademacher
+    dtype = torch.int8 if f_distribution == 'rademacher' else torch.float32
+    F_super = torch.empty(S, C_max, M, device=device, dtype=dtype)
+    
+    for s in range(S):
+        # Use a unique seed for F generation distinct from graph content
+        # Mix base_seed, sample index, and a magic number
+        seed = base_seed + s * 777 + 100000
+        gen = torch.Generator(device=device).manual_seed(seed)
+        
+        if f_distribution == 'rademacher':
+            # Generate 0/1 then map to -1/1
+            bits = torch.randint(0, 2, (C_max, M), generator=gen, device=device, dtype=torch.int8)
+            F_super[s] = bits * 2 - 1
+        elif f_distribution == 'gaussian':
+            F_super[s].normal_(0, 1, generator=gen)
+            
+    return F_super
+
+
+def compute_Y_super_general(
+    W_teacher: torch.Tensor,
+    X_teacher: torch.Tensor,
+    supergraph: SuperGraphDataGeneral,
+    F_super: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute Y values for general graph (allowing W-W, W-X, X-X connections).
+    
+    Y[s, c] = (1/√M) Σ_μ F[s,c,μ] V[a,μ] V[b,μ]
+    
+    where V is the unified vector set (W and X).
+
+    Args:
+        W_teacher: (N1, M) teacher W matrix
+        X_teacher: (M, N2) teacher X matrix
+        supergraph: SuperGraphDataGeneral with unified indices and edge types
+        F_super: (S, C_max, M) spreading coefficients
+        
+    Returns:
+        Y_super: (S, C_max) Y values
+    """
+    S, C_max, M = F_super.shape
+    alpha_scale = 1.0 / math.sqrt(M)
+    N1 = W_teacher.shape[0]
+
+    Y_super = torch.empty(S, C_max, device=F_super.device, dtype=torch.float32)
+
+    for s in range(S):
+        a_idx = supergraph.a_idx[s].long()
+        b_idx = supergraph.b_idx[s].long()
+        edge_type = supergraph.edge_type[s]
+        
+        # Gather vectors based on edge type
+        # Ideally we construct V_unified = concat(W, X^T) but memory might be an issue.
+        # So we gather selectively.
+        
+        # Prepare selectors
+        is_W_W = (edge_type == EDGE_TYPE_WW)
+        is_W_X = (edge_type == EDGE_TYPE_WX)
+        is_X_X = (edge_type == EDGE_TYPE_XX)
+        
+        # Initialize V_a and V_b containers
+        V_a = torch.empty(C_max, M, device=W_teacher.device)
+        V_b = torch.empty(C_max, M, device=W_teacher.device)
+        
+        # Fill W-W edges
+        if is_W_W.any():
+            mask = is_W_W
+            # For W-W: a < N1, b < N1. Both index into W.
+            V_a[mask] = W_teacher[a_idx[mask]]
+            V_b[mask] = W_teacher[b_idx[mask]]
+            
+        # Fill W-X edges
+        if is_W_X.any():
+            mask = is_W_X
+            # For W-X: a < N1 (W), b >= N1 (X).
+            # b_idx_corrected = b_idx - N1
+            V_a[mask] = W_teacher[a_idx[mask]]
+            V_b[mask] = X_teacher.T[b_idx[mask] - N1]
+            
+        # Fill X-X edges
+        if is_X_X.any():
+            mask = is_X_X
+            # For X-X: Both >= N1. Both index into X.
+            V_a[mask] = X_teacher.T[a_idx[mask] - N1]
+            V_b[mask] = X_teacher.T[b_idx[mask] - N1]
+
+        # Compute Y
+        F_s = F_super[s].float() if F_super.dtype == torch.int8 else F_super[s]
+        Y_super[s] = alpha_scale * (F_s * V_a * V_b).sum(dim=1)
 
     return Y_super
 
@@ -632,26 +744,30 @@ def bigamp_step_disjoint_union(
     return W_hat_out, X_hat_out, W_var_out, X_var_out, s_values
 
 
-def compute_log_likelihood(
-    Y_flat: torch.Tensor,
-    Z_flat: torch.Tensor,
-    V_flat: torch.Tensor,
-    noise_var: float,
-) -> float:
+def compute_log_likelihood(Y_flat, Z_hat, V, noise_var):
     """
-    Compute log-likelihood for AWGN:
-    LogL = -0.5 * sum( log(2pi(V + noise_var)) + (Y - Z)^2 / (V + noise_var) )
+    Compute Log-Likelihood for each batch element (alpha).
+    Y_flat: (SC,) - flattened observations (shared across batch in current implementation logic)
+            Wait, Y_flat is (SC,) but Z_hat is (B, SC).
+            We broadcast Y_flat to (B, SC) for per-batch calculation.
+    Z_hat: (B, SC) - predicted means
+    V: (B, SC) - predicted variances
+    noise_var: scalar
+    
+    Returns:
+        log_likelihood: (B,) tensor
     """
-    denom = V_flat + noise_var
-    diff_sq = (Y_flat.unsqueeze(0) - Z_flat).pow(2)  # (A, SC)
+    # Y_flat (SC,) -> unsqueeze -> (1, SC) broadcasts to (B, SC)
+    residual = Y_flat.unsqueeze(0) - Z_hat
     
-    # log(2*pi) = 1.837877
-    term1 = torch.log(denom + 1e-12) + 1.837877
-    term2 = diff_sq / (denom + 1e-12)
+    # Gaussian Log-Likelihood: -0.5 * log(2*pi*var) - 0.5 * (y-z)^2 / var
+    # var = V + noise_var
+    var = V + noise_var
+    log_term = -0.5 * torch.log(2 * torch.pi * var)
+    exp_term = -0.5 * (residual ** 2) / var
     
-    # Average over S*C_max (or sum? MATLAB usually sums, but average is scale-invariant)
-    # Using SUM to match energy minimization physics
-    return -0.5 * (term1 + term2).sum().item()
+    # Sum over SC dimension (dim=1), keep Batch dimension (dim=0)
+    return (log_term + exp_term).sum(dim=1)
 
 
 def bigamp_step_disjoint_union_flat_adaptive(
@@ -711,11 +827,11 @@ def bigamp_step_disjoint_union_flat_adaptive(
     V = V * mask_typed + 1e-10
 
     # ===== 4. ONSAGER CORRECTION (Restored) =====
+    # Save Z_raw (physical prediction) for Likelihood calculation before Onsager modification
+    Z_raw = Z_hat.clone()  # Physical prediction: F*W*X
     if prev_s is not None:
-        # p_hat = Z_hat - V * prev_s
-        # Z_hat is actually p_hat in many derivations before correction
-        # But here Z_hat is pure mean.
-        # Standard AMP: p^t = Z^t - V^t * s^{t-1}
+        # Standard AMP Onsager: Cavity Z = Z_raw - V * prev_s
+        # Cavity Z is used for computing residuals (s), not for Likelihood
         Z_hat = Z_hat - V * prev_s
 
     # ===== 5. Residuals =====
@@ -771,7 +887,7 @@ def bigamp_step_disjoint_union_flat_adaptive(
     r_X = torch.clamp(r_X, min=-1e4, max=1e4)
     X_hat_new = X_flat + X_var_new * r_X
     
-    return W_hat_new, X_hat_new, W_var_new, X_var_new, s_values, Z_hat, V
+    return W_hat_new, X_hat_new, W_var_new, X_var_new, s_values, Z_raw, V
 
 
 def bigamp_step_disjoint_union_flat(
@@ -854,8 +970,12 @@ def bigamp_step_disjoint_union_flat(
         V = alpha_scale_sq * (F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)).sum(dim=2)
     V = V * mask_typed + 1e-10
 
+    # ===== 4. ONSAGER CORRECTION (Non-Adaptive Path) =====
+    if prev_s is not None:
+        # Standard AMP Onsager: Z_hat = Z_hat - V * prev_s
+        Z_hat = Z_hat - V * prev_s
     
-    # ===== 4. Residuals =====
+    # ===== 5. Residuals =====
     denom = torch.clamp(V + noise_var, min=1e-6)
     s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom  # (A, SC)
     s_values = torch.clamp(s_values, min=-1e6, max=1e6)
@@ -922,6 +1042,367 @@ def bigamp_step_disjoint_union_flat(
     X_var_out = torch.nan_to_num(X_var_out, nan=1.0)
     
     return W_flat_out, X_flat_out, W_var_out, X_var_out, s_values
+
+
+# ============================================================================
+# General Graph: Fused Vectorized Chunking (Memory Optimized)
+# ============================================================================
+
+def general_edge_kernel_chunk(
+    V_a: torch.Tensor,       # (B, ChunkSize, M)
+    V_b: torch.Tensor,       # (B, ChunkSize, M)
+    V_a_var: torch.Tensor,   # (B, ChunkSize, M)
+    V_b_var: torch.Tensor,   # (B, ChunkSize, M)
+    F_chunk: torch.Tensor,   # (ChunkSize, M)
+    Y_chunk: torch.Tensor,   # (ChunkSize,)
+    alpha_mask_chunk: torch.Tensor,  # (B, ChunkSize)
+    prev_s_chunk: Optional[torch.Tensor],  # (B, ChunkSize) or None
+    alpha_scale: float,
+    alpha_scale_sq: float,
+    noise_var: float,
+    is_rademacher: bool,
+    compute_dtype: torch.dtype,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Fused computational kernel for a single chunk of edges.
+    Designed to be compiled by torch.compile for kernel fusion.
+    
+    Returns:
+        s_chunk: (B, ChunkSize) - residual signals
+        r_a_contrib: (B, ChunkSize, M) - message to node a
+        r_b_contrib: (B, ChunkSize, M) - message to node b
+        tau_a_contrib: (B, ChunkSize, M) - precision to node a
+        tau_b_contrib: (B, ChunkSize, M) - precision to node b
+        Z_hat: (B, ChunkSize) - predictions (for diagnostics)
+    """
+    # 1. Prepare Constants
+    F_exp = F_chunk.to(compute_dtype).unsqueeze(0)  # (1, ChunkSize, M)
+    mask_typed = alpha_mask_chunk.to(compute_dtype)  # (B, ChunkSize)
+    
+    # 2. Forward Pass (Z_hat)
+    Z_hat = alpha_scale * (F_exp * V_a * V_b).sum(dim=2) * mask_typed
+    
+    # 3. Variance Calculation
+    if is_rademacher:
+        # F^2 = 1 for Rademacher
+        V_val_raw = (V_a_var * V_b.pow(2) + V_a.pow(2) * V_b_var).sum(dim=2)
+        F_sq_exp = None
+    else:
+        F_sq_exp = F_exp.pow(2)
+        V_val_raw = (F_sq_exp * (V_a_var * V_b.pow(2) + V_a.pow(2) * V_b_var)).sum(dim=2)
+        
+    V_val = alpha_scale_sq * V_val_raw * mask_typed + 1e-10
+
+    # 4. Onsager Correction
+    if prev_s_chunk is not None:
+        Z_hat = Z_hat - V_val * prev_s_chunk
+    
+    # 5. Residuals
+    denom = V_val + noise_var
+    denom = torch.clamp(denom, min=1e-6)
+    s_chunk = (Y_chunk.unsqueeze(0) - Z_hat) / denom
+    s_chunk = torch.clamp(s_chunk, min=-1e6, max=1e6) * alpha_mask_chunk.float()
+
+    # 6. Compute Messages
+    s_exp = s_chunk.to(compute_dtype).unsqueeze(2)     # (B, ChunkSize, 1)
+    inv_V = (1.0 / denom).to(compute_dtype).unsqueeze(2)  # (B, ChunkSize, 1)
+    mask_3d = mask_typed.unsqueeze(2)                   # (B, ChunkSize, 1)
+    
+    # Message to Node A: r_a = F * V_b * s
+    r_a_contrib = alpha_scale * F_exp * V_b * s_exp * mask_3d
+    
+    # Message to Node B: r_b = F * V_a * s
+    r_b_contrib = alpha_scale * F_exp * V_a * s_exp * mask_3d
+
+    # Preconditioners (Tau)
+    if is_rademacher:
+        tau_common = alpha_scale_sq * inv_V * mask_3d
+        tau_a_contrib = V_b.pow(2) * tau_common
+        tau_b_contrib = V_a.pow(2) * tau_common
+    else:
+        tau_common = alpha_scale_sq * F_sq_exp * inv_V * mask_3d
+        tau_a_contrib = V_b.pow(2) * tau_common
+        tau_b_contrib = V_a.pow(2) * tau_common
+
+    return s_chunk, r_a_contrib, r_b_contrib, tau_a_contrib, tau_b_contrib, Z_hat
+
+
+# Compiled version will be cached at class level
+_compiled_general_kernel = None
+
+
+def bigamp_step_general_chunked(
+    V_flat: torch.Tensor,      # (B, S*N_total, M)
+    V_var_flat: torch.Tensor,  # (B, S*N_total, M)
+    Y_flat: torch.Tensor,      # (S*C_max,)
+    F_flat: torch.Tensor,      # (S*C_max, M)
+    a_offset: torch.Tensor,    # (S*C_max,)
+    b_offset: torch.Tensor,    # (S*C_max,)
+    alpha_mask_exp: torch.Tensor,  # (B, S*C_max)
+    S: int,
+    N_total: int,
+    damping: float,
+    noise_var: float,
+    is_rademacher: bool = False,
+    prev_s: Optional[torch.Tensor] = None,
+    chunk_size: int = 131072,
+    use_compile: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Memory-optimized General BiG-AMP step using chunked streaming.
+    
+    Key features:
+    - Processes edges in fixed-size chunks to bound peak memory
+    - Uses index_add_ for in-place accumulation (zero residual memory)
+    - Supports torch.compile for kernel fusion within each chunk
+    
+    Args:
+        V_flat: (B, S*N_total, M) unified node vectors
+        V_var_flat: (B, S*N_total, M) unified node variances
+        Y_flat: (SC,) flattened observations
+        F_flat: (SC, M) flattened spreading coefficients
+        a_offset: (SC,) first node indices
+        b_offset: (SC,) second node indices
+        alpha_mask_exp: (B, SC) alpha mask
+        S: number of samples
+        N_total: N1 + N2
+        damping: damping factor
+        noise_var: noise variance
+        is_rademacher: True if F is Rademacher (F²=1)
+        prev_s: (B, SC) previous s values for Onsager correction
+        chunk_size: edges per chunk
+        use_compile: whether to use compiled kernel
+        
+    Returns:
+        V_flat_out, V_var_out, s_new_all, Z_hat (placeholder), V_val (placeholder)
+    """
+    global _compiled_general_kernel
+    
+    B, SN, M = V_flat.shape
+    SC = F_flat.shape[0]
+    compute_dtype = V_flat.dtype
+    device = V_flat.device
+    
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    
+    # 1. Allocate Global Accumulators (Zero-initialized)
+    # Size is only (B, Nodes, M), much smaller than Edges
+    r_V = torch.zeros(B, SN, M, device=device, dtype=compute_dtype)
+    tau_V = torch.zeros(B, SN, M, device=device, dtype=compute_dtype)
+    
+    # Container for s_values (needed for next step's Onsager)
+    s_new_all = torch.empty(B, SC, device=device, dtype=torch.float32)
+    
+    # 2. Optional: Compile the kernel (cached at module level)
+    kernel_fn = general_edge_kernel_chunk
+    if use_compile and _compiled_general_kernel is None:
+        try:
+            torch._dynamo.reset()
+            _compiled_general_kernel = torch.compile(
+                general_edge_kernel_chunk,
+                mode="default",  # Avoid CUDA Graphs issues
+                fullgraph=False,
+            )
+        except Exception:
+            _compiled_general_kernel = general_edge_kernel_chunk
+    
+    if use_compile and _compiled_general_kernel is not None:
+        kernel_fn = _compiled_general_kernel
+    
+    # 3. Chunked Processing Loop
+    num_chunks = (SC + chunk_size - 1) // chunk_size
+    
+    for i in range(0, SC, chunk_size):
+        end = min(i + chunk_size, SC)
+        chunk_len = end - i
+        idx_slice = slice(i, end)
+        
+        # 3a. Gather Inputs for this chunk
+        a_idx_chunk = a_offset[idx_slice]
+        b_idx_chunk = b_offset[idx_slice]
+        
+        V_a = V_flat.index_select(1, a_idx_chunk)
+        V_b = V_flat.index_select(1, b_idx_chunk)
+        V_a_var = V_var_flat.index_select(1, a_idx_chunk)
+        V_b_var = V_var_flat.index_select(1, b_idx_chunk)
+        
+        F_chunk = F_flat[idx_slice]
+        Y_chunk = Y_flat[idx_slice]
+        mask_chunk = alpha_mask_exp[:, idx_slice]
+        prev_s_chunk = prev_s[:, idx_slice] if prev_s is not None else None
+
+        # 3b. Execute Kernel
+        s_chunk, r_a, r_b, tau_a, tau_b, _ = kernel_fn(
+            V_a, V_b, V_a_var, V_b_var, F_chunk, Y_chunk, mask_chunk, prev_s_chunk,
+            alpha_scale, alpha_scale_sq, noise_var, is_rademacher, compute_dtype
+        )
+        
+        # 3c. Store s values
+        s_new_all[:, idx_slice] = s_chunk
+        
+        # 3d. Scatter Aggregate (Use scatter_add_ with expanded 3D indices for better performance)
+        # Expand indices for scatter_add_: (ChunkLen,) -> (B, ChunkLen, M)
+        a_idx_exp = a_idx_chunk.view(1, -1, 1).expand(B, chunk_len, M)
+        b_idx_exp = b_idx_chunk.view(1, -1, 1).expand(B, chunk_len, M)
+        
+        r_V.scatter_add_(1, a_idx_exp, r_a)
+        r_V.scatter_add_(1, b_idx_exp, r_b)
+        
+        tau_V.scatter_add_(1, a_idx_exp, tau_a)
+        tau_V.scatter_add_(1, b_idx_exp, tau_b)
+        
+        # Free expanded indices
+        del a_idx_exp, b_idx_exp
+
+    # 4. Final Node Updates
+    tau_V = tau_V.clamp(min=1e-10)
+    V_var_new = 1.0 / (M + tau_V)
+    
+    r_V = torch.clamp(r_V, min=-1e4, max=1e4)
+    V_hat_new = V_flat + V_var_new * r_V
+    
+    # 5. Damping
+    V_flat_out = damping * V_hat_new + (1 - damping) * V_flat
+    V_var_out = torch.clamp(damping * V_var_new + (1 - damping) * V_var_flat, min=1e-4, max=1.0)
+    
+    # NaN protection
+    V_flat_out = torch.nan_to_num(V_flat_out, nan=0.0)
+    V_var_out = torch.nan_to_num(V_var_out, nan=1.0)
+    
+    # Return placeholders for Z_hat and V_val (not needed in training loop)
+    return V_flat_out, V_var_out, s_new_all, None, None
+
+
+def bigamp_step_disjoint_union_flat_general(
+    V_flat: torch.Tensor,      # (A, S*N_total, M) - flattened unified vectors
+    V_var_flat: torch.Tensor,  # (A, S*N_total, M)
+    Y_flat: torch.Tensor,      # (S*C_max,)
+    F_flat: torch.Tensor,      # (S*C_max, M)
+    a_offset: torch.Tensor,    # (S*C_max,) - unified indices for first node
+    b_offset: torch.Tensor,    # (S*C_max,) - unified indices for second node
+    alpha_mask_exp: torch.Tensor,
+    S: int,
+    N_total: int,
+    damping: float,
+    noise_var: float,
+    is_rademacher: bool = False,
+    prev_s: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    General Graph optimized BiG-AMP step using Unified Vector V.
+    
+    V_flat contains both W and X nodes.
+    a_offset and b_offset index into V_flat.
+    """
+    A = V_flat.shape[0]
+    M = V_flat.shape[2]
+    SC = F_flat.shape[0]
+    SN = S * N_total
+    storage_dtype = V_flat.dtype
+    
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    mask_typed = alpha_mask_exp.to(V_flat.dtype)
+    
+    # ===== 1. Gather =====
+    # ===== 1. Gather (Vectorized) =====
+    # Use index_select for vectorized gathering
+    # V_flat: (B, S*N_total, M)
+    # a_offset: (S*C_max,)
+    # Result: (B, SC, M)
+    V_a = V_flat.index_select(1, a_offset)
+    V_b = V_flat.index_select(1, b_offset)
+    V_a_var = V_var_flat.index_select(1, a_offset)
+    V_b_var = V_var_flat.index_select(1, b_offset)
+    
+    # ===== 2. Forward =====
+    F_compute = F_flat.to(V_flat.dtype)
+    F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
+    
+    # Z_hat = (1/√M) Σ F * V_a * V_b
+    Z_hat = alpha_scale * (F_exp * V_a * V_b).sum(dim=2) * mask_typed
+    
+    # ===== 3. Variance =====
+    # MEMORY OPT: 预计算 F_sq_exp 用于后续 scatter update
+    if is_rademacher:
+        # F²=1
+        V_val = alpha_scale_sq * (V_a_var * V_b.pow(2) + V_a.pow(2) * V_b_var).sum(dim=2)
+        F_sq_exp = None  # Not needed for Rademacher
+    else:
+        F_sq_exp = F_exp.pow(2)  # 预计算，后续复用
+        V_val = alpha_scale_sq * (F_sq_exp * (V_a_var * V_b.pow(2) + V_a.pow(2) * V_b_var)).sum(dim=2)
+    
+    # MEMORY OPT: 释放不再需要的 variance 张量
+    del V_a_var, V_b_var
+    
+    V_val = V_val * mask_typed + 1e-10
+    
+    # ===== 4. Onsager =====
+    if prev_s is not None:
+        Z_hat = Z_hat - V_val * prev_s
+        
+    # ===== 5. Residuals =====
+    denom = torch.clamp(V_val + noise_var, min=1e-6)
+    s_values = (Y_flat.unsqueeze(0) - Z_hat) / denom
+    s_values = torch.clamp(s_values, min=-1e6, max=1e6) * alpha_mask_exp.float()
+    
+    # ===== 6. Scatter Update =====
+    s_exp = s_values.unsqueeze(2).to(V_flat.dtype)
+    inv_V_typed = (1.0 / denom).unsqueeze(2).to(V_flat.dtype)
+    mask_typed = mask_typed.unsqueeze(2)
+    
+    # ===== 6. Accumulation =====
+    # 初始化累加器 (A, S*N_total, M)
+    r_V = torch.zeros(A, SN, M, device=V_flat.device, dtype=storage_dtype)
+    tau_V = torch.zeros(A, SN, M, device=V_flat.device, dtype=storage_dtype)
+    
+    # --- Phase A: 处理 'a' 节点更新 (使用 V_b) ---
+    # OPTIMIZATION: 使用 index_add_ 替代 scatter_add_，避免构造 3D 扩展索引
+    # PyTorch index_add_ 在 source 为 3D 时支持 1D index 广播
+    term = alpha_scale * F_exp * V_b * s_exp * mask_typed
+    r_V.index_add_(1, a_offset, term)
+    del term
+    
+    if is_rademacher:
+        term = alpha_scale_sq * V_b.pow(2) * inv_V_typed * mask_typed
+    else:
+        term = alpha_scale_sq * F_sq_exp * V_b.pow(2) * inv_V_typed * mask_typed
+    tau_V.index_add_(1, a_offset, term)
+    del term
+    
+    del V_b
+    
+    # --- Phase B: 处理 'b' 节点更新 (使用 V_a) ---
+    term = alpha_scale * F_exp * V_a * s_exp * mask_typed
+    r_V.index_add_(1, b_offset, term)
+    del term
+    
+    if is_rademacher:
+        term = alpha_scale_sq * V_a.pow(2) * inv_V_typed * mask_typed
+    else:
+        term = alpha_scale_sq * F_sq_exp * V_a.pow(2) * inv_V_typed * mask_typed
+    tau_V.index_add_(1, b_offset, term)
+    del term
+    
+    del V_a
+    
+    tau_V = tau_V.clamp(min=1e-10)
+    
+    # Final Update
+    V_var_new = 1.0 / (M + tau_V)
+    
+    r_V = torch.clamp(r_V, min=-1e4, max=1e4)
+    V_hat_new = V_flat + V_var_new * r_V
+    
+    # Damping
+    V_flat_out = damping * V_hat_new + (1 - damping) * V_flat
+    V_var_out = torch.clamp(damping * V_var_new + (1 - damping) * V_var_flat, min=1e-4, max=1.0)
+    
+    V_flat_out = torch.nan_to_num(V_flat_out, nan=0.0)
+    V_var_out = torch.nan_to_num(V_var_out, nan=1.0)
+    
+    return V_flat_out, V_var_out, s_values, Z_hat, V_val
 
 
 def compute_offset_indices(
@@ -992,6 +1473,8 @@ class BiGAMPSpreading(AlgorithmBase):
 
     # Class-level cache for compiled step function
     _compiled_step = None
+    _compiled_step_adaptive = None
+    _compiled_step_general = None
 
     @classmethod
     def clear_compile_cache(cls):
@@ -1004,6 +1487,8 @@ class BiGAMPSpreading(AlgorithmBase):
         Call this before replanning execution after an OOM event.
         """
         cls._compiled_step = None
+        cls._compiled_step_adaptive = None
+        cls._compiled_step_general = None
         try:
             import torch._dynamo
             torch._dynamo.reset()  # Clear torch.compile internal caches
@@ -1022,8 +1507,8 @@ class BiGAMPSpreading(AlgorithmBase):
         self.device = device
 
         # Algorithm parameters
-        self.damping = config.algorithm.damping
-        self.noise_var = config.algorithm.noise_var
+        self.damping = config.algorithm_params.damping
+        self.noise_var = config.algorithm_params.noise_var
         self.max_steps = config.training.max_steps
 
         # Spreading configuration
@@ -1031,10 +1516,18 @@ class BiGAMPSpreading(AlgorithmBase):
         if spreading_cfg is not None:
             self.f_distribution = spreading_cfg.f_distribution
             self.spreading_seed = spreading_cfg.seed
+            self.onsager_correction = getattr(spreading_cfg, 'onsager_correction', True)
+            self.allow_intra_connection = getattr(spreading_cfg, 'allow_intra_connection', False)
+            # Default chunk_size to 0 (Unchunked) to utilize ParallelCoordinator's dynamic batching
+            # instead of inefficient Python-level looping.
+            self.chunk_size = getattr(spreading_cfg, 'chunk_size', 0) 
         else:
             # Default values
             self.f_distribution = 'gaussian'
             self.spreading_seed = 12345
+            self.onsager_correction = True
+            self.allow_intra_connection = False
+            self.chunk_size = 0
 
         # Validate f_distribution
         if self.f_distribution not in F_GENERATORS:
@@ -1046,7 +1539,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # torch.compile for kernel fusion (Phase 1 optimization - upgraded)
         # NOTE: max-autotune and reduce-overhead use CUDA Graphs which can cause issues
         # For large problems, we use 'default' mode (no CUDA Graphs, still has Triton kernels)
-        self.use_compile = getattr(config.algorithm, 'use_compile', True)
+        self.use_compile = getattr(config.algorithm_params, 'use_compile', True)
         if self.use_compile and BiGAMPSpreading._compiled_step is None:
             # Determine if problem is "large" (needs memory-safe mode)
             N1 = config.matrix.N1
@@ -1072,6 +1565,17 @@ class BiGAMPSpreading(AlgorithmBase):
                 except Exception as e:
                     if mode == compile_modes[-1]:
                         self.use_compile = False
+        
+        # Also compile adaptive step function if needed
+        if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is None:
+            try:
+                BiGAMPSpreading._compiled_step_adaptive = torch.compile(
+                    bigamp_step_disjoint_union_flat_adaptive,
+                    mode='default',  # Use safe mode for adaptive (more intermediates)
+                    fullgraph=False,
+                )
+            except Exception:
+                pass  # Fall back to uncompiled if fails
 
         # Phase 3: BF16 mixed precision (auto-detect hardware support)
         self.use_bf16 = False
@@ -1079,6 +1583,51 @@ class BiGAMPSpreading(AlgorithmBase):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
+
+    @staticmethod
+    def _initialize_near_teacher(
+        target_shape: Tuple[int, int, int],  # (B, S*N, M)
+        teacher_tensor: torch.Tensor,         # (N, M)
+        m_init: float,
+        S: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        Generate initial estimate close to the teacher for Hysteresis Analysis.
+        
+        Formula: V_init = m_init * V_teacher + sqrt(1 - m_init^2) * noise
+        
+        This ensures:
+        - Initial overlap ≈ m_init
+        - Variance is preserved (proper normalization)
+        
+        Args:
+            target_shape: (B, S*N, M) target flat shape
+            teacher_tensor: (N, M) teacher tensor to initialize near
+            m_init: Target initial overlap with teacher (0.9 - 0.99)
+            S: Number of samples
+            device: Target device
+            dtype: Storage dtype (float32 or bfloat16)
+            
+        Returns:
+            Tensor of shape (B, S*N, M) initialized near teacher
+        """
+        B, SN, M_dim = target_shape
+        N = teacher_tensor.shape[0]
+        
+        # Broadcast: (N, M) -> (1, 1, N, M) -> (B, S, N, M) -> (B, S*N, M)
+        teacher_expanded = teacher_tensor.unsqueeze(0).unsqueeze(0).expand(B, S, -1, -1)
+        teacher_flat = teacher_expanded.reshape(B, SN, M_dim).to(device, dtype=dtype)
+        
+        # Generate noise with same shape
+        noise = torch.randn(target_shape, device=device, dtype=dtype)
+        
+        # Combine with variance preservation formula
+        coeff_signal = m_init
+        coeff_noise = math.sqrt(1 - m_init ** 2)
+        
+        return coeff_signal * teacher_flat + coeff_noise * noise
 
     def create_spreading_data(
         self,
@@ -1101,36 +1650,64 @@ class BiGAMPSpreading(AlgorithmBase):
         Returns:
             SpreadingDataParallel containing all data for parallel training
         """
-        N1, M = W_teacher.shape
-        _, N2 = X_teacher.shape
+        if getattr(self, 'allow_intra_connection', False):
+            # General Graph Mode
+            N1, M = W_teacher.shape
+            _, N2 = X_teacher.shape
 
-        # Create super-graph
-        supergraph = create_supergraph(
-            N1=N1,
-            N2=N2,
-            M=M,
-            alpha_values=alpha_values,
-            S=S,
-            base_seed=base_seed,
-            device=self.device,
-        )
+            supergraph = create_supergraph_general(
+                N1=N1,
+                N2=N2,
+                M=M,
+                alpha_values=alpha_values,
+                S=S,
+                base_seed=base_seed,
+                device=self.device,
+            )
 
-        # Generate F_super using selected distribution
-        F_super = generate_F_super(
-            supergraph=supergraph,
-            M=M,
-            base_seed=self.spreading_seed,
-            device=self.device,
-            f_distribution=self.f_distribution,
-        )
+            F_super = generate_F_super_general(
+                supergraph=supergraph,
+                M=M,
+                base_seed=self.spreading_seed,
+                device=self.device,
+                f_distribution=self.f_distribution,
+            )
 
-        # Compute Y_super
-        Y_super = compute_Y_super(
-            W_teacher=W_teacher,
-            X_teacher=X_teacher,
-            supergraph=supergraph,
-            F_super=F_super,
-        )
+            Y_super = compute_Y_super_general(
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                supergraph=supergraph,
+                F_super=F_super,
+            )
+        else:
+            # Original Bipartite Mode
+            N1, M = W_teacher.shape
+            _, N2 = X_teacher.shape
+
+            supergraph = create_supergraph(
+                N1=N1,
+                N2=N2,
+                M=M,
+                alpha_values=alpha_values,
+                S=S,
+                base_seed=base_seed,
+                device=self.device,
+            )
+
+            F_super = generate_F_super(
+                supergraph=supergraph,
+                M=M,
+                base_seed=self.spreading_seed,
+                device=self.device,
+                f_distribution=self.f_distribution,
+            )
+
+            Y_super = compute_Y_super(
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                supergraph=supergraph,
+                F_super=F_super,
+            )
 
         return SpreadingDataParallel(
             supergraph=supergraph,
@@ -1263,6 +1840,7 @@ class BiGAMPSpreading(AlgorithmBase):
         verbose: bool = False,
         step_callback=None,
         max_steps: Optional[int] = None,  # Allow override for step scanning
+        batch_alpha_values: Optional[List[float]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Train all samples in parallel using Disjoint Union with optimized flat tensors.
@@ -1278,6 +1856,8 @@ class BiGAMPSpreading(AlgorithmBase):
             batch_alpha_indices: Which alphas to train (None = all)
             verbose: Print progress
             step_callback: Optional callback(step, max_steps)
+            max_steps: Optional override
+            batch_alpha_values: Optional list of alpha values for debug recording
 
         Returns:
             W_students: (S, B, N1, M) where B = len(batch_alpha_indices) or A
@@ -1291,10 +1871,16 @@ class BiGAMPSpreading(AlgorithmBase):
         C_max = spreading_data.C_max
         SC = S * C_max
 
+        # Check for General Graph Mode
+        if getattr(self, 'allow_intra_connection', False):
+            return self._train_full_parallel_general(
+                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values
+            )
+
         # Check for Adaptive Damping
-        if hasattr(self.config.algorithm, 'adaptive_damping') and self.config.algorithm.adaptive_damping:
+        if hasattr(self.config.algorithm_params, 'adaptive_damping') and self.config.algorithm_params.adaptive_damping:
             return self._train_full_parallel_adaptive(
-                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps
+                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values
             )
 
 
@@ -1321,11 +1907,35 @@ class BiGAMPSpreading(AlgorithmBase):
         # Expand alpha mask: (B, C_max) -> (B, S*C_max)
         alpha_mask_exp = batch_alpha_mask.unsqueeze(1).expand(B, S, C_max).reshape(B, SC)
 
-        # ===== OPTIMIZATION 2: Initialize in FLAT format =====
-        # Phase 3: Use BF16 storage dtype for 2x memory reduction
-        # Shape: (B, S*N, M) instead of (S, B, N, M)
-        W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-        X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+        # ===== INITIALIZATION (Teacher-Assisted or Random) =====
+        init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
+        init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+
+        if init_mode == 'teacher':
+            # Teacher-Assisted Initialization (Warm Start for Hysteresis Analysis)
+            W_flat = self._initialize_near_teacher(
+                (B, S * N1, M),
+                spreading_data.W_teacher,  # (N1, M)
+                init_overlap,
+                S,
+                self.device,
+                self.storage_dtype
+            )
+            X_flat = self._initialize_near_teacher(
+                (B, S * N2, M),
+                spreading_data.X_teacher.T,  # (M, N2) -> (N2, M)
+                init_overlap,
+                S,
+                self.device,
+                self.storage_dtype
+            )
+            if verbose:
+                print(f"  [Init] Teacher-Assisted (m={init_overlap})")
+        else:
+            # Random Initialization (Cold Start - default)
+            W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
+            X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
 
@@ -1345,7 +1955,7 @@ class BiGAMPSpreading(AlgorithmBase):
             if self.use_compile and BiGAMPSpreading._compiled_step is not None:
                 torch.compiler.cudagraph_mark_step_begin()
             
-            W_flat, X_flat, W_var_flat, X_var_flat, prev_s = step_fn(
+            W_flat, X_flat, W_var_flat, X_var_flat, next_prev_s = step_fn(
                 W_flat=W_flat,
                 X_flat=X_flat,
                 W_var_flat=W_var_flat,
@@ -1364,6 +1974,13 @@ class BiGAMPSpreading(AlgorithmBase):
                 prev_s=prev_s,
             )
             
+            # --- ONSAGER CONTROL FIX (Non-Adaptive) ---
+            # Strictly respect config flag. If False, prev_s must be None.
+            if self.onsager_correction:
+                prev_s = next_prev_s
+            else:
+                prev_s = None
+            
             # CLONE STRATEGY: Break CUDA Graph address dependency
             # When using torch.compile with reduce-overhead mode, CUDA Graphs captures
             # input tensor memory addresses during recording. The iterative pattern
@@ -1376,6 +1993,8 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_flat = X_flat.clone()
                 W_var_flat = W_var_flat.clone()
                 X_var_flat = X_var_flat.clone()
+                if prev_s is not None:
+                    prev_s = prev_s.clone()
 
             # [Memory Calibration] Check actual usage early in the run
             if (step + 1) == 10 and torch.cuda.is_available():
@@ -1410,6 +2029,7 @@ class BiGAMPSpreading(AlgorithmBase):
         verbose: bool,
         step_callback,
         max_steps: Optional[int],
+        batch_alpha_values: Optional[List[float]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Adaptive Damping Training Loop with Backtracking.
@@ -1422,10 +2042,13 @@ class BiGAMPSpreading(AlgorithmBase):
         C_max = spreading_data.C_max
         SC = S * C_max
         
+        # Handle None batch_alpha_indices
+        if batch_alpha_indices is None:
+            batch_alpha_indices = list(range(A))
         B = len(batch_alpha_indices)
         
         # Determine params
-        params = self.config.algorithm
+        params = self.config.algorithm_params
         step_min = getattr(params, 'step_min', 0.05)
         step_max = getattr(params, 'step_max', 1.0)
         step_incr = getattr(params, 'step_incr', 1.1)
@@ -1433,7 +2056,9 @@ class BiGAMPSpreading(AlgorithmBase):
         max_bad = getattr(params, 'max_bad_steps', 10)
         
         # State: Current Damping
-        damping = self.damping  # Start with configured damping
+        # CRITICAL FIX: Damping must be per-alpha (B,) vector
+        # Otherwise one diverging alpha drags everyone down
+        damping = torch.full((B,), self.damping, device=self.device, dtype=self.storage_dtype)
         
         # Get masked data
         full_alpha_mask = spreading_data.supergraph.alpha_mask
@@ -1447,13 +2072,41 @@ class BiGAMPSpreading(AlgorithmBase):
         Y_flat = spreading_data.Y_super.reshape(SC)
         alpha_mask_exp = batch_alpha_mask.unsqueeze(1).expand(B, S, C_max).reshape(B, SC)
         
-        # Initialization
-        W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-        X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+        # ===== INITIALIZATION (Teacher-Assisted or Random) =====
+        init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
+        init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+
+        if init_mode == 'teacher':
+            # Teacher-Assisted Initialization (Warm Start for Hysteresis Analysis)
+            W_flat = self._initialize_near_teacher(
+                (B, S * N1, M),
+                spreading_data.W_teacher,
+                init_overlap,
+                S,
+                self.device,
+                self.storage_dtype
+            )
+            X_flat = self._initialize_near_teacher(
+                (B, S * N2, M),
+                spreading_data.X_teacher.T,
+                init_overlap,
+                S,
+                self.device,
+                self.storage_dtype
+            )
+            if verbose:
+                print(f"  [Init] Teacher-Assisted Adaptive (m={init_overlap})")
+        else:
+            # Random Initialization (Cold Start - default)
+            W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
+            X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
+
         
-        # "Safe" State (Last accepted)
+        # "Safe" State (Last accepted) - ONLY clone at initialization
+        # Subsequent saves will use reference swap to avoid memory explosion
         W_safe = W_flat.clone()
         X_safe = X_flat.clone()
         W_var_safe = W_var_flat.clone()
@@ -1463,176 +2116,198 @@ class BiGAMPSpreading(AlgorithmBase):
         prev_s = None
         current_val = -float('inf')
         
+        # Use compiled step function if available (like train_full_parallel L1337)
+        if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is not None:
+            step_fn = BiGAMPSpreading._compiled_step_adaptive
+        else:
+            step_fn = bigamp_step_disjoint_union_flat_adaptive
+        
         is_rademacher = (self.f_distribution == 'rademacher')
         steps = max_steps if max_steps is not None else self.max_steps
         
+        # Warm Restart Parameters
+        adaptive_restart = getattr(params, 'adaptive_restart', False)
+        restart_patience = getattr(params, 'restart_patience', 50)
+        restart_noise = getattr(params, 'restart_noise', 0.1)
+        acceptance_tolerance = getattr(params, 'acceptance_tolerance', 0.0)
+        stuck_counter = torch.zeros(B, dtype=torch.long, device=self.device)
+
+        # Debug Recording
+        damp_history = None
+        if batch_alpha_values is not None:
+             damp_history = torch.zeros(steps, B, dtype=torch.float32, device=self.device)
+
         for step in range(steps):
-             # 1. Run Step (Raw Updates) from Safe State?
-             # MATLAB: runs from current state. If fail, reverts.
-             # Here current state IS safe state unless we tentatively moved?
-             # Let's use standard logic:
-             # Try step from W_flat using damping.
-             
-             # Problem: Standard AMP computes Z at START of step.
-             # So Z corresponds to W_flat.
-             # We want to check Likelihood(Z).
-             # If Good -> Accept W_flat (which yielded Z), perform update to get NEXT W_flat.
-             # If Bad -> Reject.
-             
-             # Actually:
-             # step_fn computes Z(W_in) and returns W_out (Raw).
-             # We calculate Val(Z(W_in)).
-             # If Val improved vs Val_prev:
-             #    Accept step.
-             #    Safe = W_flat.
-             #    W_flat = Damping * W_out + (1-Damping) * Safe ??? 
-             #    No. Damping is applied to the UPDATE.
-             #    W_new = Safe + Damping * (W_out - Safe).
-             #    Update Damping (Increase).
-             # Else:
-             #    Reject.
-             #    Decrease Damping.
-             #    W_flat = Safe (Stay).
-             #    But we need to try again with updated damping?
-             #    Actually, if we stay at Safe, Step_fn will satisfy the same Z.
-             #    Simply applying damping to the PREVIOUS update vector?
-             
-             # SIMPLIFIED ROBUST LOGIC:
-             # 1. Calculate Raw Update from W_flat.
-             #    Get W_raw, Z_hat, V.
-             # 2. Check Cost(Z_hat, V).
-             # 3. Decision.
-             
-             W_raw, X_raw, W_var_raw, X_var_raw, s_vals, Z_hat, V = bigamp_step_disjoint_union_flat_adaptive(
-                 W_flat, X_flat, W_var_flat, X_var_flat,
-                 Y_flat, F_flat, i_offset, j_offset, alpha_mask_exp,
-                 S, N1, N2, self.noise_var, is_rademacher, prev_s
-             )
-             
-             new_val = compute_log_likelihood(Y_flat, Z_hat, V, self.noise_var)
-             
-             # Acceptance Logic
-             pass_step = False
-             if step == 0:
-                 pass_step = True
-             elif new_val > current_val:
-                 pass_step = True
-             else:
-                 # Check relative decrease?
-                 # If very small decrease, maybe allow?
-                 pass_step = False
-             
-             if pass_step:
-                 # ACCEPT
-                 current_val = new_val
-                 damping = min(damping * step_incr, step_max)
-                 
-                 # Apply Damping to move to next point
-                 # W_next = damp * W_raw + (1-damp) * W_flat
-                 W_flat = damping * W_raw + (1 - damping) * W_flat
-                 X_flat = damping * X_raw + (1 - damping) * X_flat
-                 W_var_flat = damping * W_var_raw + (1 - damping) * W_var_flat # Approx
-                 X_var_flat = damping * X_var_raw + (1 - damping) * X_var_flat
-                 
-                 # Save Safe State
-                 W_safe = W_flat.clone() # This is now the accepted point
-                 prev_s = s_vals # Update Onsager state
-                 
-             else:
-                 # REJECT
-                 damping = max(damping * step_decr, step_min)
-                 # Revert to SAFE state implies: W_flat was already Safe (since we ran from it).
-                 # But we want to try a smaller step?
-                 # Actually, if we just stay at W_safe and run again, we get SAME Raw update.
-                 # So we need to store W_raw_prev?
-                 # No, we can just re-run next iteration with W_flat (which is Safe).
-                 # And since damping changed, the *Next* candidate will be closer.
-                 # Wait. W_flat is INPUT to step.
-                 # If we Reject, we stay at W_flat.
-                 # Next iter: Run step from W_flat. Get SAME W_raw.
-                 # But Accept Logic will see SAME new_val.
-                 # So it will Reject again?
-                 # NO.
-                 # Code above: W_flat = damp * W_raw + ...
-                 # If we Accept, we MOVE W_flat.
-                 # If we Reject, we DON'T move W_flat.
-                 # So W_flat stays same.
-                 # But if W_flat stays same, new_val stays same.
-                 # If new_val < current_val (which is from PREVIOUS accepted step),
-                 # It will Infinite Loop rejecting.
-                 
-                 # FIX:
-                 # If Reject, we essentially need to "Backtrack" along the previous search direction?
-                 # Or does Adaptive AMP mean adaptive *Damping* of the *current* update?
-                 # Yes.
-                 # If the *current* update direction is bad...
-                 # Maybe we accepted a bad step previously?
-                 
-                 # Look at GAMPmatlab:
-                 # It adapts step size based on *Cost of Z*.
-                 # It keeps `xhat` (SAFE).
-                 # Try `xhat_new = xhat + step * (xhat_raw - xhat)`.
-                 # Compute Z(xhat_new). Cost(Z).
-                 # If fail, reduce step, retry.
-                 
-                 # This requires evaluating Cost of the CANDIDATE.
-                 # My Step 1 computes Cost of INPUT.
-                 # So if verification fails, it means the *Previous* step took us to a bad place.
-                 # So we must REVERT to *Previous Safe*.
-                 # But we overwrote it.
-                 # So we need `W_safe` (Previous) and `W_cand` (Current).
-                 
-                 # Loop structure:
-                 # 1. We are at W_cand.
-                 # 2. Compute Val(W_cand).
-                 # 3. If Bad vs Val(W_safe):
-                 #      Revert W_cand = W_safe.
-                 #      Decrease Damping.
-                 #      # But how to apply new damping? We need the *Delta* from Safe to Raw?
-                 #      # We lost Raw.
-                 #      # So we need to re-compute Raw from W_safe?
-                 #      # Yes.
-                 #      W_flat = W_safe.
-                 #      # Continue loop. Next iter will re-compute Raw from Safe.
-                 #      # The Result will be W_raw (same).
-                 #      # Then we accept? No.
-                 #      # The logic `W_flat = damp * W_raw ...` applies damping.
-                 #      # So next `W_flat` will be closer to Safe.
-                 #      # So Val might improve?
-                 #      # Yes, if convex.
-                 
-                 # So:
-                 # If Reject:
-                 #   W_flat = W_safe
-                 #   Decrease Damp.
-                 #   prev_s = prev_s_safe (Need to store this too)
-                 
-                 # BUT, for the VERY FIRST STEP.
-                 # W_flat is init. Val is Val(Init).
-                 # If Val(Init) is bad?
-                 # We accept init always as baseline.
-             
-             if not pass_step:
-                 # Backtrack
-                 W_flat = W_safe.clone()
-                 X_flat = X_safe.clone()
-                 W_var_flat = W_var_safe.clone()
-                 X_var_flat = X_var_safe.clone()
-                 # prev_s? 
-                 # If we reverted W, we should revert s?
-                 # Generally yes.
-                 # Need s_safe.
-                 if s_safe is not None:
-                     prev_s = s_safe.clone()
-             else:
-                 # Update Safe s
-                 s_safe = s_vals.clone() if s_vals is not None else None
-                 
-             if verbose and step % 100 == 0:
-                 print(f"DEBUG: Step {step} | Loss {-new_val:.4e} | Damp {damping:.3f} | Pass {pass_step}")
-                 
-             if step_callback:
-                 step_callback(step + 1, steps)
+            # CUDA Graph compatibility mark (like train_full_parallel L1345-1346)
+            if self.use_compile and BiGAMPSpreading._compiled_step is not None:
+                torch.compiler.cudagraph_mark_step_begin()
+            
+            # Run step function to get raw updates
+            W_raw, X_raw, W_var_raw, X_var_raw, s_vals, Z_hat, V = step_fn(
+                W_flat, X_flat, W_var_flat, X_var_flat,
+                Y_flat, F_flat, i_offset, j_offset, alpha_mask_exp,
+                S, N1, N2, self.noise_var, is_rademacher, prev_s
+            )
+            
+            new_val = compute_log_likelihood(Y_flat, Z_hat, V, self.noise_var)
+            
+            # Acceptance Logic (Vectorized)
+            # pass_mask: (B,) boolean tensor
+            if step == 0:
+                pass_mask = torch.ones(B, dtype=torch.bool, device=self.device)
+                current_val = new_val  # Initialize current_val
+            else:
+                # Accept if Likelihood improved or within tolerance
+                # Tolerance allows "Metropolis-like" acceptance of slightly worse states (for Onsager)
+                pass_mask = new_val >= (current_val - acceptance_tolerance)
+            
+            # Broadcast masks for shape (B, S*N, M)
+            # W_flat: (B, S*N, M) -> mask needs (B, 1, 1)
+            pass_mask_3d = pass_mask.view(B, 1, 1)
+            pass_mask_2d = pass_mask.view(B, 1) # For prev_s (B, SC)
+            
+            # --- 1. Update Safe State (Commit Valid States) ---
+            # If accepted: W_safe = W_flat (current position becomes the new safe base)
+            # If rejected: W_safe remains unchanged (keeps the old safe base)
+            # Note: We must update W_safe BEFORE changing W_flat
+            
+            # Initialize safely if first step
+            if s_safe is None:
+                 s_safe = torch.zeros_like(s_vals)
+            
+            W_safe = torch.where(pass_mask_3d, W_flat, W_safe)
+            X_safe = torch.where(pass_mask_3d, X_flat, X_safe)
+            W_var_safe = torch.where(pass_mask_3d, W_var_flat, W_var_safe)
+            X_var_safe = torch.where(pass_mask_3d, X_var_flat, X_var_safe)
+            if prev_s is not None and s_safe is not None:
+                s_safe = torch.where(pass_mask_2d, prev_s, s_safe)
+            
+            # --- 2. Update Likelihood & Damping ---
+            current_val = torch.where(pass_mask, new_val, current_val)
+            
+            damping = torch.where(pass_mask, 
+                                  torch.clamp(damping * step_incr, max=step_max),
+                                  torch.clamp(damping * step_decr, min=step_min))
+            
+            # --- 3. Compute Next State (Main Update) ---
+            # If Accepted: New = Damping * Raw + (1-Damping) * Old
+            # If Rejected: New = Safe (Backtrack)
+            
+            d_view = damping.view(B, 1, 1)
+            
+            # Candidate if accepted (Damped Update)
+            W_accepted = d_view * W_raw + (1 - d_view) * W_flat
+            X_accepted = d_view * X_raw + (1 - d_view) * X_flat
+            W_var_accepted = d_view * W_var_raw + (1 - d_view) * W_var_flat
+            X_var_accepted = d_view * X_var_raw + (1 - d_view) * X_var_flat
+            
+            # Candidate if rejected (Backtrack to Safe)
+            # Since we just updated W_safe to be W_flat (on accept) or kept old W_safe (on reject),
+            # W_safe NOW contains exactly what we want to backtrack to/start from.
+            # Wait: If rejected, W_safe is the *old* point. We want to reset W_flat to that.
+            # If accepted, W_safe is the *current* point. But we want W_flat to move forward.
+            
+            W_flat = torch.where(pass_mask_3d, W_accepted, W_safe)
+            X_flat = torch.where(pass_mask_3d, X_accepted, X_safe)
+            W_var_flat = torch.where(pass_mask_3d, W_var_accepted, W_var_safe)
+            X_var_flat = torch.where(pass_mask_3d, X_var_accepted, X_var_safe)
+            
+            # Onsager Scaling (Vectorized)
+            # prev_s logic:
+            # If accepted: prev_s = s_vals * damping
+            # If rejected: prev_s = s_safe (Backtrack)
+            
+            # --- ONSAGER CONTROL FIX (Adaptive) ---
+            if self.onsager_correction:
+                if prev_s is None:
+                     prev_s = torch.zeros_like(s_vals)
+                     
+                prev_s_accepted = s_vals * damping.view(B, 1)
+                prev_s_rejected = s_safe
+                prev_s = torch.where(pass_mask_2d, prev_s_accepted, prev_s_rejected)
+            else:
+                prev_s = None
+
+
+            # --- WARM RESTART LOGIC (Optimized) ---
+            restart_msg = ""
+            if adaptive_restart:
+                # 1. Update counters
+                is_stuck = (damping <= (step_min + 1e-6))
+                
+                # Masked update for stuck_counter (avoiding in-place boolean indexing if possible, but boolean mask index is fast)
+                # stuck_counter[is_stuck] += 1
+                # stuck_counter[~is_stuck] = 0
+                stuck_counter = torch.where(is_stuck, stuck_counter + 1, torch.zeros_like(stuck_counter))
+                
+                # 2. Identify candidates
+                restart_mask = (stuck_counter > restart_patience)
+                # Avoid nonzero() sync unless necessary for logging or specific sparse ops
+                # Here we can just use torch.where for the update
+                
+                # 3. Apply Warm Restart (Unconditional Masked Update - No Sync)
+                
+                # Reset damping
+                damping = torch.where(restart_mask, torch.tensor(self.damping, device=self.device), damping)
+                stuck_counter = torch.where(restart_mask, torch.zeros_like(stuck_counter), stuck_counter)
+                current_val = torch.where(restart_mask, torch.tensor(-float('inf'), device=self.device), current_val)
+                
+                # Perturb State
+                noise_W = torch.randn_like(W_flat) * restart_noise
+                noise_X = torch.randn_like(X_flat) * restart_noise
+                
+                # Apply only where restart_mask
+                restart_mask_3d = restart_mask.view(B, 1, 1)
+                W_flat = torch.where(restart_mask_3d, W_flat + noise_W, W_flat)
+                X_flat = torch.where(restart_mask_3d, X_flat + noise_X, X_flat)
+                
+                # Also update safe state (commit the jump)
+                W_safe = torch.where(restart_mask_3d, W_flat, W_safe)
+                X_safe = torch.where(restart_mask_3d, X_flat, X_safe)
+                W_var_safe = torch.where(restart_mask_3d, W_var_flat, W_var_safe)
+                X_var_safe = torch.where(restart_mask_3d, X_var_flat, X_var_safe)
+
+            # Debug / Display
+            if step % 500 == 0:
+                if adaptive_restart:
+                     n_rest = restart_mask.float().sum().item()
+                     if n_rest > 0:
+                         restart_msg = f" [Restarts: {int(n_rest)}]"
+
+                mean_damp = damping.mean().item()
+                min_damp = damping.min().item()
+                pass_rate = pass_mask.float().mean().item() * 100
+                import sys
+                sys.stdout.write(f"\r[Adaptive] Damping: {mean_damp:.3f} (min {min_damp:.3f}) | Pass: {pass_rate:.0f}% | Step: {step}{restart_msg}   ")
+                sys.stdout.flush()
+                
+            if step < 20:            
+                 pass # print(f"DEBUG: Step {step}: damp_mean={damping.mean().item():.3f}, pass_cnt={pass_mask.sum().item()}/{B}")
+            
+            # [UI FIX] Restore Progress Bar Callback
+            if step_callback:
+                step_callback(step + 1, steps)
+
+            # Record Damping History (GPU-side copy)
+            if damp_history is not None:
+                damp_history[step] = damping.detach().float()
+        
+        # Save Debug Data if recorded
+        if damp_history is not None:
+            debug_path = Path("smf/results/debug_damping.pt")
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                'alpha_values': batch_alpha_values,
+                'steps': torch.arange(steps),
+                'damping_history': damp_history.cpu(),
+                'timestamp': datetime.datetime.now().isoformat()
+            }, debug_path)
+            # print(f"DEBUG: Saved damping history to {debug_path}")
+
+        # Clear the damping display line after loop completes
+        import sys
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        sys.stdout.flush()
 
         W_hat = W_flat.reshape(B, S, N1, M).permute(1, 0, 2, 3)
         X_hat = X_flat.reshape(B, S, N2, M).permute(1, 0, 3, 2)
@@ -1728,6 +2403,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 verbose=False,
                 step_callback=step_callback,
                 max_steps=max_steps,
+                batch_alpha_values=batch_alpha_list,
             )
             
             # free memory
@@ -1761,6 +2437,186 @@ class BiGAMPSpreading(AlgorithmBase):
             "Use train_all_samples() or run_spreading_parallel() instead."
         )
 
+
+    def _train_full_parallel_general(
+        self,
+        spreading_data: SpreadingDataParallel,
+        batch_alpha_indices: Optional[List[int]] = None,
+        verbose: bool = False,
+        step_callback=None,
+        max_steps: Optional[int] = None,
+        batch_alpha_values: Optional[List[float]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Unified Vector implementation for general graphs."""
+        S = spreading_data.S
+        A = spreading_data.A
+        N1 = spreading_data.supergraph.N1
+        N2 = spreading_data.supergraph.N2
+        M = spreading_data.M
+        # Use C_max from general graph
+        C_max = spreading_data.supergraph.C_max
+        SC = S * C_max
+        N_total = N1 + N2
+
+        if batch_alpha_indices is None:
+            batch_alpha_indices = list(range(A))
+        B = len(batch_alpha_indices)
+
+        # DEBUG: Check Edge Distribution
+        if verbose: # Print stats only if verbose requested
+            s_idx_debug = 0
+            if hasattr(spreading_data.supergraph, 'edge_type'):
+                edge_types = spreading_data.supergraph.edge_type[s_idx_debug]
+                # Filter valid edges (mask is per alpha, but edge_type is for max alpha)
+                # Just show raw distribution of pre-generated edges
+                n_ww = (edge_types == 0).sum().item()
+                n_wx = (edge_types == 1).sum().item()
+                n_xx = (edge_types == 2).sum().item()
+                total = len(edge_types)
+                
+                print(f"\n[General Mode Statistics] Edge Distribution (Sample 0, C_max={total}):")
+                print(f"  W-W (Type 0): {n_ww} ({n_ww/total*100:.1f}%)")
+                print(f"  W-X (Type 1): {n_wx} ({n_wx/total*100:.1f}%)")
+                print(f"  X-X (Type 2): {n_xx} ({n_xx/total*100:.1f}%)")
+                if n_ww == 0 and n_xx == 0:
+                    print("  [WARNING] No intra-connections found! Graph is effectively bipartite.")
+            else:
+                print("\n[General Mode Statistics] edge_type not found in supergraph!")
+
+        # Get mask
+        full_alpha_mask = spreading_data.supergraph.alpha_mask
+        batch_alpha_mask = full_alpha_mask[batch_alpha_indices]
+
+        # General Offset Calculation
+        # Use unified indices from general supergraph
+        i_offset, j_offset = compute_offset_indices(
+            spreading_data.supergraph.a_idx,
+            spreading_data.supergraph.b_idx,
+            N_total, N_total # Use N_total for both
+        )
+
+        # Flat data
+        F_flat = spreading_data.F_super.reshape(SC, M)
+        Y_flat = spreading_data.Y_super.reshape(SC)
+        alpha_mask_exp = batch_alpha_mask.unsqueeze(1).expand(B, S, C_max).reshape(B, SC)
+
+        # === PHYSICAL SORTING for GPU Memory Coalescence ===
+        # Sort edges by source node index to improve L2 cache hit rate
+        # This transforms random memory access into sequential access
+        sort_idx = torch.argsort(i_offset)
+        i_offset = i_offset[sort_idx]
+        j_offset = j_offset[sort_idx]
+        F_flat = F_flat[sort_idx]
+        Y_flat = Y_flat[sort_idx]
+        alpha_mask_exp = alpha_mask_exp[:, sort_idx]
+        if verbose:
+            print("  [Optimization] Edges sorted for coalesced memory access")
+
+        # ===== INITIALIZATION (Teacher-Assisted or Random) =====
+        init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
+        init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+
+        if init_mode == 'teacher':
+            # Teacher-Assisted Initialization for General Graph
+            # Construct unified teacher vector: V = [W; X^T]
+            W_teacher = spreading_data.W_teacher  # (N1, M)
+            X_teacher_T = spreading_data.X_teacher.T  # (M, N2) -> (N2, M)
+            V_teacher = torch.cat([W_teacher, X_teacher_T], dim=0)  # (N_total, M)
+            
+            V_flat = self._initialize_near_teacher(
+                (B, S * N_total, M),
+                V_teacher,
+                init_overlap,
+                S,
+                self.device,
+                self.storage_dtype
+            )
+            if verbose:
+                print(f"  [Init] Teacher-Assisted General (m={init_overlap})")
+        else:
+            # Random Initialization (Cold Start - default)
+            V_flat = torch.randn(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * 0.1
+
+        V_var_flat = torch.ones(B, S * N_total, M, device=self.device, dtype=self.storage_dtype)
+
+        prev_s = None
+        is_rademacher = (self.f_distribution == 'rademacher')
+
+        steps = max_steps if max_steps is not None else self.max_steps
+        
+        # Select step function based on chunk_size
+        # chunk_size > 0: Use new chunked version (memory optimized)
+        # chunk_size = 0: Use legacy version (for compatibility)
+        use_chunked = (self.chunk_size > 0)
+        
+        if use_chunked:
+            # NEW: Chunked streaming implementation
+            step_fn = bigamp_step_general_chunked
+            # No need for class-level caching - chunked version handles its own compilation
+            if verbose:
+                print(f"  [General Mode] Using chunked processing (chunk_size={self.chunk_size})")
+        else:
+            # LEGACY: Original implementation
+            step_fn = bigamp_step_disjoint_union_flat_general
+            if self.use_compile:
+                if BiGAMPSpreading._compiled_step_general is None:
+                    try:
+                        torch._dynamo.reset()
+                        BiGAMPSpreading._compiled_step_general = torch.compile(
+                            bigamp_step_disjoint_union_flat_general, 
+                            mode="default"
+                        )
+                    except Exception:
+                        BiGAMPSpreading._compiled_step_general = bigamp_step_disjoint_union_flat_general
+                step_fn = BiGAMPSpreading._compiled_step_general
+
+        # Loop
+        for step in range(steps):
+            if use_chunked:
+                # Chunked version: pass chunk_size and use_compile
+                V_flat, V_var_flat, s_values, _, _ = step_fn(
+                    V_flat, V_var_flat, Y_flat, F_flat, i_offset, j_offset,
+                    alpha_mask_exp, S, N_total, self.damping, self.noise_var,
+                    is_rademacher, prev_s, self.chunk_size, self.use_compile
+                )
+            else:
+                # Legacy version
+                if self.use_compile and BiGAMPSpreading._compiled_step_general is not None:
+                    torch.compiler.cudagraph_mark_step_begin()
+                
+                V_flat, V_var_flat, s_values, _, _ = step_fn(
+                    V_flat, V_var_flat, Y_flat, F_flat, i_offset, j_offset,
+                    alpha_mask_exp, S, N_total, self.damping, self.noise_var,
+                    is_rademacher, prev_s
+                )
+
+            # Onsager
+            if self.onsager_correction:
+                prev_s = s_values
+            else:
+                prev_s = None
+
+            if verbose and (step + 1) % 100 == 0:
+                print(f"  Step {step + 1}/{steps}")
+            if step_callback:
+                step_callback(step + 1, steps)
+
+        # Unpack V to W and X
+        # V: (B, S*N_total, M)
+        # Reshape to (B, S, N_total, M)
+        V_reshaped = V_flat.view(B, S, N_total, M)
+        
+        # Split
+        W_out = V_reshaped[:, :, :N1, :] # (B, S, N1, M)
+        X_out = V_reshaped[:, :, N1:, :] # (B, S, N2, M)
+        
+        # Original logic returns (B, S, N1, M).permute(1, 0, 2, 3) -> (S, B, N1, M)
+        W_hat = W_out.permute(1, 0, 2, 3)  # (S, B, N1, M)
+        
+        # X_out is (B, S, N2, M), need to return (S, B, M, N2) for API compatibility
+        X_hat = X_out.permute(1, 0, 3, 2)  # (S, B, M, N2)
+        
+        return W_hat, X_hat
 
 # ============================================================================
 # Convenience Functions
