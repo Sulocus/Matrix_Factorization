@@ -66,3 +66,26 @@ smf/.checkpoint.pt
 
 # Legacy/archive directories (local only, not synced)
 _legacy/
+
+# ========================================
+# Cleanup additions (2026-01-19)
+# ========================================
+
+# Temporary files
+*.log
+*_results.json
+__pycache__/
+.pytest_cache/
+
+# Results (large files, regenerate as needed)
+MF/Replica_results/
+
+# IDE/Editor
+.idea/
+*.swp
+*.swo
+
+# Python
+*.egg-info/
+dist/
+build/

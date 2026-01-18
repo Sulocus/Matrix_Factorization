@@ -1,6 +1,0 @@
-#!/bin/bash
-# SMF CLI Wrapper
-# 使用方法: ./run conf | ./run config.yaml | ./run --help
-
-cd "$(dirname "$0")"
-python smf/cli.py "$@"
