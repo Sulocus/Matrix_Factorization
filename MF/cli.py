@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-SMF Experiment CLI - 简洁版
+MF Experiment CLI - 简洁版
 
 使用方法:
     # 使用 YAML 配置
-    python smf/cli.py config.yaml
+    python MF/cli.py config.yaml
     
     # 快速运行 (默认参数)
-    python smf/cli.py --quick
+    python MF/cli.py --quick
     
     # 指定参数
-    python smf/cli.py --N 200 --M 50 --steps 2000 --algorithm bigamp
+    python MF/cli.py --N 200 --M 50 --steps 2000 --algorithm bigamp
     
     # 从 checkpoint 恢复中断的实验
-    smf resume [output_dir]
+    mf resume [output_dir]
 """
 
 import argparse
@@ -249,7 +249,7 @@ def build_config(args) -> ExperimentConfig:
 
 def handle_resume(resume_dir: str = None):
     """
-    处理 smf resume 命令，从 checkpoint 恢复中断的实验。
+    处理 mf resume 命令，从 checkpoint 恢复中断的实验。
     使用 checkpoint 中保存的配置继续运行。
     """
     import yaml
@@ -257,7 +257,7 @@ def handle_resume(resume_dir: str = None):
     
     print()
     print("=" * 60)
-    print("🔄 SMF Resume - 从 Checkpoint 恢复")
+    print("🔄 MF Resume - 从 Checkpoint 恢复")
     print("=" * 60)
     
     # 加载 checkpoint (固定路径 smf/.checkpoint.pt)
@@ -336,7 +336,7 @@ def handle_resume(resume_dir: str = None):
     )
     
     # 保存结果 - 使用恢复的输出选项
-    output_dir = Path(f"smf/Replica_results/alpha_scan/{config.experiment_name}")
+    output_dir = Path(f"MF/Replica_results/alpha_scan/{config.experiment_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
     result.save(
         output_dir,
@@ -357,12 +357,12 @@ def handle_resume(resume_dir: str = None):
 
 
 def main():
-    # 特殊处理: smf resume 子命令 (在argparse之前)
+    # 特殊处理: mf resume 子命令 (在argparse之前)
     if len(sys.argv) >= 2 and sys.argv[1] == 'resume':
         handle_resume(sys.argv[2] if len(sys.argv) > 2 else None)
         return
     
-    # 特殊处理: smf conf 子命令 (在argparse之前)
+    # 特殊处理: mf conf 子命令 (在argparse之前)
     if len(sys.argv) >= 2 and sys.argv[1] == 'conf':
         import subprocess
         import shutil
@@ -384,12 +384,12 @@ def main():
         return
     
     parser = argparse.ArgumentParser(
-        description='SMF Experiment CLI\n\n用法:\n  smf          运行实验 (使用 smf/config.yaml)\n  smf conf     编辑配置文件',
+        description='MF Experiment CLI\n\n用法:\n  mf          运行实验 (使用 MF/config.yaml)\n  mf conf     编辑配置文件',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # 配置文件
-    parser.add_argument('config', nargs='?', help='YAML 配置文件 (默认: smf/config.yaml)')
+    parser.add_argument('config', nargs='?', help='YAML 配置文件 (默认: MF/config.yaml)')
     parser.add_argument('--quick', action='store_true', help='快速运行 (默认参数)')
     parser.add_argument('-c', '--conf', action='store_true', help='编辑配置文件')
     
@@ -407,7 +407,7 @@ def main():
     parser.add_argument('--damping', type=float, default=0.5)
     parser.add_argument('--f-dist', choices=['rademacher', 'gaussian'], default='rademacher')
     parser.add_argument('--no-compile', action='store_true')
-    parser.add_argument('--output-dir', default='smf/Replica_results')
+    parser.add_argument('--output-dir', default='MF/Replica_results')
     
     args = parser.parse_args()
     
@@ -428,7 +428,7 @@ def main():
         config_path = Path(args.config)
         if not config_path.exists():
             print(f"❌ Error: Config file not found: {args.config}")
-            print(f"   Tip: Use full path like 'smf/config_template.yaml'")
+            print(f"   Tip: Use full path like 'MF/config_template.yaml'")
             sys.exit(1)
         print(f"📄 Loading: {args.config}")
         config, output_options, raw_yaml = load_yaml_config(config_path)

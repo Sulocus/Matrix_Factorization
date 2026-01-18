@@ -32,14 +32,14 @@ pytest tests/                           # 运行所有测试
 pytest tests/test_file.py -v            # 运行单个测试，详细输出
 
 # SMF CLI
-smf                # 交互模式（自然语言配置）
-smf run            # 实验向导
-smf run --bg       # 后台运行
-smf resume         # 检查点恢复
-smf log            # 查看日志
-smf log -f         # 实时跟踪日志
-smf vis            # 结果浏览器
-smf test           # 快速测试
+mf                # 交互模式（自然语言配置）
+mf run            # 实验向导
+mf run --bg       # 后台运行
+mf resume         # 检查点恢复
+mf log            # 查看日志
+mf log -f         # 实时跟踪日志
+mf vis            # 结果浏览器
+mf test           # 快速测试
 
 # 生产训练 (Wang/) - 独立程序，不依赖 smf
 python Wang/bigamp/train.py           # BiG-AMP（推荐）
