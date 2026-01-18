@@ -540,7 +540,7 @@ class ExperimentRunner:
                 
             except MemoryAbortException as e:
                 # OOM batch recovery: save checkpoint and exit gracefully
-                # This is the SAFEST approach - clean process restart via 'smf resume'
+                # This is the SAFEST approach - clean process restart via 'mf resume'
                 # ensures all torch.compile caches are properly cleared
                 logger.warning(f"Batch {batch_idx} aborted due to OOM: {e}")
                 

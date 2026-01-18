@@ -2293,7 +2293,7 @@ class BiGAMPSpreading(AlgorithmBase):
         
         # Save Debug Data if recorded
         if damp_history is not None:
-            debug_path = Path("smf/results/debug_damping.pt")
+            debug_path = Path("MF/results/debug_damping.pt")
             debug_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
                 'alpha_values': batch_alpha_values,

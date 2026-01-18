@@ -395,7 +395,7 @@ class OOMRecoveryHandler:
                 raise RuntimeError(
                     f"OOM recovery failed after {self.max_retries} retries. "
                     f"Peak usage: {event.usage_ratio:.1%}. "
-                    f"Consider reducing problem size or using 'smf resume' to continue."
+                    f"Consider reducing problem size or using 'mf resume' to continue."
                 )
     
     def reset(self) -> None:

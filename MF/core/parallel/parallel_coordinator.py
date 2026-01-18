@@ -197,7 +197,7 @@ class ParallelCoordinator:
                     f"    1. Reduce matrix size (N1, N2, or M)\n"
                     f"    2. Use BF16 precision (halves memory usage)\n"
                     f"    3. Use a GPU with more VRAM\n"
-                    f"    4. Try 'smf resume' after freeing GPU memory"
+                    f"    4. Try 'mf resume' after freeing GPU memory"
                 )
                 logger.error(error_msg)
                 raise MemoryError(error_msg)

@@ -1160,10 +1160,10 @@ def run_in_background(config: Config, log_file: str = None) -> str:
 
     if log_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = f"smf_run_{timestamp}.log"
+        log_file = f"mf_run_{timestamp}.log"
 
     # Save config to temp file
-    config_file = f"/tmp/smf_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    config_file = f"/tmp/mf_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     config.to_json(Path(config_file))
 
     # Build nohup command

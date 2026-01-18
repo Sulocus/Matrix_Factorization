@@ -260,7 +260,7 @@ def handle_resume(resume_dir: str = None):
     print("🔄 MF Resume - 从 Checkpoint 恢复")
     print("=" * 60)
     
-    # 加载 checkpoint (固定路径 smf/.checkpoint.pt)
+    # 加载 checkpoint (固定路径 MF/.checkpoint.pt)
     ckpt_mgr = CheckpointManager()
     ckpt_data = ckpt_mgr.load()
     
@@ -268,7 +268,7 @@ def handle_resume(resume_dir: str = None):
         print("❌ 未找到可恢复的 checkpoint")
         print()
         print("提示:")
-        print("  - checkpoint 位置: smf/.checkpoint.pt")
+        print("  - checkpoint 位置: MF/.checkpoint.pt")
         print("  - 确保之前的实验因中断而保存了 checkpoint")
         return
     
@@ -297,7 +297,7 @@ def handle_resume(resume_dir: str = None):
         output_options = ckpt_data.output_options
         print("   配置来源: 旧版 checkpoint")
     
-    print("📂 找到 checkpoint: smf/.checkpoint.pt")
+    print("📂 找到 checkpoint: MF/.checkpoint.pt")
     print(f"   已完成 alpha: {len(completed_alphas)}")
     if completed_alphas:
         print(f"   Alpha 范围: {min(completed_alphas):.2f} - {max(completed_alphas):.2f}")

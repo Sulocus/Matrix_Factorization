@@ -3,7 +3,7 @@ Preset manager for saving and loading experiment configurations.
 
 Presets are stored as YAML files in:
 - Built-in: smf/presets/builtin/
-- User: ~/.smf/presets/
+- User: ~/.mf/presets/
 
 User presets take precedence over built-in presets.
 """
@@ -15,7 +15,7 @@ import yaml
 
 # Directory paths
 BUILTIN_DIR = Path(__file__).parent / "builtin"
-USER_DIR = Path.home() / ".smf" / "presets"
+USER_DIR = Path.home() / ".mf" / "presets"
 
 
 class PresetManager:
