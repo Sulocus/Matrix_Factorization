@@ -630,6 +630,7 @@ class TwoSegmentNorm(plt.Normalize):
         self.color_breakpoint = color_breakpoint
     
     def __call__(self, value, clip=None):
+        _ = clip  # Unused but required by parent class signature
         # Normalize to 0-1 first
         x = np.asarray(value)
         result = np.zeros_like(x, dtype=float)
@@ -816,7 +817,7 @@ def create_gif(
             append_images=images[1:],
             optimize=True,
             duration=duration * 1000,
-            loop=0
+            loop=loop
         )
         return output_path
     except Exception as e:

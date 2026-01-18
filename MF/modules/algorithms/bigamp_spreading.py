@@ -2423,8 +2423,6 @@ class BiGAMPSpreading(AlgorithmBase):
     def train_single_alpha(
         self,
         alpha: float,
-        teacher_data,
-        graph_data,
     ):
         """
         Required by AlgorithmBase but not used in parallel implementation.

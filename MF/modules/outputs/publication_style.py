@@ -470,7 +470,6 @@ def auto_legend(
 def add_panel_label(
     ax: Axes,
     label: str,
-    loc: str = 'upper left',
     fontsize: Optional[int] = None,
     fontweight: str = 'bold',
     offset: Tuple[float, float] = (0.02, 0.98),

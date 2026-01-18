@@ -247,7 +247,7 @@ def build_config(args) -> ExperimentConfig:
     )
 
 
-def handle_resume(resume_dir: str = None):
+def handle_resume():
     """
     处理 mf resume 命令，从 checkpoint 恢复中断的实验。
     使用 checkpoint 中保存的配置继续运行。
