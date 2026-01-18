@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
-from smf.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, SpreadingConfig
-from smf.runner import run_experiment
+from MF.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, SpreadingConfig
+from MF.runner import run_experiment
 
 
 def create_config(N: int, M: int) -> Config:

@@ -361,7 +361,7 @@ TEST_CASES = [
 
 def run_llm_phase(query: str) -> Tuple[bool, Dict, List, str, float]:
     """Run LLM parsing phase."""
-    from smf.core.llm_advisor import analyze_user_request
+    from MF.core.llm_advisor import analyze_user_request
 
     start = time.time()
     try:
@@ -382,7 +382,7 @@ def run_llm_phase(query: str) -> Tuple[bool, Dict, List, str, float]:
 
 def validate_config(config: Dict, run_override: Dict) -> Tuple[bool, Dict, List[str]]:
     """Validate and prepare config for running."""
-    from smf.modules.registry import get_algorithm, get_graph, get_teacher
+    from MF.modules.registry import get_algorithm, get_graph, get_teacher
 
     errors = []
 
@@ -429,8 +429,8 @@ def validate_config(config: Dict, run_override: Dict) -> Tuple[bool, Dict, List[
 
 def run_experiment_phase(flat_config: Dict) -> Tuple[bool, float, List[str]]:
     """Actually run a small experiment."""
-    from smf.runner import run_experiment
-    from smf.core.config import Config
+    from MF.runner import run_experiment
+    from MF.core.config import Config
 
     errors = []
     start = time.time()

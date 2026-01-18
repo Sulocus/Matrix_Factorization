@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-from smf.core.config import Config
-from smf.core.runner import run_experiment
+from MF.core.config import Config
+from MF.core.runner import run_experiment
 
 def run_scan(teacher_type: str, graph_type: str, output_prefix: str):
     """Run a full alpha scan and save results."""

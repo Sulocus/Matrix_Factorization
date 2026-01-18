@@ -6,8 +6,8 @@ import torch
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
-from smf.core.config import Config
-from smf.core.runner import run_experiment
+from MF.core.config import Config
+from MF.core.runner import run_experiment
 
 def main():
     cfg = Config()

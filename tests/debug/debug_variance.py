@@ -7,8 +7,8 @@ sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
 import torch
 
-from smf.modules.graphs.supergraph import create_supergraph
-from smf.modules.algorithms.bigamp_spreading_parallel import (
+from MF.modules.graphs.supergraph import create_supergraph
+from MF.modules.algorithms.bigamp_spreading_parallel import (
     generate_F_super, compute_Y_super, forward_pass_parallel,
     compute_variance_parallel
 )

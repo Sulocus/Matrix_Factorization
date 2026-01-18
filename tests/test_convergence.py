@@ -6,13 +6,13 @@ import torch
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
-from smf.core.config import Config
-from smf.modules.teachers import TeacherGenerator, SpreadingDataParallel
-from smf.modules.graphs.supergraph import create_supergraph
-from smf.modules.algorithms.bigamp_spreading_parallel import (
+from MF.core.config import Config
+from MF.modules.teachers import TeacherGenerator, SpreadingDataParallel
+from MF.modules.graphs.supergraph import create_supergraph
+from MF.modules.algorithms.bigamp_spreading_parallel import (
     generate_F_super, compute_Y_super, BiGAMPSpreadingParallel
 )
-from smf.modules.metrics.spreading import compute_all_metrics_spreading_parallel
+from MF.modules.metrics.spreading import compute_all_metrics_spreading_parallel
 
 def main():
     cfg = Config()

@@ -18,7 +18,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from smf.modules.teachers.random_spreading import (
+from MF.modules.teachers.random_spreading import (
     SpreadingData,
     generate_spreading_coefficients,
     generate_spreading_coefficients_per_edge,
@@ -468,7 +468,7 @@ class TestSpreadingData:
 # Test 6: BiG-AMP Message Passing Correctness
 # ============================================================================
 
-from smf.modules.algorithms.bigamp_spreading import (
+from MF.modules.algorithms.bigamp_spreading import (
     _scatter_add_2d,
     _bigamp_spreading_step_single,
 )
@@ -777,7 +777,7 @@ class TestBiGAMPSpreadingIntegration:
 # Test 7: Q_Y Evaluation Consistency
 # ============================================================================
 
-from smf.modules.metrics.spreading import (
+from MF.modules.metrics.spreading import (
     compute_qy_spreading,
     compute_mse_spreading,
     compute_all_metrics_spreading,

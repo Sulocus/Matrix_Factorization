@@ -16,8 +16,8 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-from smf.core.config import Config
-from smf.core.runner import run_experiment
+from MF.core.config import Config
+from MF.core.runner import run_experiment
 
 def main():
     # Configuration

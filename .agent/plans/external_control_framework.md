@@ -126,7 +126,7 @@ result_1000 = algorithm.run_single(data, max_steps=1000,
 ## 新文件结构
 
 ```
-smf/core/experiment/          # 新模块
+MF/core/experiment/          # 新模块
 ├── __init__.py
 ├── config.py                 # ExperimentConfig 等数据结构
 ├── data_factory.py           # 创建 Teacher, Mask, SpreadingData
@@ -135,7 +135,7 @@ smf/core/experiment/          # 新模块
 ├── scan_modes.py             # 扫描模式定义和策略
 └── memory_planner.py         # 内存估算和分批策略
 
-smf/modules/algorithms/       # 修改现有
+MF/modules/algorithms/       # 修改现有
 ├── base.py                   # 简化接口，新增 run_single()
 ├── bigamp.py                 # 移除内部分批
 ├── agd.py                    # 移除内部分批
@@ -254,7 +254,7 @@ class SingleRunResult:
 
 ### 阶段 1：创建外部框架 (4h)
 
-1. 创建 `smf/core/experiment/` 目录
+1. 创建 `MF/core/experiment/` 目录
 2. 实现 `config.py` - 所有配置数据结构
 3. 实现 `data_factory.py` - 数据创建工厂
 4. 实现 `result.py` - 结果保存/加载

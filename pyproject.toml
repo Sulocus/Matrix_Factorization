@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "smf"
+name = "Matrix-Factorization"
 version = "0.1.0"
-description = "Sparse Matrix Factorization Framework - Teacher-Student masked matrix factorization with GPU acceleration"
+description = "Matrix Factorization Framework - Teacher-Student masked matrix factorization with GPU acceleration"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -28,16 +28,16 @@ dev = [
 ]
 
 [project.scripts]
-smf = "smf.cli:main"
+mf = "MF.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["smf"]
+packages = ["MF"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/smf",
+    "/MF",
 ]
 exclude = [
-    "/smf/results",
-    "/smf/__pycache__",
+    "/MF/results",
+    "/MF/__pycache__",
 ]

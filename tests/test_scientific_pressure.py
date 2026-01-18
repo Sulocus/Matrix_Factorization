@@ -25,7 +25,7 @@ from enum import Enum
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from smf.core.llm_advisor import analyze_user_request, AnalysisResult
+from MF.core.llm_advisor import analyze_user_request, AnalysisResult
 
 
 class TestStatus(Enum):

@@ -24,7 +24,7 @@ class TestFGeneration:
 
     def test_gaussian_determinism(self):
         """Same seed produces same Gaussian F."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
+        from MF.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
 
         device = torch.device('cpu')
         C, M = 100, 10
@@ -36,7 +36,7 @@ class TestFGeneration:
 
     def test_rademacher_determinism(self):
         """Same seed produces same Rademacher F."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import generate_F_rademacher
+        from MF.modules.algorithms.bigamp_spreading_parallel import generate_F_rademacher
 
         device = torch.device('cpu')
         C, M = 100, 10
@@ -48,7 +48,7 @@ class TestFGeneration:
 
     def test_rademacher_values(self):
         """Rademacher F should only contain {-1, +1}."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import generate_F_rademacher
+        from MF.modules.algorithms.bigamp_spreading_parallel import generate_F_rademacher
 
         device = torch.device('cpu')
         C, M = 100, 10
@@ -61,7 +61,7 @@ class TestFGeneration:
 
     def test_gaussian_statistics(self):
         """Gaussian F should have mean~0, var~1."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
+        from MF.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
 
         device = torch.device('cpu')
         C, M = 10000, 10  # Large for statistical accuracy
@@ -76,7 +76,7 @@ class TestFGeneration:
 
     def test_different_seeds_different_F(self):
         """Different seeds should produce different F."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
+        from MF.modules.algorithms.bigamp_spreading_parallel import generate_F_gaussian
 
         device = torch.device('cpu')
         C, M = 100, 10
@@ -92,7 +92,7 @@ class TestSuperGraph:
 
     def test_supergraph_creation(self):
         """SuperGraph should be created with correct shapes."""
-        from smf.modules.graphs.supergraph import create_supergraph
+        from MF.modules.graphs.supergraph import create_supergraph
 
         device = torch.device('cpu')
         sg = create_supergraph(N1, N2, M, ALPHA_VALUES, S, SEED, device)
@@ -104,7 +104,7 @@ class TestSuperGraph:
 
     def test_supergraph_coupled_sampling(self):
         """Smaller alpha should be subset of larger alpha (coupled sampling)."""
-        from smf.modules.graphs.supergraph import create_supergraph
+        from MF.modules.graphs.supergraph import create_supergraph
 
         device = torch.device('cpu')
         sg = create_supergraph(N1, N2, M, ALPHA_VALUES, S, SEED, device)
@@ -124,7 +124,7 @@ class TestSuperGraph:
 
     def test_supergraph_index_bounds(self):
         """Edge indices should be within valid range."""
-        from smf.modules.graphs.supergraph import create_supergraph
+        from MF.modules.graphs.supergraph import create_supergraph
 
         device = torch.device('cpu')
         sg = create_supergraph(N1, N2, M, ALPHA_VALUES, S, SEED, device)
@@ -134,7 +134,7 @@ class TestSuperGraph:
 
     def test_supergraph_determinism(self):
         """Same seed should produce same SuperGraph."""
-        from smf.modules.graphs.supergraph import create_supergraph
+        from MF.modules.graphs.supergraph import create_supergraph
 
         device = torch.device('cpu')
         sg1 = create_supergraph(N1, N2, M, ALPHA_VALUES, S, SEED, device)
@@ -153,7 +153,7 @@ class TestBiGAMPSpreadingParallel:
 
     @pytest.fixture
     def config(self):
-        from smf.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
+        from MF.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
 
         return Config(
             matrix=MatrixConfig(N1=N1, N2=N2, M=M),
@@ -166,7 +166,7 @@ class TestBiGAMPSpreadingParallel:
 
     def test_algorithm_instantiation(self, config, device):
         """Algorithm should instantiate without errors."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
+        from MF.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
 
         algo = BiGAMPSpreadingParallel(config, device)
         assert algo is not None
@@ -174,9 +174,9 @@ class TestBiGAMPSpreadingParallel:
 
     def test_train_single_sample(self, config, device):
         """Training single sample should return valid results."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
-        from smf.modules.teachers.random_spreading import SpreadingDataParallel
-        from smf.modules.graphs.supergraph import create_supergraph
+        from MF.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
+        from MF.modules.teachers.random_spreading import SpreadingDataParallel
+        from MF.modules.graphs.supergraph import create_supergraph
 
         algo = BiGAMPSpreadingParallel(config, device)
         alpha_values = config.alpha.get_values()
@@ -204,7 +204,7 @@ class TestBiGAMPSpreadingParallel:
 
     def test_run_spreading_parallel(self, config, device):
         """Convenience function should run without errors."""
-        from smf.modules.algorithms.bigamp_spreading_parallel import run_spreading_parallel
+        from MF.modules.algorithms.bigamp_spreading_parallel import run_spreading_parallel
 
         # run_spreading_parallel takes a config object
         results = run_spreading_parallel(config, verbose=False)
@@ -224,8 +224,8 @@ class TestFDistributionCombinations:
     @pytest.mark.parametrize("f_distribution", ["gaussian", "rademacher"])
     def test_f_distribution_runs(self, f_distribution, device):
         """Both F distributions should run without errors."""
-        from smf.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
-        from smf.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
+        from MF.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
+        from MF.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
 
         config = Config(
             matrix=MatrixConfig(N1=N1, N2=N2, M=M),
@@ -249,8 +249,8 @@ class TestSpreadingDataCreation:
 
     def test_spreading_data_creation(self, device):
         """SpreadingDataParallel should be created correctly."""
-        from smf.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
-        from smf.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
+        from MF.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig
+        from MF.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
 
         config = Config(
             matrix=MatrixConfig(N1=N1, N2=N2, M=M),

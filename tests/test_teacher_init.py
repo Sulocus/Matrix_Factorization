@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from smf.modules.algorithms.bigamp_spreading import BiGAMPSpreading
+from MF.modules.algorithms.bigamp_spreading import BiGAMPSpreading
 
 
 # ============================================================================

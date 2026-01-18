@@ -14,11 +14,11 @@ sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 import numpy as np
 import matplotlib.pyplot as plt
 
-from smf.core.config import (
+from MF.core.config import (
     Config, MatrixConfig, AlphaConfig, TrainingConfig, 
     AlgorithmConfig, SpreadingConfig, ExecutionConfig
 )
-from smf.runner import run_experiment
+from MF.runner import run_experiment
 
 ALL_METRICS = [
     'Q_Y', 'Q_Y_observed', 'Q_Y_unobserved',

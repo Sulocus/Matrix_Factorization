@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 # Add project root to path
 sys.path.insert(0, "/home/sucia/Sparse-Matrix")
 
-from smf.modules.outputs.plotting import plot_comparison
+from MF.modules.outputs.plotting import plot_comparison
 
 def load_metrics(result_dir):
     json_path = result_dir / "metrics.json"

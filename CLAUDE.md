@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 3. **文档语言**：Wang/README.md 用日语，技术术语用英语
 
 ### SMF 文档同步规则（重要）
-- **更新 smf/ 模块时，必须同步更新 `smf_docs/` 中对应的文档**
+- **更新 MF/ 模块时，必须同步更新 `smf_docs/` 中对应的文档**
 - 新功能不明白时，先查阅 `smf_docs/README.md`
 
 ---
@@ -55,7 +55,7 @@ python Wang/agd/train_parallel.py     # AGD 并行版
 | 目录 | Git | 用途 |
 |------|-----|------|
 | `Wang/` | main 分支 | 生产代码，与日本同学共享 |
-| `smf/` | dev 分支 | 模块化框架，本地开发 |
+| `MF/` | dev 分支 | 模块化框架，本地开发 |
 | `smf_docs/` | dev 分支 | SMF 模块文档 |
 | `_legacy/` | - | 归档的旧代码 |
 
@@ -75,9 +75,9 @@ Wang/
 └── results/             # 实验结果
 ```
 
-### smf/ 框架
+### MF/ 框架
 ```
-smf/
+MF/
 ├── cli.py              # 命令行入口
 ├── core/               # 核心功能
 │   ├── config.py       # 配置系统
@@ -150,7 +150,7 @@ USE_BIREGULAR_GRAPH = False    # True=Dinic图, False=随机图
 | 分支 | 用途 |
 |------|------|
 | `main` | 生产代码，推送到远程 |
-| `dev` | 本地开发，包含 smf/ |
+| `dev` | 本地开发，包含 MF/ |
 
 ```bash
 git checkout main             # 切换到生产分支
