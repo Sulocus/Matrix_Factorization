@@ -295,7 +295,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 onsager_correction=self.onsager_correction,
             )
             
-            if step_callback:
+            if step_callback and ((step + 1) % 50 == 0 or step == self.max_steps - 1):
                 step_callback(step + 1, self.max_steps)
             
             if verbose and (step + 1) % 50 == 0:
@@ -306,7 +306,12 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         # Compute final metrics
         Y_student = forward_pass_tensor(factors, F, hg.indices)
         mse = ((Y - Y_student) ** 2).mean().item()
-        y_var = Y.var().item() + 1e-10
+        
+        if Y.numel() > 1:
+            y_var = Y.var().item() + 1e-10
+        else:
+            y_var = Y.abs().mean().item()**2 + 1e-10 # Fallback for single element
+            
         Q_Y = max(0.0, 1.0 - mse / y_var)
         
         return {

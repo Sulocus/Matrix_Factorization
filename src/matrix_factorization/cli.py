@@ -59,8 +59,8 @@ def load_yaml_config(yaml_path: Path):
         # N维张量模式：强制使用 bigamp_tensor
         algorithm_key = 'bigamp_tensor'
         allow_intra = False  # 张量模式不使用此参数
-        print(f"⚠️  tensor_order={tensor_order}: N维张量模式，目前需使用独立脚本运行")
-        print("    示例: from matrix_factorization.modules.algorithms.bigamp.tensor_spreading import BiGAMPTensorSpreading")
+        algorithm_key = 'bigamp_tensor'
+        allow_intra = False  # 张量模式不使用此参数
     elif tensor_order == 1:
         # 一般图模式：allow_intra=true
         algorithm_key = ALGORITHM_MAP.get(cfg.get('algorithm', 2), 'bigamp_spreading')
