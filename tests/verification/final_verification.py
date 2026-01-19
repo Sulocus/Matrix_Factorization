@@ -6,8 +6,8 @@ import torch
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
-from MF.core.config import Config
-from MF.core.runner import run_experiment
+from matrix_factorization.core.config import Config
+from matrix_factorization.core.runner import run_experiment
 
 def main():
     cfg = Config()

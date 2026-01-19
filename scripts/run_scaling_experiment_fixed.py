@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, '/home/sucia/Sparse-Matrix')
+sys.path.insert(0, '/home/sucia/Matrix_Factorization/src')
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,11 +16,11 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
-from MF.core.config import (
+from matrix_factorization.core.config import (
     Config, MatrixConfig, AlphaConfig, TrainingConfig, 
     AlgorithmConfig, SpreadingConfig, ExecutionConfig
 )
-from MF.runner import run_experiment
+from matrix_factorization.runner import run_experiment
 
 
 def create_config(N: int, M: int) -> Config:
@@ -123,7 +123,7 @@ def plot_comparison(results_dict: dict, output_dir: Path):
 
 def main():
     timestamp = datetime.now().strftime("%m%d_%H%M")
-    output_dir = Path(f"/home/sucia/Sparse-Matrix/smf/results/scaling_experiment_{timestamp}")
+    output_dir = Path(f"/home/sucia/Matrix_Factorization/src/smf/results/scaling_experiment_{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"实验输出目录: {output_dir}")
     

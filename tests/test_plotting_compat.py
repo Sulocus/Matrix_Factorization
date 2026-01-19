@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 # 添加项目根目录到路径
 sys.path.insert(0, os.getcwd())
 
-from MF.core.experiment.config import ExperimentConfig, MatrixParams, TrainingParams, SeedConfig, ScanConfig, AlgorithmParams
-from MF.modules.outputs.plotting import ResultPlotter
+from matrix_factorization.core.experiment.config import ExperimentConfig, MatrixParams, TrainingParams, SeedConfig, ScanConfig, AlgorithmParams
+from matrix_factorization.modules.outputs.plotting import ResultPlotter
 
 # 模拟结果数据结构
 # 假设我们有两个结果集: Cold 和 Warm
@@ -57,7 +57,7 @@ try:
     
     # 注意: plot_comparison 是模块级函数还是类方法？
     # 查看 plotting.py，plot_comparison 是一个独立函数，不在 ResultPlotter 类里
-    from MF.modules.outputs.plotting import plot_comparison
+    from matrix_factorization.modules.outputs.plotting import plot_comparison
     
     output_path = output_dir / "comparison_test.png"
     plot_comparison(

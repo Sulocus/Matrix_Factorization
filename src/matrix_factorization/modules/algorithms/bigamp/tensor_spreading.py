@@ -21,6 +21,8 @@ from .tensor_data import TensorHypergraph, TensorSpreadingData
 from .tensor_step import tensor_step, forward_pass_tensor
 from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_observations
 
+from matrix_factorization.modules.registry import register_algorithm
+
 
 @dataclass
 class TensorSpreadingConfig:
@@ -35,6 +37,12 @@ class TensorSpreadingConfig:
     onsager_correction: bool = False  # Default OFF per user requirement
 
 
+@register_algorithm(
+    key="bigamp_tensor",
+    name="BiG-AMP Tensor Spreading",
+    description="N-dimensional tensor CP decomposition with random spreading",
+    default_params={'damping': 0.5, 'noise_var': 1e-6},
+)
 class BiGAMPTensorSpreading:
     """
     BiG-AMP for N-dimensional tensor CP decomposition.

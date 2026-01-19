@@ -56,7 +56,7 @@ def normalize_code(code: str) -> str:
     return '\n'.join(lines)
 
 def compare_files():
-    base = Path('/home/sucia/Sparse-Matrix/smf/modules/algorithms')
+    base = Path('/home/sucia/Matrix_Factorization/src/smf/modules/algorithms')
     file1 = base / 'bigamp_spreading_parallel.py'
     file2 = base / 'bigamp_spreading_parallel_unit.py'
     

@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 
 # 添加项目路径
-sys.path.insert(0, '/home/sucia/Sparse-Matrix')
+sys.path.insert(0, '/home/sucia/Matrix_Factorization/src')
 
 import torch
 import numpy as np
@@ -28,8 +28,8 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
-from MF.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, SpreadingConfig
-from MF.runner import run_experiment
+from matrix_factorization.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, AlgorithmConfig, SpreadingConfig
+from matrix_factorization.runner import run_experiment
 
 
 def create_config(N: int, M: int, algorithm_key: str = "bigamp_spreading_parallel_unit") -> Config:
@@ -165,7 +165,7 @@ def plot_comparison(results_dict: dict, output_dir: Path):
 def main():
     # 输出目录
     timestamp = datetime.now().strftime("%m%d_%H%M")
-    output_dir = Path(f"/home/sucia/Sparse-Matrix/smf/results/scaling_experiment_{timestamp}")
+    output_dir = Path(f"/home/sucia/Matrix_Factorization/src/smf/results/scaling_experiment_{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"实验输出目录: {output_dir}")

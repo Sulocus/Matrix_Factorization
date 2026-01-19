@@ -9,16 +9,16 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, '/home/sucia/Sparse-Matrix')
+sys.path.insert(0, '/home/sucia/Matrix_Factorization/src')
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from MF.core.config import (
+from matrix_factorization.core.config import (
     Config, MatrixConfig, AlphaConfig, TrainingConfig, 
     AlgorithmConfig, SpreadingConfig, ExecutionConfig
 )
-from MF.runner import run_experiment
+from matrix_factorization.runner import run_experiment
 
 ALL_METRICS = [
     'Q_Y', 'Q_Y_observed', 'Q_Y_unobserved',
@@ -77,7 +77,7 @@ def verify_phase_transition(results: dict, key: str) -> bool:
 
 def main():
     # 使用已有的输出目录
-    output_dir = Path("/home/sucia/Sparse-Matrix/smf/results/full_metrics_1211_2032")
+    output_dir = Path("/home/sucia/Matrix_Factorization/src/smf/results/full_metrics_1211_2032")
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 400x100 配置，S=10 避免 OOM (显存估算严重低估，实际使用约1.5倍)

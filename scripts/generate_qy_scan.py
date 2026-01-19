@@ -10,14 +10,14 @@ Parameters:
 """
 
 import sys
-sys.path.insert(0, '/home/sucia/Sparse-Matrix')
+sys.path.insert(0, '/home/sucia/Matrix_Factorization/src')
 
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-from MF.core.config import Config
-from MF.core.runner import run_experiment
+from matrix_factorization.core.config import Config
+from matrix_factorization.core.runner import run_experiment
 
 def main():
     # Configuration
@@ -97,12 +97,12 @@ def main():
     
     # Save plot
     plt.tight_layout()
-    plt.savefig('/home/sucia/Sparse-Matrix/spreading_qy_scan.png', dpi=150, bbox_inches='tight')
-    print(f"\nPlot saved to: /home/sucia/Sparse-Matrix/spreading_qy_scan.png")
+    plt.savefig('/home/sucia/Matrix_Factorization/src/spreading_qy_scan.png', dpi=150, bbox_inches='tight')
+    print(f"\nPlot saved to: /home/sucia/Matrix_Factorization/src/spreading_qy_scan.png")
     
     # Also save as PDF for better quality
-    plt.savefig('/home/sucia/Sparse-Matrix/spreading_qy_scan.pdf', bbox_inches='tight')
-    print(f"PDF saved to: /home/sucia/Sparse-Matrix/spreading_qy_scan.pdf")
+    plt.savefig('/home/sucia/Matrix_Factorization/src/spreading_qy_scan.pdf', bbox_inches='tight')
+    print(f"PDF saved to: /home/sucia/Matrix_Factorization/src/spreading_qy_scan.pdf")
     
     plt.close()
     print("\nDone!")

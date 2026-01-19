@@ -4,9 +4,9 @@ import json
 import matplotlib.pyplot as plt
 
 # Add project root to path
-sys.path.insert(0, "/home/sucia/Sparse-Matrix")
+sys.path.insert(0, "/home/sucia/Matrix_Factorization/src")
 
-from MF.modules.outputs.plotting import plot_comparison
+from matrix_factorization.modules.outputs.plotting import plot_comparison
 
 def load_metrics(result_dir):
     json_path = result_dir / "metrics.json"
@@ -31,7 +31,7 @@ def load_metrics(result_dir):
     return filtered_data
 
 def main():
-    root = Path("/home/sucia/Sparse-Matrix/smf/results")
+    root = Path("/home/sucia/Matrix_Factorization/src/smf/results")
     
     # 1. Baseline (0230 - likely pre-fix or intermediate)
     baseline_dir = root / "bigamp_spreading_parallel_random_200x200_M50_1209_0230"

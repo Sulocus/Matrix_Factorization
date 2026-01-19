@@ -8,8 +8,8 @@ sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 import torch
 import numpy as np
 
-from MF.core.config import Config
-from MF.core.runner import run_experiment
+from matrix_factorization.core.config import Config
+from matrix_factorization.core.runner import run_experiment
 
 def test_teacher_types():
     print("=" * 70)

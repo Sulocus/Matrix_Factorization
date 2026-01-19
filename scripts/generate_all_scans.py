@@ -4,15 +4,15 @@ N=200, M=50, 5000 steps, Rademacher F, Alpha 0-4 step 0.1
 """
 
 import sys
-sys.path.insert(0, '/home/sucia/Sparse-Matrix')
+sys.path.insert(0, '/home/sucia/Matrix_Factorization/src')
 
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-from MF.core.config import Config
-from MF.core.runner import run_experiment
+from matrix_factorization.core.config import Config
+from matrix_factorization.core.runner import run_experiment
 
 def run_scan(teacher_type: str, graph_type: str, output_prefix: str):
     """Run a full alpha scan and save results."""
@@ -74,7 +74,7 @@ def run_scan(teacher_type: str, graph_type: str, output_prefix: str):
     ax.set_ylim(-0.1, 1.1)
     
     plt.tight_layout()
-    plt.savefig(f'/home/sucia/Sparse-Matrix/{output_prefix}.png', dpi=150, bbox_inches='tight')
+    plt.savefig(f'/home/sucia/Matrix_Factorization/src/{output_prefix}.png', dpi=150, bbox_inches='tight')
     plt.close()
     
     print(f"Saved: {output_prefix}.png")

@@ -9,7 +9,7 @@ sys.path.insert(0, '/home/sucia/Sparse-Matrix/_legacy/backup_pre_refactor_202512
 import torch
 
 def main():
-    from MF.modules.algorithms.bigamp import _bigamp_step
+    from matrix_factorization.modules.algorithms.bigamp import _bigamp_step
     
     device = torch.device("cuda")
     N, M = 100, 25

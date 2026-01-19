@@ -4,10 +4,10 @@ from pathlib import Path
 import torch
 import numpy as np
 
-sys.path.insert(0, str(Path.cwd()))
+sys.path.insert(0, str(Path.cwd() / "src"))
 
-from MF.core.experiment.config import ExperimentConfig, MatrixParams, TrainingParams, SpreadingConfig
-from MF.modules.algorithms.bigamp_spreading import BiGAMPSpreading
+from matrix_factorization.core.experiment.config import ExperimentConfig, MatrixParams, TrainingParams, SpreadingConfig
+from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
 
 def debug_graph_structure():
     print("--- Debugging Graph Structure ---")

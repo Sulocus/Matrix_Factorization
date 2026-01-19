@@ -28,16 +28,16 @@ dev = [
 ]
 
 [project.scripts]
-mf = "MF.cli:main"
+mf = "matrix_factorization.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["MF"]
+packages = ["src/matrix_factorization"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/MF",
+    "/src/matrix_factorization",
 ]
 exclude = [
-    "/MF/results",
-    "/MF/__pycache__",
+    "/src/matrix_factorization/results",
+    "/src/matrix_factorization/__pycache__",
 ]

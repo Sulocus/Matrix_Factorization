@@ -6,11 +6,11 @@ import torch
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
-from MF.core.experiment.config import (
+from matrix_factorization.core.experiment.config import (
     ExperimentConfig, MatrixParams, TrainingParams, 
     ScanConfig, SpreadingConfig, AlgorithmParams
 )
-from MF.modules.algorithms.bigamp_spreading import BiGAMPSpreading
+from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
 
 def test_general_chunked():
     """Test General mode with chunked processing."""

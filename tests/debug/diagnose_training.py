@@ -8,10 +8,10 @@ import torch
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 
-from MF.core.config import Config
-from MF.modules.teachers import TeacherGenerator, SpreadingDataParallel
-from MF.modules.graphs.supergraph import create_supergraph
-from MF.modules.algorithms.bigamp_spreading_parallel import (
+from matrix_factorization.core.config import Config
+from matrix_factorization.modules.teachers import TeacherGenerator, SpreadingDataParallel
+from matrix_factorization.modules.graphs.supergraph import create_supergraph
+from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import (
     generate_F_super, compute_Y_super, forward_pass_parallel
 )
 import math
@@ -119,7 +119,7 @@ def main():
         print(f"  Alpha {alpha:.1f}: Q_Y = {qy:.4f}")
     
     # Manual training loop with detailed tracing
-    from MF.modules.algorithms.bigamp_spreading_parallel import bigamp_spreading_parallel_step
+    from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import bigamp_spreading_parallel_step
     
     prev_s = None
     for step in range(cfg.training.max_steps):

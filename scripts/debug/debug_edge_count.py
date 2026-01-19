@@ -1,9 +1,9 @@
 
 import torch
 import numpy as np
-from MF.modules.graphs.supergraph import create_supergraph
-from MF.modules.graphs.supergraph_general import create_supergraph_general
-from MF.modules.parallel.memory_estimator import MemoryEstimator, EstimationParams
+from matrix_factorization.modules.graphs.supergraph import create_supergraph
+from matrix_factorization.modules.graphs.supergraph_general import create_supergraph_general
+from matrix_factorization.modules.parallel.memory_estimator import MemoryEstimator, EstimationParams
 
 def test_counts():
     N1 = 200

@@ -20,10 +20,10 @@ def print_section(title):
     print(f"\n--- {title} ---")
 
 def main():
-    from MF.core.config import Config
-    from MF.modules.teachers import TeacherGenerator
-    from MF.modules.graphs.supergraph import create_supergraph
-    from MF.modules.algorithms.bigamp_spreading_parallel import (
+    from matrix_factorization.core.config import Config
+    from matrix_factorization.modules.teachers import TeacherGenerator
+    from matrix_factorization.modules.graphs.supergraph import create_supergraph
+    from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import (
         generate_F_super, compute_Y_super
     )
     
@@ -154,8 +154,8 @@ def main():
     # =========================================================================
     print_header("LAYER 3: ALGORITHM EXECUTION VERIFICATION")
     
-    from MF.modules.teachers import SpreadingDataParallel
-    from MF.modules.algorithms.bigamp_spreading_parallel import BiGAMPSpreadingParallel
+    from matrix_factorization.modules.teachers import SpreadingDataParallel
+    from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import BiGAMPSpreadingParallel
     
     spreading_data = SpreadingDataParallel(
         supergraph=supergraph,
@@ -169,7 +169,7 @@ def main():
     
     print_section("Initial Q_Y Check (Before Training)")
     
-    from MF.modules.metrics.spreading import compute_qy_spreading_parallel
+    from matrix_factorization.modules.metrics.spreading import compute_qy_spreading_parallel
     
     A = len(alpha_values)
     # Create random initial student
@@ -204,7 +204,7 @@ def main():
     # =========================================================================
     print_header("LAYER 4: METRIC COMPUTATION AUDIT")
     
-    from MF.modules.metrics.spreading import compute_all_metrics_spreading_parallel
+    from matrix_factorization.modules.metrics.spreading import compute_all_metrics_spreading_parallel
     
     metrics = compute_all_metrics_spreading_parallel(W_students, X_students, spreading_data)
     

@@ -1,7 +1,7 @@
 
 import math
-from MF.core.parallel.memory_estimator_general import estimate_general_edge_count
-from MF.modules.graphs.supergraph_general import create_supergraph_general
+from matrix_factorization.core.parallel.memory_estimator_general import estimate_general_edge_count
+from matrix_factorization.modules.graphs.supergraph_general import create_supergraph_general
 import torch
 
 def verify_memory_estimation():
