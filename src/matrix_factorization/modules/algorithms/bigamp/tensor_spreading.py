@@ -74,8 +74,19 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Get tensor_order from spreading config
             self.order = getattr(config.spreading, 'tensor_order', 3) if hasattr(config, 'spreading') else 3
             
-            # N维张量：dims 从 matrix.N1 推断为 (N1, N1, ..., N1)
+            # N维张量：目前假设所有维度相等 (除了 matrix.M)
+            if config.matrix.N1 != config.matrix.N2:
+                # 如果 N1 != N2，目前 tensor 实现可能会有维度不匹配问题
+                # (因为 factors[1] 是 X.T (N2, M)，但 dims 假设全是 N1)
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"BiGAMPTensorSpreading currently assumes isotropic dimensions (N1==N2). "
+                    f"Got N1={config.matrix.N1}, N2={config.matrix.N2}. "
+                    f"Will use N1 for all tensor dimensions."
+                )
+            
             N = config.matrix.N1
+            # assert config.matrix.N1 == config.matrix.N2, "BiGAMPTensorSpreading requires N1 == N2"
             self.dims = tuple([N] * self.order)
             self.M = config.matrix.M
             self.max_steps = config.training.max_steps
