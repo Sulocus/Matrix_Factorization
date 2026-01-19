@@ -1,14 +1,14 @@
-# ===== 张量阶数（决定问题维度）=====
-# 1 = 一般图模式 (general graph)：允许 W-W, W-X, X-X 连接（支持三角环）
-# 2 = 二分图/矩阵分解 (bipartite/matrix)：只有 W-X 连接（默认，高效）
-# 3+ = N 维张量分解：从 N 个因子中各取一个节点（高阶 CP 分解）
+# ===== 张量阶数（主配置，决定算法和图模式）=====
+# 1 = 一般图（General Graph）：自动启用 allow_intra_connection
+# 2 = 二分图/矩阵分解（Bipartite）：标准模式（默认）
+# 3+ = N维张量分解：暂需独立脚本运行（主runner尚未完全适配）
 tensor_order: 2
 
-# ===== 算法 (选一个数字) =====
+# ===== 算法（仅在 tensor_order=1,2 时生效）=====
 # 1 = bigamp (标准 BiG-AMP)
-# 2 = bigamp_spreading (二分图 spreading)
+# 2 = bigamp_spreading (二分图 spreading)（默认）
 # 3 = agd (交替梯度下降)
-# 4 = bigamp_tensor (N 维张量 spreading) ← 新增
+# 注意：tensor_order=3+ 时自动使用 bigamp_tensor
 algorithm: 2
 
 # ===== Teacher (选一个数字) =====

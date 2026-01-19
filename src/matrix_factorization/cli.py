@@ -51,7 +51,25 @@ def load_yaml_config(yaml_path: Path):
     SCAN_MODE_MAP = {1: 'alpha', 2: 'steps', 3: 'nested', 4: 'hysteresis', 'alpha': 'alpha', 'steps': 'steps', 'nested': 'nested', 'hysteresis': 'hysteresis'}
     F_DIST_MAP = {1: 'rademacher', 2: 'gaussian', 'rademacher': 'rademacher', 'gaussian': 'gaussian'}
     
-    algorithm_key = ALGORITHM_MAP.get(cfg.get('algorithm', 1), 'bigamp')
+    # ========== tensor_order 自动推断 ==========
+    # tensor_order: 1=一般图, 2=二分图(默认), 3+=N维张量
+    tensor_order = cfg.get('tensor_order', 2)
+    
+    if tensor_order >= 3:
+        # N维张量模式：强制使用 bigamp_tensor
+        algorithm_key = 'bigamp_tensor'
+        allow_intra = False  # 张量模式不使用此参数
+        print(f"⚠️  tensor_order={tensor_order}: N维张量模式，目前需使用独立脚本运行")
+        print("    示例: from matrix_factorization.modules.algorithms.bigamp.tensor_spreading import BiGAMPTensorSpreading")
+    elif tensor_order == 1:
+        # 一般图模式：allow_intra=true
+        algorithm_key = ALGORITHM_MAP.get(cfg.get('algorithm', 2), 'bigamp_spreading')
+        allow_intra = True
+    else:
+        # 二分图模式 (tensor_order=2, 默认)
+        algorithm_key = ALGORITHM_MAP.get(cfg.get('algorithm', 2), 'bigamp_spreading')
+        allow_intra = False
+    
     teacher_key = TEACHER_MAP.get(cfg.get('teacher', 1), 'orthogonal')
     scan_mode = SCAN_MODE_MAP.get(cfg.get('scan_mode', 1), 'alpha')
     
@@ -70,16 +88,14 @@ def load_yaml_config(yaml_path: Path):
     a = cfg.get('algorithm_params', {})
     algo_params = AlgorithmParams(**a)
     
-    # Spreading
+    # Spreading 配置
     spreading = None
-    # allow_intra_connection is now properly inside spreading section
     if 'spreading' in algorithm_key:
         s = cfg.get('spreading', {})
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
         onsager = s.get('onsager_correction', False)
-        # allow_intra_connection: 优先顶层，回退到 spreading 节点
-        allow_intra = cfg.get('allow_intra_connection', s.get('allow_intra_connection', False))
-        chunk_size = s.get('chunk_size', 131072)  # Edges per chunk for General mode
+        chunk_size = s.get('chunk_size', 131072)
+        # allow_intra 由 tensor_order 自动决定，不再从配置读取
         spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager, allow_intra_connection=allow_intra, chunk_size=chunk_size)
     
     INIT_DIST_MAP = {1: 'gaussian', 2: 'rademacher', 'gaussian': 'gaussian', 'rademacher': 'rademacher'}
