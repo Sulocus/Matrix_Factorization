@@ -48,10 +48,15 @@ def generate_tensor_hypergraph(
     """
     n = len(dims)
     
-    # Compute number of hyperedges
-    # Use min(dims) to ensure even the smallest dimension has α average degree
-    N_min = min(dims)
-    C = int(alpha * N_min)
+    # Compute number of hyperedges C
+    # Scaling law: C = alpha * (prod(N_i) / M^(n-1))
+    # This matches the scaling used in Matrix BiG-AMP Spreading (n=2)
+    N_prod = 1
+    for d in dims:
+        N_prod *= d
+        
+    denom = M ** (n - 1)
+    C = int(alpha * N_prod / denom)
     C = max(1, C)  # At least 1 edge
     
     # Generate random indices for each dimension
