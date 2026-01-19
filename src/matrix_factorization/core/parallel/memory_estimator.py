@@ -985,6 +985,47 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     return breakdown
 
 
+@MemoryEstimator.register("bigamp_tensor")
+def estimate_tensor_spreading(params: EstimationParams) -> float:
+    """
+    N-dimensional tensor spreading memory estimation.
+    
+    Simplified estimation - tensor mode uses sequential alpha processing
+    with relatively small memory footprint per run.
+    """
+    N1, N2, M, S = params.N1, params.N2, params.M, params.S
+    alpha_max = params.alpha_max
+    
+    # Get tensor order from params if available
+    tensor_order = getattr(params, 'tensor_order', 3)
+    
+    # Estimate hyperedges: C = ceil(alpha * prod(N_d) / M^(n-1))
+    import math
+    N_prod = N1 ** tensor_order  # Assume square dims
+    C = max(1, int(math.ceil(alpha_max * N_prod / (M ** (tensor_order - 1)))))
+    
+    # Storage dtype
+    storage_bytes = 2 if params.use_bf16 else 4  # BF16 or FP32
+    f_bytes = 1 if params.f_distribution == 'rademacher' else 4
+    
+    # Factor tensors: n factors × (N, M)
+    factor_memory = tensor_order * N1 * M * storage_bytes
+    
+    # F and Y: (C, M) and (C,)
+    fy_memory = C * M * f_bytes + C * storage_bytes
+    
+    # Intermediate: Var matrices × n factors
+    var_memory = tensor_order * N1 * M * storage_bytes
+    
+    # Scatter/gather temporaries: (C, M)
+    temp_memory = 3 * C * M * storage_bytes
+    
+    total_bytes = factor_memory + fy_memory + var_memory + temp_memory
+    total_bytes *= S  # Per sample
+    
+    # Safety margin
+    return (total_bytes / (1024**3)) * 1.2
+
 
 def get_bigamp_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     """

@@ -492,6 +492,7 @@ class ExperimentRunner:
                         W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
                         X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
                         data=single_data,
+                        algorithm=algorithm,
                     )
                     
                     # Store result
@@ -754,7 +755,35 @@ class ExperimentRunner:
         W_students: torch.Tensor,
         X_students: torch.Tensor,
         data: ExperimentData,
+        algorithm: Optional['AlgorithmBase'] = None,
     ) -> Dict[str, float]:
+        """Compute evaluation metrics."""
+        # === 优先使用算法内部计算的 Metrics (针对 Tensor 等复杂模式) ===
+        if algorithm is not None:
+            # Check for batch pre-computed metrics
+            if hasattr(algorithm, '_batch_metrics') and algorithm._batch_metrics:
+                # data.alpha_values usually contains 1 alpha in this context
+                current_alpha = data.alpha_values[0]
+                # Try exact match first
+                if current_alpha in algorithm._batch_metrics:
+                    return algorithm._batch_metrics[current_alpha]
+                # Try fuzzy match (float precision)
+                for a, m in algorithm._batch_metrics.items():
+                    if abs(a - current_alpha) < 1e-6:
+                        return m
+            
+            # Check for single-run last result (fallback)
+            if hasattr(algorithm, '_last_result') and algorithm._last_result:
+                res = algorithm._last_result
+                if 'alpha' in res and abs(res['alpha'] - data.alpha_values[0]) < 1e-6:
+                    # Convert single result keys to mean/std format
+                    metrics = {}
+                    for k, v in res.items():
+                        if k not in ['alpha', 'sample', 'alpha_idx']:
+                            metrics[f"{k}_mean"] = float(v)
+                            metrics[f"{k}_std"] = 0.0
+                    return metrics
+
         """Compute evaluation metrics."""
         try:
             # ===== Spreading 算法专用 metrics =====
@@ -996,6 +1025,7 @@ class ExperimentRunner:
             onsager_correction: bool = config.spreading.onsager_correction if config.spreading else False
             allow_intra_connection: bool = config.spreading.allow_intra_connection if config.spreading else False
             seed: int = config.seeds.spreading_seed
+            tensor_order: int = getattr(config.spreading, 'tensor_order', 2) if config.spreading else 2
         
         @dc
         class MockConfig:

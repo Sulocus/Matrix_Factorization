@@ -10,11 +10,12 @@ Key features:
 - Simplified architecture: single-alpha, single-sample training
 - Onsager correction optional (default OFF)
 - Rademacher or Gaussian spreading coefficients
+- Fully integrated with runner via AlgorithmBase interface
 """
 
 import math
 import torch
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
@@ -22,6 +23,7 @@ from .tensor_step import tensor_step, forward_pass_tensor
 from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_observations
 
 from matrix_factorization.modules.registry import register_algorithm
+from matrix_factorization.modules.algorithms.base import AlgorithmBase
 
 
 @dataclass
@@ -43,76 +45,212 @@ class TensorSpreadingConfig:
     description="N-dimensional tensor CP decomposition with random spreading",
     default_params={'damping': 0.5, 'noise_var': 1e-6},
 )
-class BiGAMPTensorSpreading:
+class BiGAMPTensorSpreading(AlgorithmBase):
     """
     BiG-AMP for N-dimensional tensor CP decomposition.
     
     This algorithm extends the matrix BiG-AMP spreading to n-dimensional
-    tensors using a simplified architecture optimized for high-dimensional
-    cases where single-alpha computation already saturates GPU resources.
+    tensors. Fully integrated with runner via AlgorithmBase interface.
     
-    Args:
-        tensor_order: n - dimension of the tensor (2=matrix, 3=3-tensor, etc.)
-        dims: Tuple of n integers (N_1, ..., N_n) - factor dimensions
-        M: Latent dimension
-        max_steps: Maximum BiG-AMP iterations
-        damping: Damping factor (0=no damping, 1=full damping)
-        noise_var: Observation noise variance
-        f_distribution: 'rademacher' or 'gaussian'
-        onsager_correction: Whether to apply Onsager correction (default: False)
-        
-    Example:
-        >>> # 3-dimensional tensor decomposition
-        >>> algo = BiGAMPTensorSpreading(tensor_order=3, dims=(50, 50, 50), M=20)
-        >>> teacher = [torch.randn(50, 20) * 0.1 for _ in range(3)]
-        >>> result = algo.train_single_alpha(teacher, alpha=2.0, seed=42, device='cuda')
-        >>> print(f"Q_Y: {result['Q_Y']:.4f}")
+    Supports two initialization modes:
+    1. From runner: __init__(config, device) - config has matrix, training, etc.
+    2. Direct use: Use class methods with explicit parameters
     """
     
-    def __init__(
-        self,
-        tensor_order: int = 3,
-        dims: Tuple[int, ...] = None,
-        M: int = 20,
-        max_steps: int = 200,
-        damping: float = 0.5,
-        noise_var: float = 1e-6,
-        f_distribution: str = 'rademacher',
-        onsager_correction: bool = False,
-    ):
-        self.order = tensor_order
-        self.dims = dims if dims is not None else tuple([50] * tensor_order)
-        self.M = M
-        self.max_steps = max_steps
-        self.damping = damping
-        self.noise_var = noise_var
-        self.f_distribution = f_distribution
-        self.onsager_correction = onsager_correction
+    def __init__(self, config, device: torch.device):
+        """
+        Initialize from runner config or direct parameters.
+        
+        Args:
+            config: Either a full config object (from runner) or tensor_order int (legacy)
+            device: torch device
+        """
+        # Check if config is a full config object or legacy integer
+        if hasattr(config, 'matrix'):
+            # === From runner ===
+            self.config = config
+            self.device = device
+            
+            # Get tensor_order from spreading config
+            self.order = getattr(config.spreading, 'tensor_order', 3) if hasattr(config, 'spreading') else 3
+            
+            # N维张量：dims 从 matrix.N1 推断为 (N1, N1, ..., N1)
+            N = config.matrix.N1
+            self.dims = tuple([N] * self.order)
+            self.M = config.matrix.M
+            self.max_steps = config.training.max_steps
+            self.S = config.training.samples_per_alpha
+            
+            # Algorithm params
+            self.damping = config.algorithm_params.damping
+            self.noise_var = config.algorithm_params.noise_var
+            
+            # Spreading params
+            if hasattr(config, 'spreading') and config.spreading:
+                self.f_distribution = config.spreading.f_distribution
+                self.onsager_correction = config.spreading.onsager_correction
+            else:
+                self.f_distribution = 'rademacher'
+                self.onsager_correction = False
+                
+        elif isinstance(config, int):
+            # === Legacy direct call (tensor_order as first arg) ===
+            self.config = None
+            self.device = device
+            self.order = config
+            self.dims = tuple([50] * self.order)
+            self.M = 20
+            self.max_steps = 200
+            self.S = 1
+            self.damping = 0.5
+            self.noise_var = 1e-6
+            self.f_distribution = 'rademacher'
+            self.onsager_correction = False
+        else:
+            raise ValueError(f"config must be a config object or int, got {type(config)}")
         
         # Validate dims matches order
         if len(self.dims) != self.order:
             raise ValueError(f"dims length {len(self.dims)} must match tensor_order {self.order}")
+
+    # =========================================================================
+    # AlgorithmBase Interface Implementation
+    # =========================================================================
     
     def train_single_alpha(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        mask: torch.Tensor,
+        alpha: float,
+        seed: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        AlgorithmBase interface: Train for single alpha.
+        
+        For tensor mode, W_teacher and X_teacher are used to construct
+        n-dimensional teacher factors.
+        """
+        # Create teacher factors from W, X
+        teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
+        
+        # Train single sample
+        result = self._train_single_internal(teacher_factors, alpha, seed, self.device)
+        
+        # Return dummy W, X tensors (metrics computed in train_batch_alphas)
+        W_students = torch.zeros(self.S, self.dims[0], self.M, device=self.device)
+        X_students = torch.zeros(self.S, self.M, self.dims[1] if self.order >= 2 else self.dims[0], device=self.device)
+        
+        # Store Q_Y in instance for metrics retrieval
+        self._last_result = result
+        
+        return W_students, X_students
+    
+    def train_batch_alphas(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: torch.Tensor,
+        alpha_values: List[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        AlgorithmBase interface: Train for multiple alpha values.
+        
+        This is the main entry point called by runner.
+        """
+        A = len(alpha_values)
+        
+        # Create teacher factors
+        teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
+        
+        # Storage for results
+        W_all = torch.zeros(A, self.S, self.dims[0], self.M, device=self.device)
+        X_all = torch.zeros(A, self.S, self.M, self.dims[1] if self.order >= 2 else self.dims[0], device=self.device)
+        
+        # Also store metrics for runner
+        self._batch_metrics = {}
+        
+        total_work = A * self.S * self.max_steps
+        completed_steps = 0
+        
+        for alpha_idx, alpha in enumerate(alpha_values):
+            alpha_q_y_list = []
+            
+            for s in range(self.S):
+                sample_seed = seed + s * 1000 + int(alpha * 100)
+                
+                result = self._train_single_internal(
+                    teacher_factors, alpha, sample_seed, self.device,
+                    step_callback=lambda step, total: step_callback(completed_steps + step, total_work) if step_callback else None
+                )
+                
+                alpha_q_y_list.append(result['Q_Y'])
+                completed_steps += self.max_steps
+            
+            # Store aggregated metrics per alpha
+            self._batch_metrics[alpha] = {
+                'Q_Y_mean': sum(alpha_q_y_list) / len(alpha_q_y_list),
+                'Q_Y_std': (sum((q - sum(alpha_q_y_list)/len(alpha_q_y_list))**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
+            }
+        
+        return W_all, X_all
+    
+    def supports_batch_training(self) -> bool:
+        """Tensor spreading does support batch training across alphas."""
+        return True
+    
+    # =========================================================================
+    # Internal Methods
+    # =========================================================================
+    
+    def _create_teacher_factors(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+    ) -> List[torch.Tensor]:
+        """
+        Create n teacher factors from W and X matrices.
+        
+        For n=2: [W, X.T]
+        For n>=3: [W, X.T, ...additional random factors]
+        """
+        factors = []
+        
+        # Factor 0: W (N1, M)
+        factors.append(W_teacher.to(self.device))
+        
+        if self.order >= 2:
+            # Factor 1: X.T (N2, M) - note X is (M, N2), so we transpose
+            factors.append(X_teacher.T.to(self.device))
+        
+        # For n > 2, create additional factors
+        for d in range(2, self.order):
+            N_d = self.dims[d]
+            # Initialize from W's statistics
+            scale = W_teacher.std().item()
+            torch.manual_seed(42 + d)
+            factor_d = torch.randn(N_d, self.M, device=self.device) * scale
+            factors.append(factor_d)
+        
+        return factors
+    
+    def _train_single_internal(
         self,
         teacher_factors: List[torch.Tensor],
         alpha: float,
         seed: int,
         device: torch.device,
         verbose: bool = False,
+        step_callback: Optional[Callable] = None,
     ) -> Dict[str, float]:
         """
-        Train for one alpha value.
-        
-        Args:
-            teacher_factors: List of n teacher factor matrices, each (N_d, M)
-            alpha: Observation density (average node degree)
-            seed: Random seed for reproducibility
-            device: torch device
-            verbose: Print progress
-            
-        Returns:
-            Dictionary with metrics: Q_Y, MSE, alpha
+        Internal training for one alpha value.
         """
         n = self.order
         M = teacher_factors[0].shape[1]
@@ -146,6 +284,9 @@ class BiGAMPTensorSpreading:
                 onsager_correction=self.onsager_correction,
             )
             
+            if step_callback:
+                step_callback(step + 1, self.max_steps)
+            
             if verbose and (step + 1) % 50 == 0:
                 Y_pred = forward_pass_tensor(factors, F, hg.indices)
                 mse = ((Y - Y_pred) ** 2).mean().item()
@@ -164,6 +305,10 @@ class BiGAMPTensorSpreading:
             'C': hg.C,
         }
     
+    # =========================================================================
+    # Legacy Interface (for backward compatibility)
+    # =========================================================================
+    
     def train(
         self,
         teacher_factors: List[torch.Tensor],
@@ -174,18 +319,7 @@ class BiGAMPTensorSpreading:
         verbose: bool = False,
     ) -> List[Dict]:
         """
-        Train across multiple alpha values and samples.
-        
-        Args:
-            teacher_factors: List of n teacher factor matrices
-            alpha_values: List of alpha values to sweep
-            S: Number of samples per alpha
-            base_seed: Base random seed
-            device: torch device
-            verbose: Print progress
-            
-        Returns:
-            List of result dictionaries, one per (alpha, sample)
+        Legacy train method for direct usage.
         """
         results = []
         
@@ -193,20 +327,18 @@ class BiGAMPTensorSpreading:
             alpha_results = []
             
             for s in range(S):
-                # Unique seed for each (alpha, sample) combination
                 seed = base_seed + s * 1000 + int(alpha * 100)
                 
                 if verbose:
                     print(f"Alpha {alpha:.2f}, Sample {s + 1}/{S}")
                 
-                result = self.train_single_alpha(
+                result = self._train_single_internal(
                     teacher_factors, alpha, seed, device, verbose=False
                 )
                 result['sample'] = s
                 result['alpha_idx'] = alpha_idx
                 alpha_results.append(result)
             
-            # Compute alpha-level statistics
             q_y_mean = sum(r['Q_Y'] for r in alpha_results) / S
             if verbose:
                 print(f"  Alpha {alpha:.2f}: Q_Y = {q_y_mean:.4f}")
@@ -221,17 +353,7 @@ class BiGAMPTensorSpreading:
         seed: int = 42,
         scale: float = 0.1,
     ) -> List[torch.Tensor]:
-        """
-        Create random teacher factors.
-        
-        Args:
-            device: torch device
-            seed: random seed
-            scale: standard deviation of initialization
-            
-        Returns:
-            List of n teacher factor matrices
-        """
+        """Create random teacher factors."""
         torch.manual_seed(seed)
         return [
             torch.randn(N_d, self.M, device=device) * scale

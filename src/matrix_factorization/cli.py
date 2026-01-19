@@ -90,13 +90,14 @@ def load_yaml_config(yaml_path: Path):
     
     # Spreading 配置
     spreading = None
-    if 'spreading' in algorithm_key:
+    if 'spreading' in algorithm_key or 'tensor' in algorithm_key:
         s = cfg.get('spreading', {})
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
         onsager = s.get('onsager_correction', False)
         chunk_size = s.get('chunk_size', 131072)
         # allow_intra 由 tensor_order 自动决定，不再从配置读取
-        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager, allow_intra_connection=allow_intra, chunk_size=chunk_size)
+        # tensor_order 也传入 SpreadingConfig
+        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager, allow_intra_connection=allow_intra, chunk_size=chunk_size, tensor_order=tensor_order)
     
     INIT_DIST_MAP = {1: 'gaussian', 2: 'rademacher', 'gaussian': 'gaussian', 'rademacher': 'rademacher'}
     

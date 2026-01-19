@@ -118,6 +118,7 @@ class SpreadingConfig:
     allow_intra_connection: bool = False  # Allow W-W and X-X connections (general graph)
     seed: int = 12345  # Spreading-specific random seed
     chunk_size: int = 131072  # Edges per chunk for General mode memory optimization (0 = disable)
+    tensor_order: int = 2  # N-dimensional tensor order (2=matrix, 3+=tensor)
     
     def __post_init__(self):
         valid = ["rademacher", "gaussian"]
@@ -243,7 +244,7 @@ class ExperimentConfig:
     
     def __post_init__(self):
         # Validate algorithm key
-        valid_algos = ["agd", "bigamp", "bigamp_spreading"]
+        valid_algos = ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor"]
         if self.algorithm_key not in valid_algos:
             raise ValueError(
                 f"Invalid algorithm_key: {self.algorithm_key}. "
@@ -251,7 +252,7 @@ class ExperimentConfig:
             )
         
         # Auto-create spreading config if needed
-        if self.algorithm_key == "bigamp_spreading" and self.spreading is None:
+        if self.algorithm_key in ("bigamp_spreading", "bigamp_tensor") and self.spreading is None:
             self.spreading = SpreadingConfig()
     
     @property
