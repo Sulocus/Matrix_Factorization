@@ -56,10 +56,8 @@ def load_yaml_config(yaml_path: Path):
     tensor_order = cfg.get('tensor_order', 2)
     
     if tensor_order >= 3:
-        # N维张量模式：强制使用 bigamp_tensor
-        algorithm_key = 'bigamp_tensor'
-        allow_intra = False  # 张量模式不使用此参数
-        algorithm_key = 'bigamp_tensor'
+        # N维张量模式：使用 bigamp_tensor_parallel（并行优化版）
+        algorithm_key = 'bigamp_tensor_parallel'
         allow_intra = False  # 张量模式不使用此参数
     elif tensor_order == 1:
         # 一般图模式：allow_intra=true

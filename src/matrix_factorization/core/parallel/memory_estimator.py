@@ -986,12 +986,13 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
 
 
 @MemoryEstimator.register("bigamp_tensor")
+@MemoryEstimator.register("bigamp_tensor_parallel")
 def estimate_tensor_spreading(params: EstimationParams) -> float:
     """
     N-dimensional tensor spreading memory estimation.
     
-    Simplified estimation - tensor mode uses sequential alpha processing
-    with relatively small memory footprint per run.
+    Works for both serial (bigamp_tensor) and parallel (bigamp_tensor_parallel) versions.
+    Parallel version processes all S samples simultaneously, so memory scales with S.
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
     alpha_max = params.alpha_max
@@ -999,31 +1000,31 @@ def estimate_tensor_spreading(params: EstimationParams) -> float:
     # Get tensor order from params if available
     tensor_order = getattr(params, 'tensor_order', 3)
     
-    # Estimate hyperedges: C = ceil(alpha * prod(N_d) / M^(n-1))
+    # Estimate hyperedges: C = ceil(alpha * sum(N_d) * M) (degrees of freedom scaling)
     import math
-    N_prod = N1 ** tensor_order  # Assume square dims
-    C = max(1, int(math.ceil(alpha_max * N_prod / (M ** (tensor_order - 1)))))
+    # Use DOF scaling: C = alpha * sum(N_d) * M
+    dof = tensor_order * N1 * M  # Assume square dims
+    C = max(1, int(math.ceil(alpha_max * dof)))
     
     # Storage dtype
     storage_bytes = 2 if params.use_bf16 else 4  # BF16 or FP32
     f_bytes = 1 if params.f_distribution == 'rademacher' else 4
     
-    # Factor tensors: n factors × (N, M)
-    factor_memory = tensor_order * N1 * M * storage_bytes
+    # Factor tensors: n factors × (S, N, M) for parallel version
+    factor_memory = tensor_order * S * N1 * M * storage_bytes
     
-    # F and Y: (C, M) and (C,)
-    fy_memory = C * M * f_bytes + C * storage_bytes
+    # F and Y: (S, C, M) and (S, C)
+    fy_memory = S * C * M * f_bytes + S * C * storage_bytes
     
     # Intermediate: Var matrices × n factors
-    var_memory = tensor_order * N1 * M * storage_bytes
+    var_memory = tensor_order * S * N1 * M * storage_bytes
     
-    # Scatter/gather temporaries: (C, M)
-    temp_memory = 3 * C * M * storage_bytes
+    # Scatter/gather temporaries: (S, C, M)
+    temp_memory = 3 * S * C * M * storage_bytes
     
     total_bytes = factor_memory + fy_memory + var_memory + temp_memory
-    total_bytes *= S  # Per sample
     
-    # Safety margin
+    # Safety margin (1.2 for torch.compile overhead)
     return (total_bytes / (1024**3)) * 1.2
 
 

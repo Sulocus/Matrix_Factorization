@@ -244,7 +244,7 @@ class ExperimentConfig:
     
     def __post_init__(self):
         # Validate algorithm key
-        valid_algos = ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor"]
+        valid_algos = ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"]
         if self.algorithm_key not in valid_algos:
             raise ValueError(
                 f"Invalid algorithm_key: {self.algorithm_key}. "
@@ -252,7 +252,7 @@ class ExperimentConfig:
             )
         
         # Auto-create spreading config if needed
-        if self.algorithm_key in ("bigamp_spreading", "bigamp_tensor") and self.spreading is None:
+        if self.algorithm_key in ("bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel") and self.spreading is None:
             self.spreading = SpreadingConfig()
     
     @property
