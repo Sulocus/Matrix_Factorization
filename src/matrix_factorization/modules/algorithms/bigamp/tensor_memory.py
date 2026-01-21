@@ -127,6 +127,116 @@ def probe_tensor_memory(
         torch.cuda.empty_cache()
 
 
+def probe_tensor_super_memory(
+    dims: Tuple[int, ...],
+    M: int,
+    S: int,
+    alpha_max: float,
+    device: torch.device,
+    use_bf16: bool = True,
+) -> float:
+    """
+    Probe actual VRAM usage for Phase 3 TensorSuperGraph format.
+    
+    Measures memory for A=1 alpha. Result can be linearly extrapolated
+    to estimate memory for any A, since memory scales linearly with A.
+    
+    Args:
+        dims: Tensor dimensions (N_1, N_2, ..., N_n)
+        M: Latent dimension
+        S: Number of samples  
+        alpha_max: Maximum alpha value (determines C_max)
+        device: torch device
+        use_bf16: Whether to use BF16 precision
+        
+    Returns:
+        Estimated VRAM in GB for A=1 alpha. Multiply by A for total.
+    """
+    if not torch.cuda.is_available():
+        return 0.0
+    
+    # Clean up before probing
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    
+    n = len(dims)
+    storage_dtype = torch.bfloat16 if use_bf16 else torch.float32
+    
+    # Compute C_max based on alpha_max
+    dof = sum(dims) * M
+    C_max = max(1, int(alpha_max * dof))
+    SC = S * C_max
+    A = 1  # Probe with single alpha
+    
+    try:
+        # Create Phase 3 format tensors: (A, S*N_d, M)
+        factors = [
+            torch.randn(A, S * N_d, M, device=device, dtype=storage_dtype)
+            for N_d in dims
+        ]
+        factor_vars = [
+            torch.ones(A, S * N_d, M, device=device, dtype=storage_dtype)
+            for N_d in dims
+        ]
+        
+        # F_flat: (S*C_max, M), Y_flat: (S*C_max)
+        F_flat = torch.randn(SC, M, device=device, dtype=storage_dtype)
+        Y_flat = torch.randn(SC, device=device, dtype=storage_dtype)
+        
+        # Indices: (S*C_max,) for each dimension
+        indices_flat = [
+            torch.randint(0, dims[d], (SC,), device=device)
+            for d in range(n)
+        ]
+        
+        # Simulate forward_pass_tensor_super
+        gathered_list = []
+        for d in range(n):
+            N_d = dims[d]
+            sample_offsets = torch.arange(S, device=device).unsqueeze(1) * N_d
+            sample_offsets = sample_offsets.expand(S, C_max).reshape(-1)
+            offset_indices = indices_flat[d] + sample_offsets
+            gathered = factors[d][:, offset_indices.long()]
+            gathered_list.append(gathered)
+        
+        gathered = torch.stack(gathered_list)  # (n, A, S*C_max, M)
+        product = gathered.prod(dim=0)  # (A, S*C_max, M)
+        Z_hat = (F_flat.unsqueeze(0) * product).sum(dim=2)  # (A, S*C_max)
+        
+        # Simulate residual computation
+        s_values = (Y_flat.unsqueeze(0) - Z_hat) / 1.0
+        
+        # Simulate backward contribution
+        r_contrib = F_flat.unsqueeze(0) * product * s_values.unsqueeze(2)
+        
+        # Simulate scatter
+        for d in range(n):
+            N_d = dims[d]
+            SN_d = S * N_d
+            r_d = torch.zeros(A, SN_d, M, device=device, dtype=storage_dtype)
+            sample_offsets = torch.arange(S, device=device).unsqueeze(1) * N_d
+            sample_offsets = sample_offsets.expand(S, C_max).reshape(-1)
+            offset_indices = indices_flat[d] + sample_offsets
+            idx_exp = offset_indices.unsqueeze(0).unsqueeze(2).expand(A, -1, M)
+            r_d.scatter_add_(1, idx_exp, r_contrib)
+        
+        torch.cuda.synchronize()
+        peak_bytes = torch.cuda.max_memory_allocated()
+        peak_gb = peak_bytes / (1024**3)
+        
+        # Safety margin (1.3x) for torch.compile overhead and memory spikes
+        return peak_gb * 1.3
+        
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.warning(f"Probe OOM for Phase 3 with alpha_max={alpha_max}")
+            return float('inf')
+        raise
+    finally:
+        # Cleanup
+        torch.cuda.empty_cache()
+
+
 def estimate_max_samples(
     dims: Tuple[int, ...],
     M: int,

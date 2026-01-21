@@ -12,8 +12,11 @@ Key improvements over serial version:
 
 import math
 import torch
+import logging
 from typing import List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
 from .tensor_step_batch import tensor_step_batch, forward_pass_tensor_batch
@@ -205,7 +208,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         """
         AlgorithmBase interface: Train for multiple alpha values.
         
-        Phase 3: All alphas AND all samples processed in parallel using TensorSuperGraph.
+        Phase 3.1: Smart alpha batching based on memory constraints.
+        Uses greedy algorithm to group alphas into batches that fit in GPU memory.
         """
         A = len(alpha_values)
         
@@ -216,19 +220,125 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         self._batch_metrics = {}
         
-        # Use full parallel (Alpha + Sample) if available
-        result = self._train_full_parallel(
-            teacher_factors, alpha_values, seed, self.device, step_callback
-        )
+        # Smart alpha batching
+        alpha_batches = self._compute_alpha_batches(alpha_values)
         
-        # Store metrics for each alpha
-        for alpha_idx, alpha in enumerate(alpha_values):
-            self._batch_metrics[alpha] = {
-                'Q_Y_mean': result['Q_Y_per_alpha'][alpha_idx],
-                'Q_Y_std': result['Q_Y_std_per_alpha'][alpha_idx],
-            }
+        global_alpha_idx = 0
+        for batch_idx, batch_alphas in enumerate(alpha_batches):
+            # Process this batch
+            result = self._train_full_parallel(
+                teacher_factors, batch_alphas, seed + batch_idx, self.device, step_callback
+            )
+            
+            # Store metrics for each alpha in this batch
+            for local_idx, alpha in enumerate(batch_alphas):
+                self._batch_metrics[alpha] = {
+                    'Q_Y_mean': result['Q_Y_per_alpha'][local_idx],
+                    'Q_Y_std': result['Q_Y_std_per_alpha'][local_idx],
+                }
+                global_alpha_idx += 1
+            
+            # Clean up between batches
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         return W_all, X_all
+    
+    def _compute_alpha_batches(self, alpha_values: List[float]) -> List[List[float]]:
+        """
+        Compute alpha batches using probing-based memory estimation.
+        
+        Uses probe_tensor_super_memory to measure actual memory for A=1,
+        then calculates maximum alphas per batch based on available GPU memory.
+        
+        This is fully dynamic and adapts to any dims, M, S configuration.
+        """
+        if not torch.cuda.is_available():
+            return [alpha_values]  # No batching needed on CPU
+        
+        # Sort alphas (process smaller alphas first for better cache behavior)
+        sorted_alphas = sorted(alpha_values)
+        alpha_max = max(sorted_alphas) if sorted_alphas else 1.0
+        
+        # Use cached probe result if available
+        cache_key = (tuple(self.dims), self.M, self.S, alpha_max)
+        if hasattr(self, '_probe_cache') and cache_key in self._probe_cache:
+            base_mem_gb = self._probe_cache[cache_key]
+        else:
+            # Probe memory for A=1
+            from .tensor_memory import probe_tensor_super_memory
+            base_mem_gb = probe_tensor_super_memory(
+                self.dims, self.M, self.S, alpha_max, self.device, use_bf16=True
+            )
+            # Cache the result
+            if not hasattr(self, '_probe_cache'):
+                self._probe_cache = {}
+            self._probe_cache[cache_key] = base_mem_gb
+            logger.info(f"Phase 3 memory probe: A=1, alpha_max={alpha_max:.2f} -> {base_mem_gb:.2f} GB")
+        
+        # Get available GPU memory
+        total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        available_gb = total_gb * 0.5  # Use 50% for safety margin
+        
+        # Calculate maximum alphas per batch
+        if base_mem_gb <= 0 or math.isinf(base_mem_gb):
+            max_alphas = 1  # Fallback to 1 if probe failed
+        else:
+            max_alphas = max(1, int(available_gb / base_mem_gb))
+        
+        # Create batches
+        batches = []
+        n = len(sorted_alphas)
+        for i in range(0, n, max_alphas):
+            batch = sorted_alphas[i:i+max_alphas]
+            batches.append(batch)
+        
+        if len(batches) > 1:
+            logger.info(
+                f"Split {n} alphas into {len(batches)} batches "
+                f"(max {max_alphas} per batch, {base_mem_gb:.2f} GB each)"
+            )
+        
+        return batches
+    
+    # _estimate_batch_memory is no longer needed (replaced by probing)
+    # Kept for compatibility but not used
+        M = self.M
+        n = self.order
+        
+        # Compute C_max (depends on alpha_max)
+        alpha_max = max(batch_alphas) if batch_alphas else 1.0
+        dof = sum(self.dims) * M
+        C_max = max(1, int(alpha_max * dof))
+        
+        # Storage bytes
+        storage_bytes = 2 if self.storage_dtype == torch.bfloat16 else 4
+        
+        # factors: n tensors of (A, S*N_d, M)
+        factors_bytes = n * A * S * sum(self.dims) * M * storage_bytes / n
+        factors_bytes = A * S * sum(self.dims) * M * storage_bytes
+        
+        # factor_vars: same as factors
+        vars_bytes = factors_bytes
+        
+        # F_flat: (S*C_max, M), Y_flat: (S*C_max)
+        f_bytes = S * C_max * M * storage_bytes
+        y_bytes = S * C_max * storage_bytes
+        
+        # Gathered tensors: (n, A, S*C_max, M) - this is the main memory consumer
+        gathered_bytes = n * A * S * C_max * M * storage_bytes
+        
+        # Scatter temporaries: (A, S*N_d, M) for each dimension
+        scatter_bytes = n * A * S * max(self.dims) * M * storage_bytes
+        
+        # Total with LARGE safety margin (5x) for:
+        # - torch.compile overhead
+        # - Autograd graph
+        # - Additional temporaries during BiG-AMP step
+        # - CUDA memory fragmentation
+        total_bytes = (factors_bytes + vars_bytes + f_bytes + y_bytes + gathered_bytes + scatter_bytes) * 5.0
+        
+        return total_bytes / (1024**3)
     
     def supports_batch_training(self) -> bool:
         """Tensor parallel supports batch training."""

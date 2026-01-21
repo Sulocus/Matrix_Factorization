@@ -351,27 +351,10 @@ class ExperimentRunner:
         # Get execution plan from ParallelCoordinator
         plan = self.parallel_coordinator.plan_execution(params)
         
-        # Tensor mode: override to use 1 alpha per batch (for proper progress display)
-        if 'tensor' in config.algorithm_key:
-            from ..parallel.execution_modes import BatchConfig, ExecutionPlan, ParallelMode
-            # Create one batch per alpha for proper progress tracking
-            tensor_batches = [
-                BatchConfig(
-                    sample_range=(0, config.training.samples_per_alpha),
-                    alpha_range=(i, i+1),
-                    estimated_memory_gb=0.0,
-                    alpha_values=[alpha]
-                )
-                for i, alpha in enumerate(params.alpha_values)
-            ]
-            from ..parallel.execution_modes import AllocationPresets
-            plan = ExecutionPlan(
-                batches=tensor_batches, 
-                mode=ParallelMode.LINEAR,
-                total_estimated_memory_gb=0.0,
-                algorithm_key=config.algorithm_key,
-                allocation_config=AllocationPresets.CONSERVATIVE,
-            )
+        # Phase 3 Tensor Parallel: Let all alphas be processed in single batch
+        # The tensor_spreading_parallel._train_full_parallel() handles true Alpha+Sample parallelism
+        # No override needed - use the default plan from ParallelCoordinator
+
         
         # Initialize checkpoint manager (fixed global path: smf/.checkpoint.pt)
         ckpt_mgr = CheckpointManager()
