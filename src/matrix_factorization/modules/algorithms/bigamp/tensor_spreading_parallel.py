@@ -21,6 +21,11 @@ from .tensor_hypergraph import (
     generate_tensor_hypergraph, 
     generate_tensor_observations_batch,
 )
+from .tensor_supergraph import (
+    TensorSuperGraph, TensorSuperData,
+    create_tensor_supergraph, create_tensor_superdata,
+)
+from .tensor_step_super import tensor_step_super, forward_pass_tensor_super
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
@@ -200,7 +205,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         """
         AlgorithmBase interface: Train for multiple alpha values.
         
-        All S samples for each alpha are processed in parallel.
+        Phase 3: All alphas AND all samples processed in parallel using TensorSuperGraph.
         """
         A = len(alpha_values)
         
@@ -211,19 +216,16 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         self._batch_metrics = {}
         
+        # Use full parallel (Alpha + Sample) if available
+        result = self._train_full_parallel(
+            teacher_factors, alpha_values, seed, self.device, step_callback
+        )
+        
+        # Store metrics for each alpha
         for alpha_idx, alpha in enumerate(alpha_values):
-            alpha_seed = seed + int(alpha * 100)
-            
-            # Process all S samples in parallel
-            result = self._train_parallel(
-                teacher_factors, alpha, alpha_seed, self.device,
-                step_callback=step_callback
-            )
-            
-            # Store metrics
             self._batch_metrics[alpha] = {
-                'Q_Y_mean': result['Q_Y_mean'],
-                'Q_Y_std': result['Q_Y_std'],
+                'Q_Y_mean': result['Q_Y_per_alpha'][alpha_idx],
+                'Q_Y_std': result['Q_Y_std_per_alpha'][alpha_idx],
             }
         
         return W_all, X_all
@@ -236,6 +238,142 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
     # Core Parallel Training
     # =========================================================================
     
+    def _train_full_parallel(
+        self,
+        teacher_factors: List[torch.Tensor],
+        alpha_values: List[float],
+        seed: int,
+        device: torch.device,
+        step_callback: Optional[Callable] = None,
+    ) -> Dict[str, any]:
+        """
+        Train all alphas AND all samples in parallel using TensorSuperGraph.
+        
+        Phase 3 optimization: Single GPU call processes A × S problems.
+        
+        Args:
+            teacher_factors: n tensors of (N_d, M)
+            alpha_values: List of alpha values
+            seed: Random seed
+            device: Target device
+            step_callback: Optional progress callback
+            
+        Returns:
+            Dict with Q_Y_per_alpha, Q_Y_std_per_alpha arrays
+        """
+        n = self.order
+        S = self.S
+        A = len(alpha_values)
+        M = teacher_factors[0].shape[1]
+        
+        teacher_factors = [t.to(device) for t in teacher_factors]
+        
+        # Create TensorSuperGraph
+        supergraph = create_tensor_supergraph(
+            self.dims, alpha_values, M, S, seed, device
+        )
+        
+        # Create TensorSuperData
+        superdata = create_tensor_superdata(
+            supergraph, teacher_factors, self.f_distribution, seed + 1000
+        )
+        
+        # Get flat tensors
+        F_flat, Y_flat = superdata.get_flat_tensors()
+        indices_flat = supergraph.get_flat_indices()
+        N_dims = list(self.dims)
+        
+        # Initialize student factors in Disjoint Union format: (A, S*N_d, M)
+        avg_std = torch.stack([t.std() for t in teacher_factors]).mean()
+        init_scale = avg_std.item() if avg_std > 1e-9 else 0.1
+        
+        factors = [
+            torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
+            for N_d in self.dims
+        ]
+        factor_vars = [
+            torch.ones(A, S * N_d, M, device=device, dtype=self.storage_dtype) * (init_scale**2)
+            for N_d in self.dims
+        ]
+        
+        prev_s = None
+        is_rademacher = (self.f_distribution == 'rademacher')
+        
+        # Use compiled step function if available
+        step_fn = tensor_step_super
+        
+        # BiG-AMP iterations
+        for step in range(self.max_steps):
+            # Noise annealing
+            anneal_steps = int(0.2 * self.max_steps)
+            current_noise_var = self.noise_var
+            
+            if step < anneal_steps:
+                start_log = math.log(1.0)
+                end_log = math.log(max(self.noise_var, 1e-4))
+                progress = step / anneal_steps
+                current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
+            
+            # Alpha + Sample parallel BiG-AMP step
+            factors, factor_vars, prev_s = step_fn(
+                factors, factor_vars, Y_flat, F_flat, indices_flat,
+                S, N_dims, superdata.alpha_mask_exp,
+                damping=self.damping,
+                noise_var=current_noise_var,
+                is_rademacher=is_rademacher,
+                prev_s=prev_s if self.onsager_correction else None,
+                onsager_correction=self.onsager_correction,
+            )
+            
+            # Progress callback (throttled)
+            if step_callback and ((step + 1) % 20 == 0 or step == self.max_steps - 1):
+                try:
+                    step_callback(step + 1, self.max_steps)
+                except Exception:
+                    pass
+        
+        # Compute final metrics for all alphas and samples
+        Z_hat = forward_pass_tensor_super(factors, F_flat, indices_flat, S, N_dims)
+        
+        # Reshape for per-alpha, per-sample metrics
+        SC = supergraph.SC
+        C_max = supergraph.C_max
+        
+        # Y_flat: (S*C_max,) -> (S, C_max)
+        Y_reshaped = Y_flat.reshape(S, C_max)
+        # Z_hat: (A, S*C_max) -> (A, S, C_max)
+        Z_hat_reshaped = Z_hat.reshape(A, S, C_max)
+        
+        # Compute MSE per alpha, per sample
+        # Use alpha_mask to only count valid edges
+        alpha_mask_reshaped = supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_max)  # (A, S, C_max)
+        
+        diff_sq = (Y_reshaped.unsqueeze(0) - Z_hat_reshaped) ** 2  # (A, S, C_max)
+        diff_sq_masked = diff_sq * alpha_mask_reshaped.float()
+        
+        # Count valid edges per alpha
+        edge_counts = alpha_mask_reshaped.sum(dim=2).float()  # (A, S)
+        mse_per_alpha_sample = diff_sq_masked.sum(dim=2) / (edge_counts + 1e-10)  # (A, S)
+        
+        # Compute variance of Y for normalization
+        y_var = Y_reshaped.var(dim=1, keepdim=True) + 1e-10  # (S, 1)
+        
+        # Q_Y per alpha, per sample
+        Q_Y_per_alpha_sample = torch.clamp(1.0 - mse_per_alpha_sample / y_var.T, min=0.0)  # (A, S)
+        
+        # Aggregate: mean and std over samples
+        Q_Y_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
+        Q_Y_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        
+        return {
+            'Q_Y_per_alpha': Q_Y_per_alpha,
+            'Q_Y_std_per_alpha': Q_Y_std_per_alpha,
+            'A': A,
+            'S': S,
+            'C_max': C_max,
+        }
+
+
     def _train_parallel(
         self,
         teacher_factors: List[torch.Tensor],
