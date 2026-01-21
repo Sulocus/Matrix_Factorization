@@ -49,7 +49,25 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
     - F: (S, C, M) - batched spreading coefficients
     - Y: (S, C) - batched observations
     - indices: (C,) - SHARED hypergraph structure across samples
+    
+    Performance optimizations:
+    - TF32: Enabled globally for Tensor Core acceleration
+    - BF16: Auto-enabled on supported hardware (Ampere+)
+    - torch.compile: Kernel fusion with Triton (if available)
     """
+    
+    # Class-level cache for compiled step function
+    _compiled_step = None
+    
+    @classmethod
+    def clear_compile_cache(cls):
+        """Clear compiled step function cache to release GPU memory."""
+        cls._compiled_step = None
+        try:
+            import torch._dynamo
+            torch._dynamo.reset()
+        except Exception:
+            pass
     
     def __init__(self, config=None, device: torch.device = None, **kwargs):
         """
@@ -120,9 +138,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         if len(self.dims) != self.order:
             raise ValueError(f"dims length {len(self.dims)} must match tensor_order {self.order}")
         
-        # BF16 support (can be enabled later in Phase 1.5)
+        # === Phase 1.5: BF16 Mixed Precision ===
+        # Auto-detect hardware support for BF16 (Ampere+ GPUs)
         self.use_bf16 = False
         self.storage_dtype = torch.float32
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            self.use_bf16 = True
+            self.storage_dtype = torch.bfloat16
+        
+        # === Phase 1.5: torch.compile Support ===
+        self.use_compile = True  # Can be disabled via config if needed
+        if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is None:
+            try:
+                # Use 'default' mode for safety (no CUDA Graph issues)
+                BiGAMPTensorSpreadingParallel._compiled_step = torch.compile(
+                    tensor_step_batch,
+                    mode='default',
+                    fullgraph=False,
+                )
+            except Exception:
+                self.use_compile = False
         
         # Batch metrics storage
         self._batch_metrics = {}
@@ -245,8 +280,17 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         prev_s = None
         is_rademacher = (self.f_distribution == 'rademacher')
         
+        # Select step function: compiled if available, else original
+        step_fn = (BiGAMPTensorSpreadingParallel._compiled_step 
+                   if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is not None 
+                   else tensor_step_batch)
+        
         # BiG-AMP iterations (batched)
         for step in range(self.max_steps):
+            # Mark CUDA Graph step for torch.compile compatibility
+            if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is not None:
+                torch.compiler.cudagraph_mark_step_begin()
+            
             # Noise annealing
             anneal_steps = int(0.2 * self.max_steps)
             current_noise_var = self.noise_var
@@ -257,8 +301,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 progress = step / anneal_steps
                 current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
             
-            # Batched BiG-AMP step
-            factors, factor_vars, prev_s = tensor_step_batch(
+            # Batched BiG-AMP step (compiled or original)
+            factors, factor_vars, prev_s = step_fn(
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
                 noise_var=current_noise_var,
