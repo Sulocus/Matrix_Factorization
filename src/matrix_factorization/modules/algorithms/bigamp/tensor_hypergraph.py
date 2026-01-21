@@ -24,11 +24,10 @@ def generate_tensor_hypergraph(
     Generate random n-uniform hypergraph.
     
     The number of hyperedges C is determined by α (average degree):
-    - When all dims equal N: C = α * N
-    - When dims differ: C = α * min(dims)
+    - C = α * (sum(N_i) * M)
     
-    This ensures each node has approximately α connections on average
-    (for the smallest dimension, larger dimensions have fewer connections).
+    This ensures the number of observations scales linearly with the number of 
+    free parameters (Degrees of Freedom), preventing explosion for large tensors.
     
     Args:
         dims: (N_1, ..., N_n) factor dimensions
@@ -49,14 +48,11 @@ def generate_tensor_hypergraph(
     n = len(dims)
     
     # Compute number of hyperedges C
-    # Scaling law: C = alpha * (prod(N_i) / M^(n-1))
-    # This matches the scaling used in Matrix BiG-AMP Spreading (n=2)
-    N_prod = 1
-    for d in dims:
-        N_prod *= d
-        
-    denom = M ** (n - 1)
-    C = int(alpha * N_prod / denom)
+    # Scaling law: C = alpha * DoF
+    # DoF approx sum(N_i) * M
+    # This ensures linear scaling with problem size, correcting the previous volume-based scaling
+    dof = sum(dims) * M
+    C = int(alpha * dof)
     C = max(1, C)  # At least 1 edge
     
     # Generate random indices for each dimension

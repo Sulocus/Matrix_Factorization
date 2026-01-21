@@ -126,7 +126,11 @@ def load_yaml_config(yaml_path: Path):
             alpha_cfg.get('step', 0.05)
         ))
         scan = ScanConfig(dimension='alpha', values=alpha_values)
-        graph_mode = 'general' if allow_intra else 'bipartite'
+        # Tensor mode gets its own graph_mode label
+        if tensor_order >= 3:
+            graph_mode = f'tensor_n{tensor_order}'
+        else:
+            graph_mode = 'general' if allow_intra else 'bipartite'
         name = f"{algorithm_key}_{teacher_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_{graph_mode}"
         
         return ExperimentConfig(
@@ -727,6 +731,39 @@ def main():
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     
     # 6. 分发执行
+    # Explicitly print configuration status to ensure visibility
+    print("\n" + "="*60)
+    print("📋 Experiment Configuration")
+    print("="*60)
+    print(f"  Experiment:   {config.experiment_name}")
+    print(f"  Algorithm:    {config.algorithm_key}")
+    print(f"  Matrix:       {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
+    
+    scan_info = f"{config.scan.dimension} ({len(config.scan.values)} points)"
+    if hasattr(config.scan, 'is_steps_scan') and config.scan.is_steps_scan:
+        scan_info = f"steps ({len(config.scan.values)} points)"
+    print(f"  Scan Mode:    {scan_info}")
+    
+    # Show Tensor Order / Graph Mode
+    tensor_order = getattr(config.spreading, 'tensor_order', 2) if config.spreading else 2
+    mode_str = "General Graph (n=1)" if tensor_order == 1 else ("Bipartite (n=2)" if tensor_order == 2 else f"Tensor (n={tensor_order})")
+    print(f"  Graph Mode:   {mode_str}")
+    
+    # Show Spreading-specific params if relevant
+    if config.spreading:
+        print(f"  Spreading:    Enabled")
+        print(f"    - Dist:     {config.spreading.f_distribution}")
+        print(f"    - Onsager:  {config.spreading.onsager_correction}")
+        print(f"    - Intra:    {config.spreading.allow_intra_connection}")
+        
+        # Configuration validation warnings
+        if config.spreading.allow_intra_connection and config.spreading.onsager_correction:
+            print(f"    ⚠️  Warning: Onsager + General Mode may cause instability")
+        if tensor_order >= 3 and not config.spreading.onsager_correction:
+            print(f"    💡 Tip: Consider enabling Onsager for Tensor Mode (may improve convergence)")
+    
+    print("="*60 + "\n")
+
     if isinstance(config, dict) and config.get('mode') == 'nested':
         _handle_nested_mode(config, args, timestamp, bridge)
         

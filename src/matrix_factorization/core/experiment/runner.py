@@ -351,6 +351,28 @@ class ExperimentRunner:
         # Get execution plan from ParallelCoordinator
         plan = self.parallel_coordinator.plan_execution(params)
         
+        # Tensor mode: override to use 1 alpha per batch (for proper progress display)
+        if 'tensor' in config.algorithm_key:
+            from ..parallel.execution_modes import BatchConfig, ExecutionPlan, ParallelMode
+            # Create one batch per alpha for proper progress tracking
+            tensor_batches = [
+                BatchConfig(
+                    sample_range=(0, config.training.samples_per_alpha),
+                    alpha_range=(i, i+1),
+                    estimated_memory_gb=0.0,
+                    alpha_values=[alpha]
+                )
+                for i, alpha in enumerate(params.alpha_values)
+            ]
+            from ..parallel.execution_modes import AllocationPresets
+            plan = ExecutionPlan(
+                batches=tensor_batches, 
+                mode=ParallelMode.LINEAR,
+                total_estimated_memory_gb=0.0,
+                algorithm_key=config.algorithm_key,
+                allocation_config=AllocationPresets.CONSERVATIVE,
+            )
+        
         # Initialize checkpoint manager (fixed global path: smf/.checkpoint.pt)
         ckpt_mgr = CheckpointManager()
         
@@ -679,7 +701,9 @@ class ExperimentRunner:
         step_callback: Optional[Callable],
     ) -> tuple:
         """Run algorithm and return (W_students, X_students)."""
-        if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
+        # Include tensor algorithm in spreading family (uses step_callback)
+        is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
+        if is_spreading_family:
             W_students, X_students = algorithm.train_batch_alphas(
                 W_teacher=data.W_teacher,
                 X_teacher=data.X_teacher,
@@ -719,7 +743,9 @@ class ExperimentRunner:
         # Note: We pass total_steps as max_steps, so callbacks will show e.g. 2000/3000
         # If we wanted purely incremental, we'd need to adjust the callback logic.
         
-        if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
+        # Include tensor algorithm in spreading family (uses step_callback)
+        is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
+        if is_spreading_family:
             W_students, X_students = algorithm.train_batch_alphas(
                 W_teacher=data.W_teacher,
                 X_teacher=data.X_teacher,

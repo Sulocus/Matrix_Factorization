@@ -23,8 +23,8 @@ class TestBiGAMPTensorSpreading:
         # Create teacher
         teacher = [torch.randn(20, 10) * 0.1 for _ in range(3)]
         
-        # Train
-        result = algo.train_single_alpha(
+        # Train using internal method (Legacy API)
+        result = algo._train_single_internal(
             teacher_factors=teacher,
             alpha=2.0,
             seed=42,
@@ -47,7 +47,7 @@ class TestBiGAMPTensorSpreading:
         )
         
         teacher = [torch.randn(30, 10) * 0.1 for _ in range(2)]
-        result = algo.train_single_alpha(teacher, alpha=3.0, seed=42, device=torch.device('cpu'))
+        result = algo._train_single_internal(teacher, alpha=3.0, seed=42, device=torch.device('cpu'))
         
         # For n=2, should achieve good Q_Y with sufficient steps
         assert result['Q_Y'] > 0.5
@@ -82,7 +82,7 @@ class TestBiGAMPTensorSpreading:
         )
         
         teacher = [torch.randn(20, 5) * 0.1 for _ in range(2)]
-        result = algo.train_single_alpha(teacher, alpha=2.0, seed=42, device=torch.device('cpu'))
+        result = algo._train_single_internal(teacher, alpha=2.0, seed=42, device=torch.device('cpu'))
         
         # Should still run and produce result
         assert 'Q_Y' in result

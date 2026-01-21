@@ -1,0 +1,67 @@
+{
+  "matrix": {
+    "N1": 50,
+    "N2": 50,
+    "M": 20
+  },
+  "training": {
+    "samples_per_alpha": 2,
+    "max_steps": 500,
+    "max_epochs": 20000,
+    "num_workers": 1
+  },
+  "algorithm_key": "bigamp_tensor",
+  "scan": {
+    "dimension": "alpha",
+    "values": [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0
+    ]
+  },
+  "seeds": {
+    "base_seed": 42,
+    "teacher_seed": 12345,
+    "spreading_seed": 99999,
+    "student_seed": 0
+  },
+  "algorithm_params": {
+    "damping": 0.1,
+    "noise_var": 1e-05,
+    "learning_rate": 0.01,
+    "use_compile": false,
+    "use_bf16": true,
+    "use_early_stop": false,
+    "target_loss_threshold": 1e-08,
+    "default_alpha": 1.0,
+    "adaptive_damping": false,
+    "step_min": 0.05,
+    "step_max": 0.5,
+    "step_incr": 1.05,
+    "step_decr": 0.5,
+    "step_window": 5,
+    "max_bad_steps": 10,
+    "adaptive_restart": false,
+    "restart_patience": 50,
+    "restart_noise": 0.1,
+    "acceptance_tolerance": 0.0,
+    "init_mode": "random",
+    "init_overlap": 0.95
+  },
+  "spreading": {
+    "f_distribution": "rademacher",
+    "onsager_correction": false,
+    "allow_intra_connection": false,
+    "seed": 12345,
+    "chunk_size": 131072,
+    "tensor_order": 3
+  },
+  "teacher": {
+    "init_distribution": "gaussian"
+  },
+  "experiment_name": "bigamp_tensor_standard_50x50_M20_tensor_n3",
+  "teacher_key": "standard",
+  "notes": ""
+}

@@ -36,7 +36,7 @@ class TensorSpreadingConfig:
     damping: float = 0.5
     noise_var: float = 1e-6
     f_distribution: str = 'rademacher'
-    onsager_correction: bool = False  # Default OFF per user requirement
+    onsager_correction: bool = False  # Disabled by default for stability
 
 
 @register_algorithm(
@@ -57,17 +57,31 @@ class BiGAMPTensorSpreading(AlgorithmBase):
     2. Direct use: Use class methods with explicit parameters
     """
     
-    def __init__(self, config, device: torch.device):
+    def __init__(self, config=None, device: torch.device = None, **kwargs):
         """
         Initialize from runner config or direct parameters.
         
         Args:
             config: Either a full config object (from runner) or tensor_order int (legacy)
             device: torch device
+            **kwargs: Legacy kwargs API (tensor_order, dims, M, max_steps, damping, etc.)
         """
-        # Check if config is a full config object or legacy integer
-        if hasattr(config, 'matrix'):
-            # === From runner ===
+        # === Legacy kwargs API: BiGAMPTensorSpreading(tensor_order=3, dims=(...), ...) ===
+        if 'tensor_order' in kwargs or (config is None and device is None and len(kwargs) > 0):
+            self.config = None
+            self.order = kwargs.get('tensor_order', 3)
+            self.dims = kwargs.get('dims', tuple([50] * self.order))
+            self.M = kwargs.get('M', 20)
+            self.max_steps = kwargs.get('max_steps', 200)
+            self.S = kwargs.get('S', 1)
+            self.damping = kwargs.get('damping', 0.5)
+            self.noise_var = kwargs.get('noise_var', 1e-6)
+            self.f_distribution = kwargs.get('f_distribution', 'rademacher')
+            self.onsager_correction = kwargs.get('onsager_correction', False)
+            self.device = kwargs.get('device', device) or torch.device('cpu')
+        
+        # === From runner: BiGAMPTensorSpreading(config, device) ===
+        elif hasattr(config, 'matrix'):
             self.config = config
             self.device = device
             
@@ -85,9 +99,18 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                     f"Will use N1 for all tensor dimensions."
                 )
             
-            N = config.matrix.N1
-            # assert config.matrix.N1 == config.matrix.N2, "BiGAMPTensorSpreading requires N1 == N2"
-            self.dims = tuple([N] * self.order)
+            # N维张量: Use actual dimensions if available
+            N1 = config.matrix.N1
+            N2 = config.matrix.N2
+            
+            # Construct dims tuple: (N1, N2, N1, N1...) for order > 2
+            dims_list = [N1]
+            if self.order >= 2:
+                dims_list.append(N2)
+            for _ in range(2, self.order):
+                dims_list.append(N1) # Default extra dims to N1
+                
+            self.dims = tuple(dims_list)
             self.M = config.matrix.M
             self.max_steps = config.training.max_steps
             self.S = config.training.samples_per_alpha
@@ -99,10 +122,11 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Spreading params
             if hasattr(config, 'spreading') and config.spreading:
                 self.f_distribution = config.spreading.f_distribution
+                # Respect user configuration for Onsager correction
                 self.onsager_correction = config.spreading.onsager_correction
             else:
                 self.f_distribution = 'rademacher'
-                self.onsager_correction = False
+                self.onsager_correction = False  # Default: OFF for consistency with SpreadingConfig
                 
         elif isinstance(config, int):
             # === Legacy direct call (tensor_order as first arg) ===
@@ -167,7 +191,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         alpha_values: List[float],
         seed: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
-        step_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int, Optional[Dict]], None]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -190,15 +214,25 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         total_work = A * self.S * self.max_steps
         completed_steps = 0
         
+        def wrapped_step_callback(step, total, metrics=None):
+            # Pass batch-relative step (step, max_steps) instead of global cumulative
+            # This allows UI to correctly display per-batch progress
+            if step_callback:
+                step_callback(step, total, metrics)
+        
         for alpha_idx, alpha in enumerate(alpha_values):
+            # Progress is tracked by runner, no print needed
+            
             alpha_q_y_list = []
+            
+            # TODO: Consider reusing hypergraph for samples (resample_mask=False case)
             
             for s in range(self.S):
                 sample_seed = seed + s * 1000 + int(alpha * 100)
                 
                 result = self._train_single_internal(
                     teacher_factors, alpha, sample_seed, self.device,
-                    step_callback=lambda step, total: step_callback(completed_steps + step, total_work) if step_callback else None
+                    step_callback=wrapped_step_callback
                 )
                 
                 alpha_q_y_list.append(result['Q_Y'])
@@ -209,6 +243,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 'Q_Y_mean': sum(alpha_q_y_list) / len(alpha_q_y_list),
                 'Q_Y_std': (sum((q - sum(alpha_q_y_list)/len(alpha_q_y_list))**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
             }
+
+            # Metrics stored for runner retrieval
         
         return W_all, X_all
     
@@ -277,30 +313,58 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             teacher_factors, hg, seed + 1000, device, self.f_distribution
         )
         
-        # Initialize student (random)
-        factors = [torch.randn_like(t) * 0.1 for t in teacher_factors]
-        factor_vars = [torch.ones_like(t) for t in teacher_factors]
+        # Initialize student (Spectral-like initialization)
+        # Estimate scale from teacher to avoid "dead" initialization
+        avg_std = torch.stack([t.std() for t in teacher_factors]).mean()
+        
+        # Initialize with matching scale + noise, or small random if teacher is zero
+        init_scale = avg_std.item() if avg_std > 1e-9 else 0.1
+        
+        factors = [torch.randn_like(t) * init_scale for t in teacher_factors]
+        factor_vars = [torch.ones_like(t) * (init_scale**2) for t in teacher_factors]
         
         prev_s = None
         is_rademacher = (self.f_distribution == 'rademacher')
         
+        # Precompute y_var for final metrics (fallback logic)
+        y_var_scalar = 1.0 # default
+        
         # BiG-AMP iterations
         for step in range(self.max_steps):
+            # Noise Annealing
+            # Decay from high noise to target noise_var over first 20% steps
+            anneal_steps = int(0.2 * self.max_steps)
+            current_noise_var = self.noise_var
+            
+            if step < anneal_steps:
+                # Log-linear interpolation
+                start_log = math.log(1.0) # Start with high variance (1.0)
+                end_log = math.log(max(self.noise_var, 1e-4)) # Don't go too low too fast
+                progress = step / anneal_steps
+                current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
+
             factors, factor_vars, prev_s = tensor_step(
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
-                noise_var=self.noise_var,
+                noise_var=current_noise_var,
                 is_rademacher=is_rademacher,
                 prev_s=prev_s if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,
             )
             
-            if step_callback and ((step + 1) % 50 == 0 or step == self.max_steps - 1):
-                step_callback(step + 1, self.max_steps)
+            # Throttle callback to balance UI responsiveness vs CPU overhead
+            # GPU monitor has 2s cache, so every 20 steps (10 updates per 200 steps) is sufficient
+            if step_callback and ((step + 1) % 20 == 0 or step == self.max_steps - 1):
+                try:
+                    step_callback(step + 1, self.max_steps)
+                except Exception as e:
+                    pass  # Silently ignore callback errors
             
+            # Print progress only (Standard algorithm behavior)
             if verbose and (step + 1) % 50 == 0:
-                Y_pred = forward_pass_tensor(factors, F, hg.indices)
-                mse = ((Y - Y_pred) ** 2).mean().item()
+                with torch.no_grad():
+                    Y_pred = forward_pass_tensor(factors, F, hg.indices)
+                    mse = ((Y - Y_pred) ** 2).mean().item()
                 print(f"  Step {step + 1}/{self.max_steps}: MSE = {mse:.6f}")
         
         # Compute final metrics
@@ -310,7 +374,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         if Y.numel() > 1:
             y_var = Y.var().item() + 1e-10
         else:
-            y_var = Y.abs().mean().item()**2 + 1e-10 # Fallback for single element
+            y_var = Y.abs().mean().item()**2 + 1e-10
             
         Q_Y = max(0.0, 1.0 - mse / y_var)
         

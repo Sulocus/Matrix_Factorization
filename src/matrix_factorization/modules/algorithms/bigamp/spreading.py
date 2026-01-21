@@ -134,7 +134,7 @@ class BiGAMPSpreading(AlgorithmBase):
         if spreading_cfg is not None:
             self.f_distribution = spreading_cfg.f_distribution
             self.spreading_seed = spreading_cfg.seed
-            self.onsager_correction = getattr(spreading_cfg, 'onsager_correction', True)
+            self.onsager_correction = getattr(spreading_cfg, 'onsager_correction', False)
             self.allow_intra_connection = getattr(spreading_cfg, 'allow_intra_connection', False)
             # Default chunk_size to 0 (Unchunked) to utilize ParallelCoordinator's dynamic batching
             # instead of inefficient Python-level looping.
@@ -143,9 +143,16 @@ class BiGAMPSpreading(AlgorithmBase):
             # Default values
             self.f_distribution = 'gaussian'
             self.spreading_seed = 12345
-            self.onsager_correction = True
+            self.onsager_correction = False
             self.allow_intra_connection = False
             self.chunk_size = 0
+
+        # Log configuration for debugging
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.debug(f"BiGAMPSpreading init: onsager_correction={self.onsager_correction}, "
+                      f"allow_intra_connection={self.allow_intra_connection}, "
+                      f"f_distribution={self.f_distribution}")
 
         # Validate f_distribution
         if self.f_distribution not in F_GENERATORS:

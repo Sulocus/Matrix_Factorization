@@ -155,7 +155,10 @@ def tensor_step(
     
     # Onsager correction (optional, default OFF)
     if onsager_correction and prev_s is not None:
-        Z_hat = Z_hat - V * prev_s
+        correction = V * prev_s
+        # Stability check: limit correction magnitude to prevent explosion
+        correction = torch.clamp(correction, min=-0.5, max=0.5)
+        Z_hat = Z_hat - correction
     
     # Residual
     denom = torch.clamp(V + noise_var, min=1e-6)
@@ -206,6 +209,9 @@ def tensor_step(
         new_var_d = 1.0 / tau_d
         new_var_d = new_var_d.clamp(max=1.0)
         new_factor_d = new_var_d * (tau_d * factors[d] + r_d)
+        
+        # Stability check: clamp factors to prevent explosion
+        new_factor_d = torch.clamp(new_factor_d, min=-10.0, max=10.0)
         
         # Damping
         new_factor_d = damping * factors[d] + (1 - damping) * new_factor_d

@@ -26,9 +26,6 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from .gpu_monitor import GPUMonitor
-
-
-
 from ..ui.progress_renderer import ProgressRenderer
 
 class UnifiedProgress:
@@ -66,6 +63,9 @@ class UnifiedProgress:
         self._current_alpha = 0.0
         self._current_batch_alphas: List[float] = []
         self._current_step = 0
+        
+        # Metrics storage
+        self._current_metrics: Dict[str, float] = {}
 
         # Phase 4: Physics-aware ETA estimator
         self._physics_eta = None
@@ -109,8 +109,6 @@ class UnifiedProgress:
                     dynamic_batches=batch_assignments,
                     algorithm_name=algorithm_key or "bigamp_spreading"
                 )
-                if self._completed_batches > 0:
-                     pass
             except ImportError:
                 pass
 
@@ -122,7 +120,7 @@ class UnifiedProgress:
         batch_elapsed = now - self._batch_start_time if self._batch_start_time else 0
         eta = self._estimate_eta()
         
-        # Rate Limiting Logic and Calculations (unchanged)
+        # Rate Limiting Logic and Calculations
         if now - self._last_history_update > 1.0:
             self._rate_history.append((now, self._current_step))
             self._last_history_update = now
@@ -140,7 +138,7 @@ class UnifiedProgress:
              
         it_per_sec = self._current_it_per_sec
 
-        # Batch Prediction Logic (unchanged)
+        # Batch Prediction Logic
         batch_total_estimated = -1.0
         if elapsed < 10.0:
             batch_total_estimated = -1.0
@@ -186,20 +184,15 @@ class UnifiedProgress:
             'alphas': self._current_batch_alphas or [self._current_alpha],
             'timing': (fmt_time(elapsed), fmt_time(eta), fmt_time(batch_elapsed), fmt_time(batch_total_estimated)),
             'throughput': it_per_sec,
-            'gpu': (power, memory)
+            'gpu': (power, memory),
+            'metrics': self._current_metrics
         }
         
         return self._renderer.render_capsule_panel(state)
 
 
     def _estimate_eta(self) -> float:
-        """Estimate remaining time based on batch timing.
-        
-        Phase 4 Optimization: Uses PhysicsAwareETA if available.
-        Otherwise falls back to sliding window or cumulative average.
-        
-        NOW THROTTLED: Updates only every 5 seconds to prevent jitter.
-        """
+        """Estimate remaining time based on batch timing."""
         now = time.time()
         # Return cached value if within 1s window (smooth countdown)
         if now - self._last_eta_update < 1.0 and self._cached_eta >= 0:
@@ -208,74 +201,49 @@ class UnifiedProgress:
         if not self._total_start_time:
             return self.initial_estimate if self.initial_estimate else -1
             
-        # USER REQUEST: Force 10s warmup masking for accurate initial reading
         elapsed = time.time() - self._total_start_time
         if elapsed < 10.0:
             return -1.0
 
-        # Helper to update cache
         def _return_and_cache(val):
             self._cached_eta = val
             self._last_eta_update = now
             return val
 
-        # Phase 4: Use physics-aware ETA if available
-        # FIX: PhysicsAwareETA now correctly handles Resume by using session-based work tracking
         if self._physics_eta:
             step_pct = self._current_step / self.steps_per_alpha if self.steps_per_alpha > 0 else 0
             eta, _ = self._physics_eta.get_status(self._completed_batches, step_pct)
             return _return_and_cache(eta)
 
-        total_elapsed = time.time() - self._total_start_time
-
-        # If no batches completed yet, estimate from current batch progress
-        # If no batches completed yet, estimate from current batch progress
         if self._completed_batches == 0:
             if self._batch_start_time and self._current_step > 0:
                 step_elapsed = time.time() - self._batch_start_time
                 step_pct = self._current_step / self.steps_per_alpha
-                if step_pct > 0.01:  # Wait for 1% progress (was 5%)
+                if step_pct > 0.01:
                     estimated_batch_time = step_elapsed / step_pct
                     remaining_in_current = estimated_batch_time * (1 - step_pct)
                     remaining_batches = self._total_batches - 1
                     return _return_and_cache(remaining_in_current + estimated_batch_time * remaining_batches)
             
-            # Start of very first batch: Return initial estimate or -1 (unknown)
-            # Do NOT return 0, which looks like "Done"
             return _return_and_cache(self.initial_estimate if self.initial_estimate else -1)
 
-        # Fallback: Use completed batch times for estimation
-        # Fallback: Use completed batch times for estimation
-        # Fallback: Use completed batch times for estimation
+        # Fallback
         if self._batch_times:
             avg_time_per_batch = sum(self._batch_times) / len(self._batch_times)
         elif self._batch_start_time and self._current_step > 0:
-            # FIX: Use instantaneous rate (sliding window) to project current batch duration
-            # This avoids "2 hour" spikes caused by startup overhead in cumulative average
             if self._current_it_per_sec > 0.01:
-                # Project based on current speed
                 avg_time_per_batch = max(1, self.steps_per_alpha) / self._current_it_per_sec
             else:
-                 # If rate is 0 (start of first batch), use initial estimate if reasonable, else 0
-                 # Don't return 0 if we can help it, show "--" (handled by caller receiving 0 or large)
-                 # Better to return a placeholder based on config if possible, but here we fall back
                  avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
         else:
             avg_time_per_batch = (self.initial_estimate or 0) / max(1, self._total_batches)
 
         remaining_batches = self._total_batches - self._completed_batches
-
-        # Estimate remaining time in current batch
-        # Estimate remaining time in current batch
         remaining_in_current = 0
         if remaining_batches > 0 and self._batch_start_time and self._current_step > 0:
             step_elapsed = time.time() - self._batch_start_time
             step_pct = self._current_step / self.steps_per_alpha
-            
-            # Stabilization: Only project current batch time after >1% progress
-            # Otherwise use average time (avoids spikes at start of batch)
             remaining_batches -= 1
-            
             if step_pct > 0.01:
                 estimated_batch_time = step_elapsed / step_pct
                 remaining_in_current = estimated_batch_time * (1 - step_pct)
@@ -294,10 +262,8 @@ class UnifiedProgress:
         self._total_start_time = time.time()
         self._batch_start_time = time.time()
         self._current_step = 0
-        self._frame = 0
 
         if self.initial_estimate:
-             # Just a small log before we start
             est_str = str(timedelta(seconds=int(self.initial_estimate)))
             self._renderer.console.print(f"[dim]Estimated total time: ~{est_str}[/dim]")
 
@@ -306,26 +272,17 @@ class UnifiedProgress:
             refresh_per_second=10,
             console=self._renderer.console,
             transient=False,
-            # vertical_overflow="crop", # Removed to avoid cutting off the panel
         )
         self._live.start()
 
     def start_batch(self, batch_idx: int, batch_alphas: List[float], num_batches: int = None):
-        """Start tracking a new batch.
-
-        Args:
-            batch_idx: 0-indexed batch number
-            batch_alphas: List of alpha values in this batch
-            num_batches: Optional total number of batches (updates _total_batches if provided)
-        """
+        """Start tracking a new batch."""
         if not RICH_AVAILABLE or not self._live:
             return
 
-        # Update total batches if provided (dynamic batching)
         if num_batches is not None:
             self._total_batches = num_batches
         
-        # Mark previous batch as complete if we're moving to a new batch
         if batch_idx > self._current_batch_idx:
             self._completed_batches = batch_idx
         
@@ -334,20 +291,14 @@ class UnifiedProgress:
         self._current_alpha = batch_alphas[0] if batch_alphas else 0.0
         self._batch_start_time = time.time()
         self._current_step = 0
-        self._frame += 1
         
-        # Sync Physics ETA state (critical for accurate time estimation)
         if self._physics_eta:
             self._physics_eta.start_batch(batch_idx)
             
-        # NOTE: Do NOT clear _rate_history to maintain smooth speed calculation
         self._live.update(self._render())
 
     def start_alpha(self, alpha: float, batch_alphas: List[float] = None):
-        """Start tracking a new alpha or batch (legacy interface).
-
-        For backward compatibility. Prefer start_batch() for new code.
-        """
+        """Start tracking a new alpha or batch."""
         if not RICH_AVAILABLE or not self._live:
             return
 
@@ -355,10 +306,9 @@ class UnifiedProgress:
         self._current_batch_alphas = batch_alphas or [alpha]
         self._batch_start_time = time.time()
         self._current_step = 0
-        self._frame += 1
         self._live.update(self._render())
 
-    def update_step(self, current: int, total: int = None):
+    def update_step(self, current: int, total: int = None, metrics: Dict = None):
         """Update step progress within current batch."""
         if not RICH_AVAILABLE or not self._live:
             return
@@ -366,61 +316,45 @@ class UnifiedProgress:
         self._current_step = current
         if total:
             self.steps_per_alpha = total
-        self._frame += 1
+            
+        if metrics:
+            self._current_metrics.update(metrics)
+            
         self._live.update(self._render())
 
     def finish_batch(self, metrics: Dict = None):
-        """Finish tracking current batch and record timing.
-
-        Call this after a batch completes to update batch progress.
-        """
+        """Finish tracking current batch and record timing."""
         if not RICH_AVAILABLE or not self._live:
             return
 
         if self._batch_start_time:
             batch_time = time.time() - self._batch_start_time
             self._batch_times.append(batch_time)
-
-            # Also track per-alpha times for legacy compatibility
             num_in_batch = len(self._current_batch_alphas) if self._current_batch_alphas else 1
             time_per_alpha = batch_time / num_in_batch
             for _ in range(num_in_batch):
                 self._alpha_times.append(time_per_alpha)
 
-        # Record batch completion time for adaptive ETA calibration
         if self._physics_eta:
             self._physics_eta.end_batch(self._current_batch_idx)
 
         self._completed_batches += 1
         self._completed_alphas += len(self._current_batch_alphas) if self._current_batch_alphas else 1
-        # Step progress should show 100% when batch completes
         self._current_step = self.steps_per_alpha
-        self._frame += 1
         self._live.update(self._render())
 
     def update_sample(self, current: int, total: int = None):
-        """Update sample progress (legacy interface).
-
-        Deprecated: Use finish_batch() for new code.
-        Maps to batch completion for compatibility.
-        """
+        """Update sample progress (legacy interface)."""
         if not RICH_AVAILABLE or not self._live:
             return
-
-        # Map sample to batch for backward compatibility
         self._completed_batches = current
         if total:
             self._total_batches = total
-        # Step progress should show 100% when sample completes
         self._current_step = self.steps_per_alpha
-        self._frame += 1
         self._live.update(self._render())
 
     def finish_alpha(self, metrics: Dict = None):
-        """Finish tracking current batch (legacy interface).
-
-        Deprecated: Use finish_batch() for new code.
-        """
+        """Finish tracking current batch (legacy interface)."""
         self.finish_batch(metrics)
 
     def stop(self):
@@ -479,7 +413,6 @@ class ExperimentProgress:
             self._progress.start()
 
             if self.initial_estimate:
-                 # Helper for time format
                 est_str = str(timedelta(seconds=int(self.initial_estimate)))
                 self.console.print(f"[dim]Estimated total time: ~{est_str}[/dim]")
 
@@ -678,7 +611,7 @@ class ProgressBridge:
                 )
         elif type_name == 'STEP_UPDATE':
             if self.progress:
-                self.progress.update_step(p.get('step', 0), p.get('total'))
+                self.progress.update_step(p.get('step', 0), p.get('total'), metrics=p.get('metrics'))
         elif type_name == 'POINT_START':
              # Maybe show point progress?
              pass
@@ -700,21 +633,17 @@ class ProgressBridge:
 
     def _handle_start(self, p: Dict):
         """Initialize progress bar on start."""
-        # We need to guess or calculate total steps for initialization
-        # But UnifiedProgress is dynamic, so we just need initial structure
         if self.console:
             self.console.print(Panel(
                 f"[bold cyan]Running {p.get('experiment_name', 'Experiment')}[/bold cyan]\n"
                 f"[dim]{p.get('matrix')}, {p.get('scan')}[/dim]",
                 border_style="cyan",
-                expand=False  # 收紧到文字右侧，不展开到终端宽度
+                expand=False
             ))
             
-        # Defer creation to first batch or assume standard defaults
-        # We create a placeholder here
         self.progress = UnifiedProgress(
-            num_alphas=1, # Will update on batch start
-            steps_per_alpha=1000, # Will update
+            num_alphas=1, 
+            steps_per_alpha=1000,
             num_batches=1
         )
         self.progress.start()
@@ -725,16 +654,12 @@ class ProgressBridge:
             return
             
         alphas = p.get('alpha_values', [])
-        # Update progress tracking
         self.progress.start_batch(
             batch_idx=p.get('batch_idx', 0),
             batch_alphas=alphas,
             num_batches=p.get('total_batches', 1)
         )
         
-        # If we have memory info, we could update it (UnifiedProgress reads GPU directly)
-        
-        # Update steps expectation (important for Step Scan)
         steps = p.get('steps_per_alpha')
         if steps:
             self.progress.steps_per_alpha = steps
@@ -761,4 +686,3 @@ class ProgressBridge:
              path = getattr(result, 'result_path', 'memory')
              self.console.print("\n[bold green]Experiment Complete![/bold green]")
              self.console.print(f"Results saved to: [cyan]{path}[/cyan]\n")
-

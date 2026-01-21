@@ -1,0 +1,52 @@
+# =============================================================================
+#            Tensor Mode 测试配置（小规模）
+# =============================================================================
+# 此配置用于快速测试 tensor_order >= 3 的功能
+# 计算量约为默认配置的1/1000
+
+tensor_order: 3
+
+algorithm: 2  # bigamp_spreading (自动切换到 bigamp_tensor)
+
+teacher: 2
+
+teacher_config:
+  init_distribution: 1
+
+# 小规模矩阵（快速测试）
+matrix:
+  N1: 50
+  N2: 50
+  M: 20
+
+scan_mode: 1
+
+alpha_scan:
+  start: 0
+  stop: 2
+  step: 0.5  # 只有5个点
+
+training:
+  samples_per_alpha: 2
+  max_steps: 500
+
+seeds:
+  model: 42
+  data: 42
+
+algorithm_params:
+  damping: 0.1
+  noise_var: 1.0e-5
+  use_compile: false  # 关闭编译加速测试
+  use_bf16: true
+
+spreading:
+  f_distribution: 1
+  seed: 12345
+  onsager_correction: false
+
+output:
+  name: "tensor_test"
+  storage_mode: lightweight
+  plots:
+    - curves: [A.y]
