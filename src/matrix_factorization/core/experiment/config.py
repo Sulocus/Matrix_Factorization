@@ -203,6 +203,9 @@ class AlgorithmParams:
     init_mode: str = "random"      # "random" = Cold Start, "teacher" = Warm Start
     init_overlap: float = 0.95     # Initial overlap with teacher (0.9 - 0.99)
     
+    # Debugging
+    debug_verbose: bool = False    # Enable expensive per-step metrics logging
+    
     def to_dict(self) -> Dict:
         return asdict(self)
 

@@ -18,6 +18,9 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Set to True for verbose debug output during development
+DEBUG_VERBOSE = False
+
 from .tensor_data import TensorHypergraph, TensorSpreadingData
 from .tensor_step_batch import tensor_step_batch, forward_pass_tensor_batch
 from .tensor_hypergraph import (
@@ -66,11 +69,13 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
     
     # Class-level cache for compiled step function
     _compiled_step = None
+    _compiled_step_super = None  # Phase 3: for tensor_step_super
     
     @classmethod
     def clear_compile_cache(cls):
         """Clear compiled step function cache to release GPU memory."""
         cls._compiled_step = None
+        cls._compiled_step_super = None
         try:
             import torch._dynamo
             torch._dynamo.reset()
@@ -126,7 +131,16 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 self.onsager_correction = config.spreading.onsager_correction
             else:
                 self.f_distribution = 'rademacher'
-                self.onsager_correction = False
+                self.onsager_correction = config.spreading.onsager_correction
+                
+            # Warm Start / Init Mode
+            self.init_mode = getattr(config.algorithm_params, 'init_mode', 'spectral')
+            # FIX: Correct parameter name matching config.py (init_overlap)
+            self.warm_start_rho = getattr(config.algorithm_params, 'init_overlap', 0.9)
+            self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
+            
+            if DEBUG_VERBOSE:
+                print(f"DEBUG: Configured Init Mode: {self.init_mode}, Init Overlap (rho): {self.warm_start_rho}", flush=True)
                 
         elif isinstance(config, int):
             self.config = None
@@ -140,6 +154,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.noise_var = 1e-6
             self.f_distribution = 'rademacher'
             self.onsager_correction = False
+            self.debug_verbose = False
         else:
             raise ValueError(f"config must be a config object or int, got {type(config)}")
         
@@ -166,6 +181,18 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 )
             except Exception:
                 self.use_compile = False
+        
+        # Phase 3: Compile tensor_step_super for Alpha + Sample parallelization
+        if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step_super is None:
+            try:
+                BiGAMPTensorSpreadingParallel._compiled_step_super = torch.compile(
+                    tensor_step_super,
+                    mode='default',
+                    fullgraph=False,
+                )
+            except Exception:
+                # Fall back to non-compiled version
+                pass
         
         # Batch metrics storage
         self._batch_metrics = {}
@@ -225,16 +252,29 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         global_alpha_idx = 0
         for batch_idx, batch_alphas in enumerate(alpha_batches):
+            # Wrapper for step_callback to inject batch info
+            current_callback = step_callback
+            if step_callback is not None:
+                def internal_step_callback(step: int, total: int, metrics: Optional[Dict] = None):
+                    metrics = metrics or {}
+                    metrics['batch_info'] = {
+                        'batch_idx': batch_idx + 1,  # 1-based for UI
+                        'total_batches': len(alpha_batches),
+                        'batch_alphas': batch_alphas,
+                    }
+                    step_callback(step, total, metrics)
+                current_callback = internal_step_callback
+
             # Process this batch
             result = self._train_full_parallel(
-                teacher_factors, batch_alphas, seed + batch_idx, self.device, step_callback
+                teacher_factors, batch_alphas, seed + batch_idx, self.device, current_callback
             )
             
             # Store metrics for each alpha in this batch
             for local_idx, alpha in enumerate(batch_alphas):
                 self._batch_metrics[alpha] = {
-                    'Q_Y_mean': result['Q_Y_per_alpha'][local_idx],
-                    'Q_Y_std': result['Q_Y_std_per_alpha'][local_idx],
+                    'Q_Y_mean': result['Q_Y'][local_idx],  # Full tensor Cosine
+                    'Q_Y_std': result['Q_Y_std'][local_idx],
                 }
                 global_alpha_idx += 1
             
@@ -282,7 +322,14 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         # Calculate maximum alphas per batch
         if base_mem_gb <= 0 or math.isinf(base_mem_gb):
-            max_alphas = 1  # Fallback to 1 if probe failed
+            # Fallback if probe fails: attempt a reasonable batch size (e.g., 5)
+            # This prevents fallback to serial execution (size=1) which is extremely slow
+            max_alphas = min(5, len(sorted_alphas))
+            logger.warning(
+                f"Memory probe failed (returned {base_mem_gb}). "
+                f"Batching fallback: Defaulting to max_alphas={max_alphas}. "
+                "If OOM occurs, reduce S or M."
+            )
         else:
             max_alphas = max(1, int(available_gb / base_mem_gb))
         
@@ -369,7 +416,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             step_callback: Optional progress callback
             
         Returns:
-            Dict with Q_Y_per_alpha, Q_Y_std_per_alpha arrays
+            Dict with Q_Y (full tensor), Q_Y_observed (observation-only) arrays
         """
         n = self.order
         S = self.S
@@ -388,29 +435,101 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             supergraph, teacher_factors, self.f_distribution, seed + 1000
         )
         
-        # Get flat tensors
+        # Get flat tensors and PRECOMPUTED offset_indices
         F_flat, Y_flat = superdata.get_flat_tensors()
-        indices_flat = supergraph.get_flat_indices()
+        offset_indices = supergraph.get_offset_indices()  # PRECOMPUTED!
         N_dims = list(self.dims)
         
-        # Initialize student factors in Disjoint Union format: (A, S*N_d, M)
-        avg_std = torch.stack([t.std() for t in teacher_factors]).mean()
-        init_scale = avg_std.item() if avg_std > 1e-9 else 0.1
+        # Initialize student factors
+        init_scale = 1.0  # Unit Init for Unit Teacher
         
-        factors = [
-            torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
-            for N_d in self.dims
-        ]
+        if self.init_mode in ('warm_start', 'teacher'):
+            # Warm Start: Initialize near Teacher
+            # Student = Teacher * rho + Noise * sqrt(1 - rho^2)
+            # Both Teacher and Noise are N(0, 1) (Unit Standard)
+            rho = self.warm_start_rho
+            if DEBUG_VERBOSE:
+                print("=" * 60, flush=True)
+                print(f"INIT DEBUG: Using Warm Start, rho = {rho} (type: {type(rho).__name__})", flush=True)
+                print("=" * 60, flush=True)
+            
+            factors = []
+            for d in range(self.order):
+                # Expand Teacher to (A, S*N_d, M)
+                # Teacher is (N_d, M). Student requires (A, S*N_d, M).
+                # 1. Expand to (A, S, N_d, M)
+                t_expanded_temp = teacher_factors[d].unsqueeze(0).unsqueeze(0).expand(A, S, -1, -1)
+                # 2. Flatten S and N_d -> (A, S*N_d, M)
+                t_expanded = t_expanded_temp.reshape(A, S * self.dims[d], M)
+                
+                noise = torch.randn_like(t_expanded)
+                # Mix
+                f_init = t_expanded * rho + noise * math.sqrt(1 - rho**2)
+                factors.append(f_init.to(device))
+                
+                if DEBUG_VERBOSE:
+                    print(f"DEBUG: Initialized Factor {d} with Warm Start. Mean={f_init.mean():.4f}, Std={f_init.std():.4f}", flush=True)
+
+        elif self.init_mode == 'spectral':
+             # Spectral Initialization: Use power method
+             # First initialize factors randomly as starting point for power method
+             init_scale = 1.0
+             factors = [
+                  torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
+                  for N_d in self.dims
+             ]
+             # Then refine using spectral method
+             factors = self._spectral_initialization(
+                supergraph, Y_flat, F_flat, factors, offset_indices, iterations=30
+             )
+             
+             # RESCALE metric: With our new "Unit Standard" plan, we want Factors ~ N(0, 1).
+             target_std = 1.0
+             if DEBUG_VERBOSE:
+                 print(f"DEBUG: Rescaling factors to Unit Standard (std={target_std})", flush=True)
+             for d in range(len(factors)):
+                if factors[d].std() > 0:
+                    factors[d] = factors[d] * (target_std / factors[d].std())
+                if DEBUG_VERBOSE:
+                    print(f"DEBUG: Factor {d} init stats: Mean={factors[d].mean():.6e}, Std={factors[d].std():.6e}", flush=True)
+        
+        else:
+             # Random Init (Cold Start)
+             if DEBUG_VERBOSE:
+                 print("=" * 60, flush=True)
+                 print(f"INIT DEBUG: Using RANDOM INIT (Cold Start)", flush=True)
+                 print("=" * 60, flush=True)
+             
+             init_scale = 0.1
+             factors = [
+                 torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
+                 for N_d in self.dims
+             ]
+             if DEBUG_VERBOSE:
+                 for d in range(self.order):
+                     print(f"DEBUG: Factor {d} init stats: Mean={factors[d].mean():.6e}, Std={factors[d].std():.6e}", flush=True)
+        
         factor_vars = [
-            torch.ones(A, S * N_d, M, device=device, dtype=self.storage_dtype) * (init_scale**2)
+            torch.ones(A, S * N_d, M, device=device, dtype=self.storage_dtype) * 1.0
             for N_d in self.dims
         ]
         
         prev_s = None
         is_rademacher = (self.f_distribution == 'rademacher')
         
-        # Use compiled step function if available
-        step_fn = tensor_step_super
+        # Use compiled step function if available (Phase 3 optimization)
+        step_fn = (BiGAMPTensorSpreadingParallel._compiled_step_super 
+                   if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step_super is not None
+                   else tensor_step_super)
+                # ========== STEP 0 DIAGNOSTIC: Check if initialization is Random or Teacher ==========
+        with torch.no_grad():
+            Z_hat_init = forward_pass_tensor_super(factors, F_flat, offset_indices, S, N_dims)
+            mse_init = ((Y_flat - Z_hat_init)**2 * superdata.alpha_mask_exp.float()).sum() / superdata.alpha_mask_exp.sum()
+            print("=" * 70, flush=True)
+            print(f"STEP 0 DIAGNOSTIC: Initial MSE = {mse_init.item():.6f}", flush=True)
+            print(f"  If MSE >> 0 (e.g. 1.5+): Initialization is RANDOM (correct)", flush=True)
+            print(f"  If MSE ≈ 0: Initialization is TEACHER (BUG - data leakage!)", flush=True)
+            print("=" * 70, flush=True)
         
         # BiG-AMP iterations
         for step in range(self.max_steps):
@@ -424,10 +543,15 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 progress = step / anneal_steps
                 current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
             
-            # Alpha + Sample parallel BiG-AMP step
+            # Debug: Save old factors to measure change
+            if self.debug_verbose and step % 100 == 0:
+                old_factors_debug = [f.clone() for f in factors]
+
+            # Alpha + Sample parallel BiG-AMP step (using precomputed offset_indices)
             factors, factor_vars, prev_s = step_fn(
-                factors, factor_vars, Y_flat, F_flat, indices_flat,
-                S, N_dims, superdata.alpha_mask_exp,
+                factors, factor_vars, Y_flat, F_flat, offset_indices,
+                S, N_dims, M,  # Added M parameter
+                superdata.alpha_mask_exp,
                 damping=self.damping,
                 noise_var=current_noise_var,
                 is_rademacher=is_rademacher,
@@ -435,15 +559,25 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 onsager_correction=self.onsager_correction,
             )
             
-            # Progress callback (throttled)
-            if step_callback and ((step + 1) % 20 == 0 or step == self.max_steps - 1):
-                try:
-                    step_callback(step + 1, self.max_steps)
-                except Exception:
-                    pass
+            # Debug: Print progress
+            if self.debug_verbose and step % 100 == 0:
+                with torch.no_grad():
+                    # Calculate factor change
+                    change = (factors[0] - old_factors_debug[0]).abs().mean().item()
+                    
+                    # Calculate current MSE (expensive, but necessary for debug)
+                    Z_hat = forward_pass_tensor_super(factors, F_flat, offset_indices, S, N_dims)
+                    mse = ((Y_flat - Z_hat)**2 * superdata.alpha_mask_exp.float()).sum() / superdata.alpha_mask_exp.sum()
+                    
+                    if DEBUG_VERBOSE:
+                        print(f"DEBUG Step {step}: Change={change:.6e}, MSE={mse:.6f}, Noise={current_noise_var:.6f}, FactorMean={factors[0].mean():.4f}, FactorStd={factors[0].std():.6f}", flush=True)
+            
+            # Progress callback - call every step (Rich auto-throttles to 10fps)
+            if step_callback:
+                step_callback(step + 1, self.max_steps)
         
         # Compute final metrics for all alphas and samples
-        Z_hat = forward_pass_tensor_super(factors, F_flat, indices_flat, S, N_dims)
+        Z_hat = forward_pass_tensor_super(factors, F_flat, offset_indices, S, N_dims)
         
         # Reshape for per-alpha, per-sample metrics
         SC = supergraph.SC
@@ -466,22 +600,72 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         mse_per_alpha_sample = diff_sq_masked.sum(dim=2) / (edge_counts + 1e-10)  # (A, S)
         
         # Compute variance of Y for normalization
-        y_var = Y_reshaped.var(dim=1, keepdim=True) + 1e-10  # (S, 1)
+        y_var = Y_reshaped.var(dim=1, keepdim=True)  # (S, 1)
+        # Handle case where C_max=1 (var is NaN) or var=0
+        y_var = torch.nan_to_num(y_var, nan=1.0) + 1e-10
         
+        # DEBUG: Print Y stats (disabled)
+        # print(f"DEBUG Y_stats: Mean={Y_reshaped.mean().item():.6f}, Var_mean={y_var.mean().item():.6f}, Min={Y_reshaped.min().item():.6f}, Max={Y_reshaped.max().item():.6f}", flush=True)
+
         # Q_Y per alpha, per sample
-        Q_Y_per_alpha_sample = torch.clamp(1.0 - mse_per_alpha_sample / y_var.T, min=0.0)  # (A, S)
+        # FIX: At Alpha=0, edge_counts is 0, causing mse=0 and Q=1.0 (Artificial Perfection).
+        # We must mask this out: if edges=0, Q should be 0.0 (uninformed).
+        valid_mask = (edge_counts > 0.5).float()
+        
+        # DEBUG: Check typical MSE vs Var (disabled)
+        # avg_mse = mse_per_alpha_sample.mean(dim=1)
+        # print(f"DEBUG MSE per alpha (first 5): {avg_mse[:5].tolist()}", flush=True)
+        # print(f"DEBUG Q_Y raw (first 5): {(1.0 - avg_mse[:5] / y_var.mean()).tolist()}", flush=True)
+
+        raw_q = 1.0 - mse_per_alpha_sample / y_var.T
+        Q_Y_per_alpha_sample = torch.clamp(raw_q * valid_mask, min=0.0)  # (A, S)
         
         # Aggregate: mean and std over samples
         Q_Y_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
         Q_Y_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         
+        # High-Dim Full Tensor Metrics (Gram-based, O(M²N))
+        from matrix_factorization.modules.metrics.tensor_metrics import (
+            compute_tensor_cosine, compute_tensor_physical_overlap
+        )
+        
+        # Reshape factors from (A, S*N_d, M) to (A, S, N_d, M)
+        factors_reshaped = []
+        for d in range(self.order):
+            N_d = self.dims[d]
+            # (A, S*N, M) -> (A, S, N, M)
+            f_d = factors[d].view(A, S, N_d, -1)
+            # Valid Mean Estimate: Mean over samples S
+            # (A, N, M)
+            f_d_mean = f_d.mean(dim=1)
+            factors_reshaped.append(f_d_mean)
+
+        # Full Tensor Metrics (main indicators)
+        Q_Y = []  # Cosine Similarity on full N^n tensor
+        physical_overlap = []  # Projection <S,T>/<T,T>
+        
+        for a_idx in range(A):
+            # Extract factors for this alpha
+            student_factors_a = [f[a_idx] for f in factors_reshaped]
+            
+            # Cosine Similarity (main metric for Phase Transition)
+            cosine = compute_tensor_cosine(teacher_factors, student_factors_a)
+            Q_Y.append(cosine)
+            
+            # Physical Overlap (projection coefficient)
+            overlap = compute_tensor_physical_overlap(teacher_factors, student_factors_a)
+            physical_overlap.append(overlap)
+            
         return {
-            'Q_Y_per_alpha': Q_Y_per_alpha,
-            'Q_Y_std_per_alpha': Q_Y_std_per_alpha,
+            'Q_Y': Q_Y,  # Full tensor Cosine Similarity (main metric)
+            'Q_Y_observed': Q_Y_per_alpha,  # Observation-only Cosine (for diagnostics)
+            'Q_Y_std': Q_Y_std_per_alpha,
+            'physical_overlap': physical_overlap,  # Projection coefficient
             'A': A,
             'S': S,
             'C_max': C_max,
         }
+
 
 
     def _train_parallel(
@@ -597,6 +781,13 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         """Create n teacher factors from W and X matrices."""
         factors = []
         
+        # FORCE RESCALE W, X to Std=1.0 for Tensor Mode
+        # This ensures all factors are O(1), preventing signal decay in high-order products.
+        if W_teacher.std() > 0:
+             W_teacher = W_teacher / W_teacher.std()
+        if X_teacher.std() > 0:
+             X_teacher = X_teacher / X_teacher.std()
+
         factors.append(W_teacher.to(self.device))
         
         if self.order >= 2:
@@ -604,7 +795,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         for d in range(2, self.order):
             N_d = self.dims[d]
-            scale = W_teacher.std().item()
+            
+            # Use Standard Normal N(0, 1) for all additional factors
+            scale = 1.0
+                
             torch.manual_seed(42 + d)
             factor_d = torch.randn(N_d, self.M, device=self.device) * scale
             factors.append(factor_d)
@@ -662,3 +856,72 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             torch.randn(N_d, self.M, device=device) * scale
             for N_d in self.dims
         ]
+
+    def _spectral_initialization(
+        self, 
+        supergraph, 
+        Y_flat: torch.Tensor,
+        F_flat: torch.Tensor,
+        factors: List[torch.Tensor],
+        offset_indices: List[torch.Tensor],
+        iterations: int = 30
+    ) -> List[torch.Tensor]:
+        """
+        Spectral Initialization using Tensor Power Method with F correction.
+        
+        For Order 3+ tensors, random initialization + AMP cannot break symmetry.
+        This method uses an iterative power method to find a good initial point.
+        
+        Key: Multiply by F to recover signal direction (since Y = F * prod(X)).
+        """
+        import math
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        n = len(factors)
+        A = factors[0].shape[0]
+        M = factors[0].shape[2]
+        S = supergraph.S
+        C_max = supergraph.C_max
+        SC = S * C_max
+        
+        # Expand Y and F for all alphas
+        Y_exp = Y_flat.unsqueeze(0).expand(A, -1)  # (A, SC)
+        F_exp = F_flat.unsqueeze(0)  # (1, SC, M)
+        
+        # Apply alpha mask
+        mask = supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_max).reshape(A, -1)
+        Y_masked = Y_exp * mask.float()
+        
+        logger.info(f"Spectral Init: Running {iterations} iterations with F correction...")
+        
+        alpha_scale = 1.0 / math.sqrt(M)
+        
+        for it in range(iterations):
+            # Sequential (Gauss-Seidel) update: update factors[d] in place
+            for d in range(n):
+                # Gather CURRENT factors (not from start of iteration)
+                gathered = torch.stack([
+                    factors[i][:, offset_indices[i].long()] 
+                    for i in range(n)
+                ])  # (n, A, SC, M)
+                
+                # Product of other factors
+                other_indices = [i for i in range(n) if i != d]
+                other_prod = torch.stack([gathered[i] for i in other_indices]).prod(dim=0)  # (A, SC, M)
+                
+                # Gradient: Y * F * other_product (Key: multiply by F!)
+                # Y = sum_m F_m * prod_d X_d[:,m], so gradient w.r.t. X_d is Y * F * prod_{d'!=d} X_d'
+                grad = Y_masked.unsqueeze(2) * F_exp * other_prod * alpha_scale  # (A, SC, M)
+                
+                # Scatter Add to (A, SN, M)
+                N_d = factors[d].shape[1]
+                update = torch.zeros_like(factors[d])
+                idx_exp = offset_indices[d].unsqueeze(0).unsqueeze(2).expand(A, -1, M)
+                update.scatter_add_(1, idx_exp, grad.to(dtype=update.dtype))
+                
+                # Normalize to unit variance
+                std = update.std(dim=[1, 2], keepdim=True) + 1e-10
+                factors[d] = update / std
+                
+        return factors

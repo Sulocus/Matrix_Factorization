@@ -1,91 +1,21 @@
-# =============================================================================
-# sucia-backup branch: Track ALL project files
-# (main branch has different .gitignore that ignores private directories)
-# =============================================================================
-
-# =============================================================================
 # Python
-# =============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-eggs/
-.eggs/
-*.egg-info/
-*.egg
 
-# Virtual environments
-.env
-.venv
+# Environment
+.venv/
 env/
 venv/
-ENV/
+.conda/
 
-# =============================================================================
-# IDE and Editor
-# =============================================================================
-.claude/
-.idea/
+# IDE
 .vscode/
-*.swp
-*.swo
-*~
-
-# =============================================================================
-# System files
-# =============================================================================
-.DS_Store
-Thumbs.db
-*.log
-# Exclude large result files from git push
-# =============================================================================
-# Large Data Files (experiments, checkpoints, results)
-# =============================================================================
-# PyTorch model/result files
-*.pt
-*.pth
-
-# Pickle checkpoint files
-*.pkl
-
-# Large results directories (now tracked)
-# smf/results/       # ENABLED: tracking results
-# smf/Replica_results/  # ENABLED: tracking Replica results
-
-# Checkpoint files
-smf/.checkpoint.pt
-.checkpoints/
-
-# Large JSON metrics files (can exceed 10MB)
-**/metrics.json
-
-# Legacy/archive directories (local only, not synced)
-_legacy/
-
-# ========================================
-# Cleanup additions (2026-01-19)
-# ========================================
-
-# Temporary files
-*.log
-*_results.json
-__pycache__/
-.pytest_cache/
-
-# Results (large files, regenerate as needed)
-MF/Replica_results/
-
-# IDE/Editor
 .idea/
-*.swp
-*.swo
 
-# Python
-*.egg-info/
-dist/
-build/
+# Experiment Results
+results/
+.checkpoint.pt
+
+# System
+.DS_Store

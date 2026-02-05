@@ -50,6 +50,7 @@ class TensorSuperGraph:
     C_max: int
     indices: List[torch.Tensor]  # n × (S, C_max)
     alpha_mask: torch.Tensor     # (A, C_max)
+    offset_indices: List[torch.Tensor]  # n × (S*C_max,) - precomputed for gather
     device: torch.device
     
     @property
@@ -65,6 +66,18 @@ class TensorSuperGraph:
             n tensors of shape (S*C_max,)
         """
         return [idx.reshape(-1) for idx in self.indices]
+    
+    def get_offset_indices(self) -> List[torch.Tensor]:
+        """
+        Get precomputed offset indices for gather/scatter operations.
+        
+        These indices include sample offsets, ready for direct use:
+            gathered = factors[d][:, offset_indices[d]]
+        
+        Returns:
+            n tensors of shape (S*C_max,) with sample offsets applied
+        """
+        return self.offset_indices
 
 
 @dataclass
@@ -147,12 +160,32 @@ def create_tensor_supergraph(
     n = len(dims)
     A = len(alpha_values)
     
-    # Compute degrees of freedom
-    dof = sum(dims) * M
+    # Compute degrees of freedom (User Definition)
+    # User constraint: Avg Degree should be alpha * M.
+    # Total Nodes = n * N. Total Edges = C.
+    # Avg Degree = n * C / (n * N) = C/N.
+    # We want C/N = alpha * M => C = alpha * M * N.
+    # Original (Theoretical): C = alpha * (n * N * M).
+    # We adopt the User's definition for consistency with their constraints.
+    ref_dim = dims[0]
+    # dof = ref_dim * M # This effective 'dof' gives the user-expected scaling
     
-    # Compute C for each alpha
-    C_per_alpha = [max(1, int(alpha * dof)) for alpha in alpha_values]
-    C_max = max(C_per_alpha)
+    # PHYSICAL CONSTRAINT: alpha_max = N/M
+    # When alpha > N/M, each node would need to connect to more edges than possible nodes.
+    # This is physically impossible, so we cap alpha at this limit.
+    alpha_max = ref_dim / M
+    capped_alpha_values = []
+    for alpha in alpha_values:
+        if alpha > alpha_max:
+            logger.warning(f"Alpha {alpha:.2f} exceeds physical limit N/M = {alpha_max:.2f}. Capping to {alpha_max:.2f}.")
+            capped_alpha_values.append(alpha_max)
+        else:
+            capped_alpha_values.append(alpha)
+    
+    # Compute C for each alpha (using capped values)
+    # C = alpha * M * N
+    C_per_alpha = [int(alpha * M * ref_dim) for alpha in capped_alpha_values]
+    C_max = max(1, max(C_per_alpha) if C_per_alpha else 1)
     
     # Generate indices for C_max edges (shared across alphas)
     torch.manual_seed(seed)
@@ -167,6 +200,18 @@ def create_tensor_supergraph(
     C_thresholds = torch.tensor(C_per_alpha, device=device).unsqueeze(1)  # (A, 1)
     alpha_mask = edge_indices < C_thresholds  # (A, C_max)
     
+    # Precompute offset_indices for efficient gather/scatter
+    # This eliminates repeated sample_offsets calculation in tensor_step_super
+    # Similar to compute_offset_indices() in Bipartite spreading.py
+    offset_indices = []
+    for d in range(n):
+        N_d = dims[d]
+        idx_flat = indices[d].reshape(-1)  # (S*C_max,)
+        # sample_offsets: each sample's factors are offset by s * N_d
+        sample_offsets = torch.arange(S, device=device).unsqueeze(1) * N_d  # (S, 1)
+        sample_offsets = sample_offsets.expand(S, C_max).reshape(-1)  # (S*C_max,)
+        offset_indices.append(idx_flat + sample_offsets)
+    
     logger.debug(f"Created TensorSuperGraph: dims={dims}, A={A}, S={S}, C_max={C_max}")
     
     return TensorSuperGraph(
@@ -179,6 +224,7 @@ def create_tensor_supergraph(
         C_max=C_max,
         indices=indices,
         alpha_mask=alpha_mask,
+        offset_indices=offset_indices,
         device=device,
     )
 
@@ -210,7 +256,7 @@ def create_tensor_superdata(
     # Generate F: (S, C_max, M)
     torch.manual_seed(seed)
     if f_distribution == 'rademacher':
-        F_super = (torch.randint(0, 2, (S, C_max, M), device=device) * 2 - 1).float()
+        F_super = (torch.randint(0, 2, (S, C_max, M), device=device, dtype=torch.int8) * 2 - 1)
     else:
         F_super = torch.randn(S, C_max, M, device=device)
     

@@ -14,6 +14,7 @@ from .bigamp import BiGAMPAlgorithm
 from .bigamp.spreading import BiGAMPSpreading
 from .bigamp.tensor_spreading import BiGAMPTensorSpreading
 from .agd import AGDAlgorithm
+from .agd_tensor import TensorAGD
 from .combined import CombinedAlgorithm
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     'BiGAMPSpreading',
     'BiGAMPTensorSpreading',
     'AGDAlgorithm',
+    'TensorAGD',
     'CombinedAlgorithm',
 ]
 

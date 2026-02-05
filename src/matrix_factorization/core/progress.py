@@ -177,11 +177,31 @@ class UnifiedProgress:
         power = gpu_status['power_draw'] if gpu_status else 0
         memory = gpu_status['memory_used'] if gpu_status else 0
 
+        
+        # [UI FIX] Check for internal algorithm batching info (e.g. from Tensor Parallel)
+        # Prioritize algorithm's view of "Physical Batches" over Runner's "Logical Batches"
+        display_alphas = self._current_batch_alphas or [self._current_alpha]
+        display_completed_batches = self._completed_batches
+        display_total_batches = self._total_batches
+        
+        if 'batch_info' in self._current_metrics:
+            b_info = self._current_metrics['batch_info']
+            # Algorithm reports 1-based index
+            algo_batch_idx = int(b_info.get('batch_idx', 1))
+            algo_total = int(b_info.get('total_batches', 1))
+            algo_alphas = b_info.get('batch_alphas', [])
+            
+            # Override display state
+            display_completed_batches = algo_batch_idx - 1
+            display_total_batches = algo_total
+            if algo_alphas:
+                display_alphas = algo_alphas
+
         # Construct State
         state = {
             'step_progress': (self._current_step, self.steps_per_alpha),
-            'batch_progress': (self._completed_batches, self._total_batches),
-            'alphas': self._current_batch_alphas or [self._current_alpha],
+            'batch_progress': (display_completed_batches, display_total_batches),
+            'alphas': display_alphas,
             'timing': (fmt_time(elapsed), fmt_time(eta), fmt_time(batch_elapsed), fmt_time(batch_total_estimated)),
             'throughput': it_per_sec,
             'gpu': (power, memory),

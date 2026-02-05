@@ -13,7 +13,7 @@
 #   1 = 一般图（General Graph）：自动启用 allow_intra_connection
 #   2 = 二分图/矩阵分解（Bipartite）：标准模式（默认）
 #   3+ = N维张量分解：使用 bigamp_tensor 算法
-tensor_order: 3
+tensor_order: 4
 
 # =============================================================================
 # 算法选择（仅在 tensor_order=1,2 时生效）
@@ -22,8 +22,10 @@ tensor_order: 3
 #   1 | bigamp           = 标准 BiG-AMP
 #   2 | bigamp_spreading = 带随机spreading的BiG-AMP（推荐）
 #   3 | agd              = 交替梯度下降（慢但稳定）
-# ⚠️ 注意：tensor_order >= 3 时自动切换到 bigamp_tensor
-algorithm: 2  # 推荐: bigamp_spreading (数字2)
+#   4 | bigamp_tensor    = 张量 AMP (n>=3)
+#   5 | agd_tensor       = 张量 AGD (n>=3)
+# ⚠️ 注意：tensor_order >= 3 时推荐使用 bigamp_tensor
+algorithm: 4  # 推荐: bigamp_tensor 或 agd_tensor
 
 # =============================================================================
 # Teacher 类型
@@ -63,7 +65,7 @@ scan_mode: 1  # alpha 扫描
 # --- Alpha 扫描配置 (scan_mode = 1) ---
 alpha_scan:
   start: 0
-  stop: 4
+  stop: 4.0  # 物理极限 N/M
   step: 0.1
 
 # --- Steps 扫描配置 (scan_mode = 2) ---
@@ -97,8 +99,8 @@ hysteresis_scan:
 # 训练参数
 # =============================================================================
 training:
-  samples_per_alpha: 4   # 每个 alpha 值的样本数
-  max_steps: 5000        # BiG-AMP 最大迭代步数
+  samples_per_alpha: 2   # 每个 alpha 值的样本数
+  max_steps: 10000        # BiG-AMP 最大迭代步数
 
 # =============================================================================
 # 随机种子（用于复现）
@@ -111,7 +113,7 @@ seeds:
 # 算法参数
 # =============================================================================
 algorithm_params:
-  damping: 0.5            # 阻尼系数（0.1-0.5，越小越稳定）
+  damping: 0.2           # 阻尼系数（重要修正：0.01 以匹配增量更新）
   noise_var: 1.0e-5       # 观测噪声方差
   learning_rate: 0.01     # AGD 学习率
   use_compile: true       # 启用 torch.compile 加速
@@ -139,8 +141,12 @@ algorithm_params:
   
   # --- Teacher-Assisted Initialization ---
   # init_mode: random = Cold Start, teacher = Warm Start
-  init_mode: random
-  init_overlap: 0
+  # init_mode: random = Cold Start, teacher = Warm Start
+  init_mode: teacher           # 使用 Warm Start (验证通过)
+  init_overlap: 0.5            # 强初始相关性 (验证通过)
+  
+  # --- Debugging ---
+  debug_verbose: false         # 是否开启详细调试模式（每100步计算MSE，会影响性能）
 
 # =============================================================================
 # Spreading 配置（algorithm = 2 | bigamp_spreading 时生效）
@@ -187,4 +193,4 @@ output:
   
   plots:
     - curves: [A.y, B.w]  # Q_Y + 归一化 overlap
-    - curves: [D.y]       # Physical overlap Y
+  #  - curves: [D.y]       # Physical overlap Y
