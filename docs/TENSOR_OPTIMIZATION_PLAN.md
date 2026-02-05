@@ -84,21 +84,36 @@
 
 ---
 
-## Phase 3: TensorSuperGraph（可选）
+## Phase 3: TensorSuperGraph（完成）
 
 **目标**：完整重构，支持 Alpha + Sample 并行
 
 ### 3.1 架构设计
-- [ ] 设计 `TensorSuperGraph` 类
-- [ ] 定义 Disjoint Union 数据结构
+- [x] 设计 `TensorSuperGraph` 类
+- [x] 定义 Disjoint Union 数据结构
 
 ### 3.2 实现
-- [ ] 创建 `tensor_supergraph.py`
-- [ ] 创建 `tensor_step_super.py`
+- [x] 创建 `tensor_supergraph.py`
+- [x] 创建 `tensor_step_super.py`
 
 ### 3.3 测试
-- [ ] 完整功能测试
-- [ ] 性能对比测试
+- [x] 完整功能测试
+- [x] CLI 集成测试
+
+---
+
+## Phase 3.1: 智能分批（完成）
+
+**目标**：基于探测的内存估算和自动 Alpha 分批
+
+### 实现
+- [x] `probe_tensor_super_memory()`: 探测 A=1 内存
+- [x] `_compute_alpha_batches()`: 基于探测结果自动分批
+- [x] 删除 runner.py tensor batch 覆盖
+
+### 验证
+- [x] 41 alpha 分成 2 batch (26+15)
+- [x] 内存 86.3% (27.5/31.8 GB)
 
 ---
 

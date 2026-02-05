@@ -318,7 +318,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         
         # Get available GPU memory
         total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        available_gb = total_gb * 0.5  # Use 50% for safety margin
+        available_gb = total_gb * 0.8  # Increased to 80% (from 50%) to maximize utilization
         
         # Calculate maximum alphas per batch
         if base_mem_gb <= 0 or math.isinf(base_mem_gb):

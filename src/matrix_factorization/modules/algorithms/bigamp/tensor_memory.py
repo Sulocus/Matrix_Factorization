@@ -111,8 +111,8 @@ def probe_tensor_memory(
         peak_bytes = torch.cuda.max_memory_allocated()
         peak_gb = peak_bytes / (1024**3)
         
-        # Add safety margin (1.2x) for torch.compile overhead
-        return peak_gb * 1.2
+        # Add safety margin (1.1x) for torch.compile overhead
+        return peak_gb * 1.1
         
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
@@ -224,8 +224,8 @@ def probe_tensor_super_memory(
         peak_bytes = torch.cuda.max_memory_allocated()
         peak_gb = peak_bytes / (1024**3)
         
-        # Safety margin (1.3x) for torch.compile overhead and memory spikes
-        return peak_gb * 1.3
+        # Safety margin (1.1x) for torch.compile overhead and memory spikes
+        return peak_gb * 1.1
         
     except RuntimeError as e:
         if "out of memory" in str(e).lower():

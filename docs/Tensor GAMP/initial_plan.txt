@@ -1,0 +1,145 @@
+```yaml
+complete_reproduction_plan:
+  paper_info:
+    title: "Tensor Generalized Approximate Message Passing"
+    core_contribution: "A message-passing framework (TeG-AMP) for low-rank tensor inference using Tensor Ring (TR) and CP decomposition models, featuring adaptive damping and Taylor-series-based variance updates."
+
+  file_structure: |
+    # PROJECT STRUCTURE: TeG-AMP Reproduction
+    # Priority: 1. solvers/ -> 2. models/ -> 3. utils/ -> 4. experiments/ -> 5. docs
+    
+    teg_amp_repro/
+    ├── solvers/
+    │   ├── __init__.py
+    │   ├── base_solver.py      # Abstract class for AMP iterations and metrics
+    │   ├── teg_amp.py           # CORE: Algorithm 1 (Tensor Generalized AMP for TR)
+    │   ├── tes_amp.py           # CORE: Algorithm 2 (Tensor Simplified AMP for CP)
+    │   └── altmin_baseline.py  # BASELINE: Alternating Least Squares (ALS) implementation
+    ├── models/
+    │   ├── __init__.py
+    │   ├── tensor_ring.py      # TR contraction, slice management, and rank handling
+    │   └── cp_model.py         # CP decomposition and rank-1 summation logic
+    ├── utils/
+    │   ├── __init__.py
+    │   ├── damping.py          # Adaptive damping logic and KL-divergence cost J(t)
+    │   ├── priors.py           # MMSE estimators (Gaussian/Laplace) and g'() functions
+    │   ├── channels.py         # Likelihood updates (AWGN for completion/denoising)
+    │   └── tensor_math.py      # Optimized einsum operations for high-order tensors
+    ├── data/
+    │   ├── synthetic_gen.py    # Synthetic TR/CP tensor generator with noise/masks
+    │   └── mnist_loader.py     # MNIST preprocessing (reshape to 28x28x6)
+    ├── experiments/
+    │   ├── run_synthetic.py    # Reproduces Figure 2 (Recovery vs Sampling Rate)
+    │   ├── run_mnist.py        # Reproduces Figure 3 (Visual digit completion)
+    │   └── run_snr_test.py     # Reproduces SNR robustness comparisons
+    ├── main.py                 # Unified entry point for all experiments
+    ├── requirements.txt        # Dependencies (numpy, scipy, opt_einsum, matplotlib)
+    └── README.md               # Documentation and execution instructions
+
+  implementation_components: |
+    # 1. TENSOR RING (TR) CONTRACTION ENGINE (models/tensor_ring.py)
+    - Purpose: Implements the forward model $u_x = \text{Tr}(\prod_{i=1}^d Z_i(:, x_i, :))$.
+    - Technical Detail: Use `numpy.einsum` or `opt_einsum` to handle the trace of core products. For a $d$-th order tensor, the contraction follows: $u_{x_1...x_d} = \sum_{\ell_1...\ell_d} Z_1(\ell_1, x_1, \ell_2) Z_2(\ell_2, x_2, \ell_3) \dots Z_d(\ell_d, x_d, \ell_1)$.
+    - Complexity: $O(d \cdot N \cdot r^3)$ where $r$ is the TR-rank.
+
+    # 2. TeG-AMP SOLVER (solvers/teg_amp.py)
+    - Purpose: Implementation of Algorithm 1 (Appendix F).
+    - Step A (Forward Pass): Compute $\bar{p}_x(t)$ as the TR contraction of current means $\hat{Z}$.
+    - Step B (Plug-in Variance - Eq 25): This is the most complex term.
+      $\bar{\nu}_{p,x}(t) = \sum_{\ell'} \sum_{A \subsetneq D, A \neq \emptyset} (\prod_{i \in A} \hat{Z}_{i,x_i}^{\ell'}(t)^2 \prod_{i'' \in D \setminus A} \nu_{Z,i'',x_{i''}}^{\ell'}(t) - \hat{s}_x(t-1) \dots)$.
+      *Implementation Note*: For $d=3$, explicitly expand the subsets $A$ to avoid recursive overhead.
+    - Step C (Residuals - Eq 17, 18):
+      $\hat{s}_x = (\hat{u}_x - \hat{p}_x) / \nu^p_x$
+      $\nu^s_x = (1 - \nu^u_x / \nu^p_x) / \nu^p_x$
+    - Step D (Backward Pass - Eq 27, 28): Update the "latent observations" $\hat{r}_{qi}$ and variances $\nu^r_{qi}$ for each core $Z_i$. This requires calculating the partial contraction of all cores *except* $i$.
+
+    # 3. TeS-AMP SOLVER (solvers/tes_amp.py)
+    - Purpose: Implementation of Algorithm 2 (Appendix H.5) for CP-rank tensors.
+    - Optimization: Replaces the TR trace with a simple summation over $r$ components. The variance update $\nu^q_{p,x}$ is exact here, simplifying the subset summation logic of TeG-AMP.
+
+    # 4. ADAPTIVE DAMPING CONTROLLER (utils/damping.py)
+    - Purpose: Ensure convergence in finite-dimensional settings (Appendix G).
+    - Logic: Implement the cost criterion $J(t) = \sum \text{KL}(q \| p) - \sum \mathbb{E}[\log p(v|u)]$.
+    - Update Rule: If $J(t) > J(t-1)$, reject the step, set $\beta = \beta \cdot 0.5$, and re-run iteration $t$. If $J(t) \leq J(t-1)$, accept and set $\beta = \min(1, \beta \cdot 1.1)$.
+    - Variables to Damp: $\hat{s}_x$, $\nu^s_x$, $\hat{Z}_{i,x_i}$, and $\nu^Z_{i,x_i}$.
+
+    # 5. PRIORS AND CHANNELS (utils/priors.py, utils/channels.py)
+    - Gaussian Prior: $\hat{Z} = \hat{r} / (1 + \nu^r)$, $\nu^Z = \nu^r / (1 + \nu^r)$.
+    - AWGN Channel (Completion): 
+      For $x \in \Omega$: $\hat{u}_x = (v_x \nu^p_x + \hat{p}_x \nu^w) / (\nu^p_x + \nu^w)$.
+      For $x \notin \Omega$: $\hat{u}_x = \hat{p}_x$, $\nu^u_x = \nu^p_x$.
+    - Noise Variance Estimation ($\nu^w$): Implement Eq 165 to adaptively estimate noise levels if not provided.
+
+  validation_approach: |
+    # EXPERIMENT 1: SYNTHETIC PHASE TRANSITION (Figure 2)
+    - Setup: Generate TR-rank [2,2,2] and [2,3,3] tensors of size 6x7x8.
+    - Procedure: Vary sampling rate from 0.1 to 0.9. Run 50 Monte Carlo trials per point.
+    - Metric: Relative NMSE = $\|U - \hat{U}\|_F^2 / \|U\|_F^2$.
+    - Success Criteria: TeG-AMP must show a sharp phase transition at ~30-40% sampling, significantly outperforming AltMin (ALS).
+
+    # EXPERIMENT 2: MNIST TENSOR COMPLETION (Figure 3)
+    - Setup: Take MNIST digits, reshape to $28 \times 28 \times 6$ (stacking 6 digits or using color channels if applicable, though paper suggests $28 \times 28 \times 6$ structure).
+    - Procedure: Apply 40% sampling mask. Run TeG-AMP with TR-rank [14, 14, 6].
+    - Success Criteria: Visual reconstruction must be clear. NMSE should be lower than BiG-AMP and AltMin.
+    - Baseline Comparison: Compare against BiG-AMP (matrix-based) to prove tensor-structure advantage.
+
+    # EXPERIMENT 3: CONVERGENCE ANALYSIS
+    - Setup: Monitor $J(t)$ and NMSE over 100 iterations.
+    - Success Criteria: With adaptive damping, the NMSE should monotonically decrease or stabilize. Without damping, the system should diverge for small tensor sizes (as noted in Sec 3.6).
+
+    # EXPERIMENT 4: CP-RANK RECOVERY (Figure 9)
+    - Setup: Use TeS-AMP on CP-rank tensors.
+    - Success Criteria: TeS-AMP should match or exceed TeG-AMP performance on CP-structured data due to exact variance calculations.
+
+  environment_setup: |
+    # SOFTWARE REQUIREMENTS
+    - Language: Python 3.8+
+    - Core Libraries:
+        - `numpy>=1.21.0`: Multi-dimensional array operations.
+        - `scipy>=1.7.0`: Statistical functions and linear algebra.
+        - `opt_einsum>=3.3.0`: CRITICAL for optimizing the high-order TR contractions.
+        - `matplotlib>=3.4.0`: For reproducing Figures 2, 3, and 9.
+    
+    # HARDWARE REQUIREMENTS
+    - CPU: Quad-core processor is sufficient for the small-scale synthetic and MNIST tests (6x7x8 and 28x28x6).
+    - RAM: 8GB minimum.
+    - GPU: Not strictly required, but `cupy` or `pytorch` could be swapped in `tensor_math.py` for faster `einsum` if scaling to larger tensors.
+
+    # INSTALLATION STEPS
+    1. git clone <repo>
+    2. pip install -r requirements.txt
+    3. python main.py --experiment synthetic  # To run Figure 2 reproduction
+
+  implementation_strategy: |
+    # PHASE 1: TENSOR MATHEMATICS & DATA (Days 1-2)
+    - Implement the TR and CP contraction logic in `models/`.
+    - Create the synthetic data generator in `data/synthetic_gen.py`.
+    - Verify contraction logic by decomposing a small tensor and reconstructing it perfectly.
+
+    # PHASE 2: THE TeG-AMP CORE (Days 3-5)
+    - Implement the main loop in `solvers/teg_amp.py`.
+    - Focus first on the "Forward Pass" and "Residuals".
+    - Implement the "Backward Pass" (Eq 27-28). This is the most error-prone part; use small 3x3x3 tensors to verify message updates against manual trace calculations.
+    - Integrate the AWGN channel and Gaussian prior.
+
+    # PHASE 3: STABILITY & DAMPING (Days 6-7)
+    - Implement the `AdaptiveDamping` class in `utils/damping.py`.
+    - Integrate the KL-divergence cost function $J(t)$.
+    - Test on small tensors where divergence is common to ensure the damping logic triggers correctly (reducing $\beta$).
+
+    # PHASE 4: TeS-AMP & BASELINES (Days 8-9)
+    - Implement the CP-specific TeS-AMP.
+    - Implement the AltMin (ALS) baseline using standard least-squares updates for TR cores.
+    - Verify that TeS-AMP performs identically to TeG-AMP on CP data but runs faster.
+
+    # PHASE 5: FULL EVALUATION (Day 10)
+    - Run the synthetic phase transition suite (Experiment 1).
+    - Run the MNIST completion test (Experiment 2).
+    - Generate plots and compare NMSE values against the paper's reported results.
+    - Finalize README and documentation.
+
+    # HANDLING MISSING DETAILS
+    - Initial SNR: If not specified for a test, use 100dB (near noiseless) to test recovery.
+    - Initialization: Use $N(0, 1)$ for core means $\hat{Z}$ and set initial variances $\nu^Z$ to 1.0.
+    - Epsilon: Add $1e-12$ to all denominators in variance updates to prevent division-by-zero.
+```

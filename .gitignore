@@ -19,3 +19,4 @@ results/
 
 # System
 .DS_Store
+src/matrix_factorization/Replica_results/
