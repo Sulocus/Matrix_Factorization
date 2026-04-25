@@ -326,6 +326,69 @@ def test_spreading_partition_invariant_seed_is_alpha_batch_independent():
     assert algorithm._contract_execution_metadata["seed_partition_policy"] == "partition_invariant"
 
 
+def test_spreading_partition_invariant_restart_noise_is_alpha_batch_independent():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=2, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.5]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=False,
+            seed_partition_policy="partition_invariant",
+            adaptive_restart=True,
+        ),
+        spreading=SpreadingConfig(tensor_order=2),
+        teacher_key="standard",
+    )
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+
+    single = algorithm._randn_partitioned_restart_noise(
+        alpha_values=[0.5],
+        sample_count=2,
+        node_count=2,
+        latent_dim=1,
+        seed=17,
+        role="W_student",
+        step=3,
+        scale=0.1,
+    )
+    combined = algorithm._randn_partitioned_restart_noise(
+        alpha_values=[0.5, 0.8],
+        sample_count=2,
+        node_count=2,
+        latent_dim=1,
+        seed=17,
+        role="W_student",
+        step=3,
+        scale=0.1,
+    )
+    different_step = algorithm._randn_partitioned_restart_noise(
+        alpha_values=[0.5],
+        sample_count=2,
+        node_count=2,
+        latent_dim=1,
+        seed=17,
+        role="W_student",
+        step=4,
+        scale=0.1,
+    )
+    different_role = algorithm._randn_partitioned_restart_noise(
+        alpha_values=[0.5],
+        sample_count=2,
+        node_count=2,
+        latent_dim=1,
+        seed=17,
+        role="X_student",
+        step=3,
+        scale=0.1,
+    )
+
+    assert torch.equal(single[0], combined[0])
+    assert not torch.equal(single, different_step)
+    assert not torch.equal(single, different_role)
+
+
 def test_bigamp_honors_use_tf32_false(tmp_path):
     original_matmul = torch.backends.cuda.matmul.allow_tf32
     original_cudnn = torch.backends.cudnn.allow_tf32

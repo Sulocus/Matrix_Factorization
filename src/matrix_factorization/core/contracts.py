@@ -730,9 +730,9 @@ def get_effective_seed_policy_summary(
             seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
             random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
         elif algorithm_key == "bigamp_spreading":
-            policy_key = "spreading_partition_invariant_v1"
-            seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
-            random_streams = ["student_initialization", "spreading_graph", "F_super"]
+            policy_key = "spreading_partition_invariant_v2"
+            seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "step", "role"]
+            random_streams = ["student_initialization", "spreading_graph", "F_super", "restart_noise"]
         else:
             policy_key = "matrix_student_init_partition_invariant_v1"
             seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]

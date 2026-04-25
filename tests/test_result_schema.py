@@ -360,12 +360,14 @@ def test_runtime_resource_plan_uses_effective_spreading_seed_policy():
     report = runner._runtime_resource_plan_report(config, plan)
 
     assert report["config_effective"]["seed_partition_policy"] == "partition_invariant"
-    assert report["seed_policy"]["policy_key"] == "spreading_partition_invariant_v1"
+    assert report["seed_policy"]["policy_key"] == "spreading_partition_invariant_v2"
     assert report["seed_policy"]["random_streams"] == [
         "student_initialization",
         "spreading_graph",
         "F_super",
+        "restart_noise",
     ]
+    assert "step" in report["seed_policy"]["seed_inputs"]
     assert report["seed_policy"]["partition_invariant"] is True
     assert report["seed_policy"]["batch_partition_sensitive"] is False
     assert report["seed_policy"]["automatic_rebatch_allowed"] is True

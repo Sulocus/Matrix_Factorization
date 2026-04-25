@@ -142,15 +142,6 @@ class BiGAMPSpreading(AlgorithmBase):
                 "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
                 f"got {self.seed_partition_policy!r}"
             )
-        if (
-            self.seed_partition_policy == 'partition_invariant'
-            and getattr(config.algorithm_params, 'adaptive_restart', False)
-        ):
-            raise ValueError(
-                "bigamp_spreading partition_invariant seed policy does not yet support "
-                "algorithm_params.adaptive_restart=true because restart noise is a separate "
-                "runtime random stream."
-            )
         self.requested_use_tf32 = getattr(config.algorithm_params, 'use_tf32', True)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
@@ -335,7 +326,7 @@ class BiGAMPSpreading(AlgorithmBase):
             ],
             "seed_partition_policy": getattr(self, "seed_partition_policy", "legacy"),
             "seed_partition": (
-                "partition_invariant_alpha_sample_role"
+                "partition_invariant_alpha_sample_role_step"
                 if self._uses_partition_invariant_seed_policy()
                 else "seed + batch_idx"
             ),
@@ -430,6 +421,47 @@ class BiGAMPSpreading(AlgorithmBase):
         coeff_signal = init_overlap
         coeff_noise = math.sqrt(1 - init_overlap ** 2)
         return coeff_signal * teacher_expanded + coeff_noise * noise
+
+    def _randn_partitioned_restart_noise(
+        self,
+        *,
+        alpha_values: List[float],
+        sample_count: int,
+        node_count: int,
+        latent_dim: int,
+        seed: int,
+        role: str,
+        step: int,
+        scale: float,
+    ) -> torch.Tensor:
+        alpha_blocks = []
+        for alpha in alpha_values:
+            sample_blocks = []
+            alpha_token = f"{float(alpha):.12g}"
+            for sample_idx in range(sample_count):
+                gen = torch.Generator(device=self.device).manual_seed(
+                    _stable_partition_seed(
+                        seed,
+                        "bigamp_spreading",
+                        "restart_noise",
+                        role,
+                        alpha_token,
+                        sample_idx,
+                        int(step),
+                    )
+                )
+                sample_blocks.append(
+                    torch.randn(
+                        (node_count, latent_dim),
+                        generator=gen,
+                        device=self.device,
+                        dtype=self.storage_dtype,
+                    )
+                    * scale
+                )
+            alpha_blocks.append(torch.stack(sample_blocks, dim=0).reshape(sample_count * node_count, latent_dim))
+        return torch.stack(alpha_blocks, dim=0)
+
 
     @staticmethod
     def _initialize_near_teacher(
@@ -1189,9 +1221,32 @@ class BiGAMPSpreading(AlgorithmBase):
                 stuck_counter = torch.where(restart_mask, torch.zeros_like(stuck_counter), stuck_counter)
                 current_val = torch.where(restart_mask, torch.tensor(-float('inf'), device=self.device), current_val)
                 
-                # Perturb State
-                noise_W = torch.randn_like(W_flat) * restart_noise
-                noise_X = torch.randn_like(X_flat) * restart_noise
+                # Perturb State. Legacy keeps using the current global RNG stream;
+                # the opt-in policy makes restart noise independent of alpha batch partition.
+                if self._uses_partition_invariant_seed_policy():
+                    noise_W = self._randn_partitioned_restart_noise(
+                        alpha_values=effective_alpha_values,
+                        sample_count=S,
+                        node_count=N1,
+                        latent_dim=M,
+                        seed=base_seed,
+                        role="W_student",
+                        step=step,
+                        scale=restart_noise,
+                    )
+                    noise_X = self._randn_partitioned_restart_noise(
+                        alpha_values=effective_alpha_values,
+                        sample_count=S,
+                        node_count=N2,
+                        latent_dim=M,
+                        seed=base_seed,
+                        role="X_student",
+                        step=step,
+                        scale=restart_noise,
+                    )
+                else:
+                    noise_W = torch.randn_like(W_flat) * restart_noise
+                    noise_X = torch.randn_like(X_flat) * restart_noise
                 
                 # Apply only where restart_mask
                 restart_mask_3d = restart_mask.view(B, 1, 1)

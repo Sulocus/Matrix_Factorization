@@ -15,7 +15,7 @@
 
 需要确认：
 
-- spreading adaptive restart noise 是否也需要 `seed = hash(base_seed, alpha, sample, step, role)` 这类 partition-invariant seed policy。
+- spreading adaptive restart noise 已进入 opt-in `partition_invariant` seed policy：`seed = hash(base_seed, alpha, sample, step, role)`。后续只需用本地实验确认该路径的物理结果是否满足预期。
 - tensor parallel v1 是否需要本地 GPU 长跑确认曲线是否和 legacy 可比。
 
 未确认前禁止：

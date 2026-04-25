@@ -181,14 +181,16 @@ def test_effective_seed_policy_summary_is_shared_contract_source():
     tensor_policy = get_effective_seed_policy_summary("bigamp_tensor_parallel", "partition_invariant")
 
     assert matrix_policy["policy_key"] == "matrix_student_init_partition_invariant_v1"
-    assert spreading_policy["policy_key"] == "spreading_partition_invariant_v1"
+    assert spreading_policy["policy_key"] == "spreading_partition_invariant_v2"
     assert tensor_policy["policy_key"] == "tensor_parallel_partition_invariant_v1"
     assert matrix_policy["automatic_rebatch_allowed"] is True
     assert spreading_policy["random_streams"] == [
         "student_initialization",
         "spreading_graph",
         "F_super",
+        "restart_noise",
     ]
+    assert "step" in spreading_policy["seed_inputs"]
     assert "dimension" in tensor_policy["seed_inputs"]
 
 
@@ -418,25 +420,27 @@ def test_spreading_partition_invariant_seed_policy_updates_resource_plan(tmp_pat
 
     assert plan.algorithm_spec.key == "bigamp_spreading"
     assert plan.resource_plan["config_effective"]["seed_partition_policy"] == "partition_invariant"
-    assert plan.resource_plan["seed_policy"]["policy_key"] == "spreading_partition_invariant_v1"
+    assert plan.resource_plan["seed_policy"]["policy_key"] == "spreading_partition_invariant_v2"
     assert plan.resource_plan["seed_policy"]["random_streams"] == [
         "student_initialization",
         "spreading_graph",
         "F_super",
+        "restart_noise",
     ]
+    assert "step" in plan.resource_plan["seed_policy"]["seed_inputs"]
     assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
     assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
     assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
 
 
-def test_spreading_partition_invariant_rejects_adaptive_restart(tmp_path):
+def test_spreading_partition_invariant_accepts_adaptive_restart(tmp_path):
     config_path = tmp_path / "spreading_config.yaml"
     _write_spreading_config(config_path, adaptive_restart=True)
 
     config, output_options, raw_yaml = load_yaml_config(config_path)
     plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
 
-    assert any("adaptive_restart" in error for error in plan.errors)
+    assert not any("adaptive_restart" in error for error in plan.errors)
 
 
 def test_spreading_partition_invariant_data_prefix_is_batch_independent(tmp_path):

@@ -1156,20 +1156,7 @@ def _validate_runtime_extension_compatibility(plan: ExperimentPlan) -> None:
 
 
 def _validate_seed_policy_compatibility(plan: ExperimentPlan) -> None:
-    algorithm_key = getattr(plan.config, "algorithm_key", None)
-    params = getattr(plan.config, "algorithm_params", None)
-    if not params:
-        return
-    if (
-        algorithm_key == "bigamp_spreading"
-        and getattr(params, "seed_partition_policy", "legacy") == "partition_invariant"
-        and getattr(params, "adaptive_restart", False)
-    ):
-        plan.errors.append(
-            "algorithm_params.seed_partition_policy=partition_invariant 当前不支持 "
-            "bigamp_spreading 的 adaptive_restart；restart noise 还没有纳入 "
-            "partition-invariant seed contract。"
-        )
+    return
 
 
 def _warn_for_soft_parameters(
