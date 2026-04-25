@@ -40,10 +40,16 @@ def test_tensor_parity_specs_are_machine_readable():
         "onsager_handling",
         "qy_semantics",
         "result_schema",
+        "initialization_semantics",
+        "seed_partition",
+        "dtype_compile_semantics",
+        "batching_semantics",
     ]:
         assert key in specs
         assert specs[key].required
         assert specs[key].risk in {"medium", "high"}
+        assert specs[key].area
+        assert specs[key].review_required
 
 
 def test_tensor_parity_report_records_current_contract_gaps():
@@ -56,3 +62,5 @@ def test_tensor_parity_report_records_current_contract_gaps():
     assert "tensor.full.Q_Y" in report["serial_missing_parallel_metrics"]
     assert "tensor.observed.Q_Y" in report["serial_missing_parallel_metrics"]
     assert "tensor_supergraph" in report["parallel_only_data_requirements"]
+    assert report["parity_item_details"]["seed_partition"]["risk"] == "high"
+    assert report["parity_item_details"]["batching_semantics"]["area"] == "resource"

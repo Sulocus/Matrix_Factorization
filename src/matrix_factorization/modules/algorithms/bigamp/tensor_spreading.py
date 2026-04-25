@@ -19,6 +19,7 @@ from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
+from .tensor_contract import build_tensor_result_metadata, resolve_tensor_dims
 from .tensor_step import tensor_step, forward_pass_tensor
 from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_observations
 
@@ -99,18 +100,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                     f"Will use N1 for all tensor dimensions."
                 )
             
-            # N维张量: Use actual dimensions if available
-            N1 = config.matrix.N1
-            N2 = config.matrix.N2
-            
-            # Construct dims tuple: (N1, N2, N1, N1...) for order > 2
-            dims_list = [N1]
-            if self.order >= 2:
-                dims_list.append(N2)
-            for _ in range(2, self.order):
-                dims_list.append(N1) # Default extra dims to N1
-                
-            self.dims = tuple(dims_list)
+            self.dims = resolve_tensor_dims(config.matrix, self.order)
             self.M = config.matrix.M
             self.max_steps = config.training.max_steps
             self.S = config.training.samples_per_alpha
@@ -298,12 +288,17 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         return AlgorithmResult.from_metrics_only(
             metrics_by_alpha=metrics_by_alpha,
             artifacts=artifacts,
-            metadata={
-                "algorithm_key": algorithm_key,
-                "result_contract": spec.result_contract,
-                "result_source": "tensor_algorithm_train_batch_result",
-                "matrix_factors_available": False,
-            },
+            metadata=build_tensor_result_metadata(
+                algorithm_key=algorithm_key,
+                result_contract=spec.result_contract,
+                result_source="tensor_algorithm_train_batch_result",
+                dims=self.dims,
+                tensor_order=self.order,
+                graph_kind="tensor_hypergraph",
+                alpha_values_original=sorted(metrics_by_alpha),
+                alpha_values_execution_order=sorted(metrics_by_alpha),
+                batching_source="serial_alpha_sample_loop",
+            ),
         )
     
     def supports_batch_training(self) -> bool:

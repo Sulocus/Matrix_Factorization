@@ -265,9 +265,12 @@ class TrialSpec:
 class TensorParitySpec:
     key: str
     required: bool = True
+    area: str = ""
     serial_status: str = "unknown"
     parallel_status: str = "unknown"
     risk: str = ""
+    numeric_sensitive: bool = True
+    review_required: bool = True
     notes: str = ""
 
 
@@ -903,6 +906,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
     specs = [
         TensorParitySpec(
             "teacher_scale",
+            area="teacher",
             serial_status="implicit_in_serial_teacher_factors",
             parallel_status="normalizes_W_X_in_create_teacher_factors",
             risk="high",
@@ -910,6 +914,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "alpha_normalization",
+            area="data",
             serial_status="serial_hypergraph_edge_count",
             parallel_status="tensor_supergraph_edge_count",
             risk="high",
@@ -917,6 +922,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "graph_definition",
+            area="data",
             serial_status="tensor_hypergraph",
             parallel_status="tensor_supergraph",
             risk="high",
@@ -924,6 +930,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "f_distribution",
+            area="data",
             serial_status="spreading.f_distribution",
             parallel_status="spreading.f_distribution",
             risk="medium",
@@ -931,6 +938,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "damping_semantics",
+            area="algorithm",
             serial_status="algorithm_params.damping",
             parallel_status="algorithm_params.damping",
             risk="medium",
@@ -938,6 +946,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "onsager_handling",
+            area="algorithm",
             serial_status="not_fully_declared",
             parallel_status="onsager_residual_state_capability",
             risk="high",
@@ -945,6 +954,7 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "qy_semantics",
+            area="metric",
             serial_status="tensor.observed.Q_Y_only",
             parallel_status="tensor.full.Q_Y_and_tensor.observed.Q_Y",
             risk="high",
@@ -952,10 +962,43 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
         ),
         TensorParitySpec(
             "result_schema",
+            area="result",
             serial_status="legacy_tensor_metrics_only",
             parallel_status="legacy_tensor_metrics_only",
             risk="medium",
             notes="Both paths must eventually return native AlgorithmResult, not private _batch_metrics.",
+        ),
+        TensorParitySpec(
+            "initialization_semantics",
+            area="algorithm",
+            serial_status="random internal initialization",
+            parallel_status="init_mode random/spectral/warm_start",
+            risk="high",
+            notes="Serial and parallel initialization modes are not contract-equivalent.",
+        ),
+        TensorParitySpec(
+            "seed_partition",
+            area="randomness",
+            serial_status="seed + s*1000 + int(alpha*100)",
+            parallel_status="seed + batch_idx with sorted internal alpha batches",
+            risk="high",
+            notes="Changing batch partition can change graph/F/student random streams.",
+        ),
+        TensorParitySpec(
+            "dtype_compile_semantics",
+            area="resource",
+            serial_status="float32 eager path",
+            parallel_status="TF32/BF16/torch.compile optional path",
+            risk="medium",
+            notes="Parallel path resource settings are part of the numerical execution path.",
+        ),
+        TensorParitySpec(
+            "batching_semantics",
+            area="resource",
+            serial_status="alpha and sample loops are serial",
+            parallel_status="algorithm-internal probe-based alpha batches plus sample parallelism",
+            risk="high",
+            notes="Parallel batching is not a pure metadata change until seed partition is invariant.",
         ),
     ]
     return {spec.key: spec for spec in specs}
@@ -985,6 +1028,18 @@ def get_tensor_parity_report() -> Dict[str, Any]:
         "serial_only_data_requirements": sorted(serial_data - parallel_data),
         "parallel_only_data_requirements": sorted(parallel_data - serial_data),
         "parity_items": [item.key for item in get_tensor_parity_specs().values()],
+        "parity_item_details": {
+            item.key: {
+                "area": item.area,
+                "serial_status": item.serial_status,
+                "parallel_status": item.parallel_status,
+                "risk": item.risk,
+                "numeric_sensitive": item.numeric_sensitive,
+                "review_required": item.review_required,
+                "notes": item.notes,
+            }
+            for item in get_tensor_parity_specs().values()
+        },
     }
 
 
@@ -1091,6 +1146,7 @@ def get_algorithm_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/spreading.py", "algorithm_entry", "bigamp_spreading"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/tensor_spreading.py", "algorithm_entry", "bigamp_tensor"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/tensor_spreading_parallel.py", "algorithm_entry", "bigamp_tensor_parallel"),
+        SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/tensor_contract.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/step.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/tensor_data.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/tensor_hypergraph.py", "support_module"),

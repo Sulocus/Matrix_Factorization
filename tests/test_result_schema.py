@@ -530,6 +530,8 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     metric_payload,
 ):
     algorithm = object.__new__(algorithm_cls)
+    algorithm.order = 3
+    algorithm.dims = (2, 2, 2)
 
     def fake_train_batch_alphas(**kwargs):
         algorithm._batch_metrics = metric_payload
@@ -551,6 +553,9 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     assert result.metrics_by_alpha[0.5]["Q_Y_mean"] == metric_payload[0.5]["Q_Y_mean"]
     assert result.metadata["result_source"] == "tensor_algorithm_train_batch_result"
     assert result.metadata["matrix_factors_available"] is False
+    assert result.metadata["tensor_order"] == 3
+    assert result.metadata["dims"] == [2, 2, 2]
+    assert result.metadata["graph_kind"] in {"tensor_hypergraph", "tensor_supergraph"}
 
     check = ExperimentRunner._validate_metric_payload(
         algorithm_key,

@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 DEBUG_VERBOSE = False
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
+from .tensor_contract import (
+    build_tensor_result_metadata,
+    pack_tensor_parallel_metrics,
+    resolve_tensor_dims,
+)
 from .tensor_step_batch import tensor_step_batch, forward_pass_tensor_batch
 from .tensor_hypergraph import (
     generate_tensor_hypergraph,
@@ -114,16 +119,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
             self.order = getattr(config.spreading, 'tensor_order', 3) if hasattr(config, 'spreading') else 3
 
-            N1 = config.matrix.N1
-            N2 = config.matrix.N2
-
-            dims_list = [N1]
-            if self.order >= 2:
-                dims_list.append(N2)
-            for _ in range(2, self.order):
-                dims_list.append(N1)
-
-            self.dims = tuple(dims_list)
+            self.dims = resolve_tensor_dims(config.matrix, self.order)
             self.M = config.matrix.M
             self.max_steps = config.training.max_steps
             self.S = config.training.samples_per_alpha
@@ -254,6 +250,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         # Smart alpha batching
         alpha_batches = self._compute_alpha_batches(alpha_values)
+        self._last_alpha_values_original = [float(alpha) for alpha in alpha_values]
+        self._last_alpha_values_execution_order = [
+            float(alpha)
+            for batch in alpha_batches
+            for alpha in batch
+        ]
 
         global_alpha_idx = 0
         for batch_idx, batch_alphas in enumerate(alpha_batches):
@@ -277,21 +279,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
             # Store metrics for each alpha in this batch
             for local_idx, alpha in enumerate(batch_alphas):
-                metrics = {
-                    'Q_Y_mean': result['Q_Y'][local_idx],  # Full tensor Cosine
-                    'Q_Y_std': result['Q_Y_std'][local_idx],
-                }
-                if 'Q_Y_observed' in result:
-                    metrics['Q_Y_observed_mean'] = result['Q_Y_observed'][local_idx]
-                if 'Q_Y_observed_std' in result:
-                    metrics['Q_Y_observed_std'] = result['Q_Y_observed_std'][local_idx]
-                if 'physical_overlap' in result:
-                    metrics['physical_overlap_Y_mean'] = result['physical_overlap'][local_idx]
-                if 'overlap_matrices' in result:
-                    matrix = result['overlap_matrices'][local_idx]
-                    metrics['overlap_matrix'] = matrix.tolist() if hasattr(matrix, 'tolist') else matrix
-                    metrics['overlap_matrix_metric'] = result.get('overlap_matrix_metric', 'Q_Y')
-                self._batch_metrics[alpha] = metrics
+                self._batch_metrics[alpha] = pack_tensor_parallel_metrics(result, local_idx)
                 global_alpha_idx += 1
 
             # Clean up between batches
@@ -349,12 +337,17 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         return AlgorithmResult.from_metrics_only(
             metrics_by_alpha=metrics_by_alpha,
             artifacts=artifacts,
-            metadata={
-                "algorithm_key": algorithm_key,
-                "result_contract": spec.result_contract,
-                "result_source": "tensor_algorithm_train_batch_result",
-                "matrix_factors_available": False,
-            },
+            metadata=build_tensor_result_metadata(
+                algorithm_key=algorithm_key,
+                result_contract=spec.result_contract,
+                result_source="tensor_algorithm_train_batch_result",
+                dims=self.dims,
+                tensor_order=self.order,
+                graph_kind="tensor_supergraph",
+                alpha_values_original=getattr(self, "_last_alpha_values_original", None),
+                alpha_values_execution_order=getattr(self, "_last_alpha_values_execution_order", None),
+                batching_source="algorithm_internal_probe_alpha_batches",
+            ),
         )
 
     def _compute_alpha_batches(self, alpha_values: List[float]) -> List[List[float]]:
