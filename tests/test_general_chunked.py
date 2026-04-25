@@ -90,7 +90,6 @@ def test_general_chunked():
     print("  ✓ Legacy mode works!")
     
     print("\n=== All tests passed! ===")
-    return True
 
 if __name__ == '__main__':
     test_general_chunked()

@@ -1500,3 +1500,19 @@ def get_trial_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("trials/active/matrix_bigamp_quick/summary.md", "trial_summary", "matrix_bigamp_quick", "active_path"),
     ]
     return {spec.path: spec for spec in specs}
+
+
+def get_legacy_pytest_inventory() -> Dict[str, SourceInventorySpec]:
+    """Machine-readable inventory for skipped legacy/local diagnostic tests."""
+    specs = [
+        SourceInventorySpec("tests/test_clamp.py", "legacy_local_gpu_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_damping.py", "legacy_local_gpu_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_independent_alpha.py", "legacy_local_gpu_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_llm_robustness.py", "legacy_config_advisor_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_scientific_pressure.py", "legacy_config_advisor_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_random_spreading.py", "legacy_random_spreading_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_supergraph.py", "legacy_spreading_parallel_pytest", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_onsager_impact.py", "local_gpu_tensor_diagnostic", status="legacy_skipped"),
+        SourceInventorySpec("tests/test_tensor_parallel_verification.py", "local_gpu_tensor_parity_diagnostic", status="legacy_skipped"),
+    ]
+    return {spec.path: spec for spec in specs}

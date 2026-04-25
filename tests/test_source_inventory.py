@@ -4,6 +4,7 @@ from matrix_factorization.core.contracts import (
     get_auxiliary_source_inventory,
     get_config_source_inventory,
     get_graph_source_inventory,
+    get_legacy_pytest_inventory,
     get_metric_source_inventory,
     get_output_source_inventory,
     get_repository_surface_inventory,
@@ -124,3 +125,15 @@ def test_graph_sources_are_classified():
     inventory = set(get_graph_source_inventory())
 
     assert discovered - inventory == set()
+
+
+def test_legacy_pytest_modules_are_classified_and_module_skipped():
+    inventory = get_legacy_pytest_inventory()
+
+    for path, spec in inventory.items():
+        source = Path(path)
+        assert source.exists(), path
+        assert spec.status == "legacy_skipped"
+        text = source.read_text(encoding="utf-8")
+        assert "pytest.skip(" in text
+        assert "allow_module_level=True" in text

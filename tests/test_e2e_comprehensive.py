@@ -23,14 +23,14 @@ from enum import Enum
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-class TestPhase(Enum):
+class E2EPhase(Enum):
     LLM_PARSE = "LLM解析"
     CONFIG_VALID = "配置验证"
     RUNTIME = "实际运行"
     RESULT = "结果检查"
 
 
-class TestStatus(Enum):
+class E2EStatus(Enum):
     PASS = "PASS"
     PARTIAL = "PARTIAL"
     FAIL = "FAIL"
@@ -55,7 +55,7 @@ class E2ETestCase:
 class E2ETestResult:
     """Comprehensive test result."""
     test_id: str
-    status: TestStatus = TestStatus.FAIL  # Default to FAIL, update on success
+    status: E2EStatus = E2EStatus.FAIL  # Default to FAIL, update on success
     # Phase results
     llm_ok: bool = False
     config_ok: bool = False
@@ -593,11 +593,11 @@ def run_single_test(test: E2ETestCase) -> E2ETestResult:
     # Determine final status
     result.errors = all_errors
     if len(all_errors) == 0:
-        result.status = TestStatus.PASS
+        result.status = E2EStatus.PASS
     elif len(all_errors) <= 2 and result.runtime_ok:
-        result.status = TestStatus.PARTIAL
+        result.status = E2EStatus.PARTIAL
     else:
-        result.status = TestStatus.FAIL
+        result.status = E2EStatus.FAIL
 
     status_icon = {"PASS": "✓", "PARTIAL": "~", "FAIL": "✗"}[result.status.value]
     print(f"\n[结果] {status_icon} {result.status.value}")
@@ -634,9 +634,9 @@ def print_summary(results: List[E2ETestResult]):
     print(f"{'='*60}\n")
 
     total = len(results)
-    passed = sum(1 for r in results if r.status == TestStatus.PASS)
-    partial = sum(1 for r in results if r.status == TestStatus.PARTIAL)
-    failed = sum(1 for r in results if r.status == TestStatus.FAIL)
+    passed = sum(1 for r in results if r.status == E2EStatus.PASS)
+    partial = sum(1 for r in results if r.status == E2EStatus.PARTIAL)
+    failed = sum(1 for r in results if r.status == E2EStatus.FAIL)
 
     print(f"Total:   {total}")
     print(f"Passed:  {passed} ({100*passed/total:.1f}%)")
@@ -646,7 +646,7 @@ def print_summary(results: List[E2ETestResult]):
     if failed > 0:
         print(f"\nFailed Tests:")
         for r in results:
-            if r.status == TestStatus.FAIL:
+            if r.status == E2EStatus.FAIL:
                 print(f"  {r.test_id}: {r.errors[0][:60] if r.errors else 'Unknown'}")
 
 

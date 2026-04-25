@@ -98,6 +98,7 @@ tests/verification/
 - `get_config_source_inventory()` 覆盖 versioned config 入口。
 - `get_repository_surface_inventory()` 控制根目录可出现的 `.py/.md/.yaml/.toml/.png/.pt` 文件。
 - `get_trial_source_inventory()` 覆盖 `trials/` 中登记的 research trial 文件。
+- `get_legacy_pytest_inventory()` 覆盖默认 pytest 中显式跳过的 legacy/local-GPU 诊断测试。
 
 新增这些区域的 `.py` 文件如果没有进入清点表，source inventory test 会失败。这个机制的目的不是删除实验脚本，而是防止仓库再次出现“没人知道用途”的隐藏入口。
 
