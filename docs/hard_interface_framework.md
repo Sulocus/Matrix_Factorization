@@ -94,6 +94,7 @@ deprecated
 - `ExperimentPlan` 会包含当前 teacher 的 `TeacherSpec`，用于在解释配置时显示 teacher status、产出和尺度约定；这不改变 `DataFactory` 的 teacher 构造逻辑。
 - `parameter_chain` 已扩展为参数消费 trace：每个 YAML path 会记录 `active_in_current_plan`、`effective_value`、`effective_source`、`derived_effect` 和 `consumption_status`。这不是证明物理行为正确，而是让“写了参数但没进入有效计划”的问题更容易在 preflight 中定位。
 - `parameter_chain` 会处理 seed alias 和覆盖关系：`seeds.model` 追踪到 `seeds.base_seed`，`seeds.data` 追踪到 `seeds.teacher_seed`；如果同时写了 `seeds.spreading_seed` 和更具体的 `spreading.seed`，前者会标成 `overridden_current_route` 并显示实际 spreading seed。
+- `SeedPolicySpec` 会记录每个 algorithm 当前随机流依赖哪些 seed/input、是否 `partition_invariant`、是否允许 `automatic_rebatch`。当前 `bigamp_tensor_parallel` 明确是 `legacy_tensor_parallel_batch_idx_seed`，也就是 internal alpha batch 改变会改变随机流；所以 OOM 自动缩 batch 不能静默启用。
 - `parameter_chain` 会按当前 algorithm/scan 路由标记 inactive 字段。例如 AGD 路由下写入 `algorithm_params.damping` 或 `spreading.seed`，会显示 `inactive_current_route`，避免把“被 dataclass 接住”误读成“算法实际消费”。
 - runtime hooks 已先接入低风险 runner-level `after_batch`：`batch_summary` probe 会在 `runtime_extension_report.probe_reports.batch_summary` 里记录 batch index、alpha values、metric keys 和 AlgorithmResult 可用输出。它不进入算法 step loop，因此不改变训练状态、随机数或数值行为。
 - `state_slice`、`tensor_state_slice`、`variance_slice` 目前标记为 `declared_only`。如果用户在 YAML 中请求这些尚未接入 algorithm step hook 的 probe，`mf validate` 会报 `PROBE_DECLARED_ONLY`，避免“配置看似生效但运行时没有产物”。

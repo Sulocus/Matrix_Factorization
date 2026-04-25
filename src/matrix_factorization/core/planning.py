@@ -19,6 +19,7 @@ from .contracts import (
     ParameterSpec,
     ProbeSpec,
     ResourceSpec,
+    SeedPolicySpec,
     TeacherSpec,
     get_algorithm_specs,
     get_algorithm_metric_keys,
@@ -31,6 +32,7 @@ from .contracts import (
     get_parameter_specs,
     get_probe_specs,
     get_resource_specs,
+    get_seed_policy_specs,
     get_teacher_specs,
 )
 
@@ -69,6 +71,7 @@ class ExperimentPlan:
     resource_spec: Optional[ResourceSpec] = None
     batching_spec: Optional[BatchingSpec] = None
     memory_model_spec: Optional[MemoryModelSpec] = None
+    seed_policy_spec: Optional[SeedPolicySpec] = None
     resource_plan: Dict[str, Any] = field(default_factory=dict)
     metric_specs: List[MetricSpec] = field(default_factory=list)
     output_specs: List[OutputSpec] = field(default_factory=list)
@@ -135,6 +138,16 @@ class ExperimentPlan:
                 "sample_range_policy": self.memory_model_spec.sample_range_policy,
                 "drives_execution": self.memory_model_spec.drives_execution,
             } if self.memory_model_spec else None,
+            "seed_policy_spec": {
+                "algorithm_key": self.seed_policy_spec.algorithm_key,
+                "policy_key": self.seed_policy_spec.policy_key,
+                "seed_inputs": list(self.seed_policy_spec.seed_inputs),
+                "random_streams": list(self.seed_policy_spec.random_streams),
+                "partition_invariant": self.seed_policy_spec.partition_invariant,
+                "batch_partition_sensitive": self.seed_policy_spec.batch_partition_sensitive,
+                "automatic_rebatch_allowed": self.seed_policy_spec.automatic_rebatch_allowed,
+                "notes": self.seed_policy_spec.notes,
+            } if self.seed_policy_spec else None,
             "resource_plan": dict(self.resource_plan),
             "metrics": [spec.key for spec in self.metric_specs],
             "available_metric_keys": _available_metric_keys(self),
@@ -215,6 +228,11 @@ class ExperimentPlan:
                 lines.append(f"  memory_model: {memory_model.get('estimator_entrypoint')}")
                 lines.append(f"  memory_calibration: {memory_model.get('calibration_status')}")
                 lines.append(f"  memory_drives_execution: {memory_model.get('drives_execution')}")
+            seed_policy = self.resource_plan.get("seed_policy") or {}
+            if seed_policy:
+                lines.append(f"  seed_policy: {seed_policy.get('policy_key')}")
+                lines.append(f"  partition_invariant: {seed_policy.get('partition_invariant')}")
+                lines.append(f"  automatic_rebatch_allowed: {seed_policy.get('automatic_rebatch_allowed')}")
         lines.append("")
         lines.append("有效参数摘要:")
         for key in sorted(self.effective_parameters):
@@ -359,6 +377,7 @@ def build_experiment_plan(
     resource_specs = get_resource_specs()
     batching_specs = get_batching_specs()
     memory_model_specs = get_memory_model_specs()
+    seed_policy_specs = get_seed_policy_specs()
 
     _validate_raw_paths(plan, parameter_specs)
 
@@ -372,6 +391,7 @@ def build_experiment_plan(
     plan.resource_spec = resource_specs.get(algorithm_key)
     plan.batching_spec = batching_specs.get(algorithm_key)
     plan.memory_model_spec = memory_model_specs.get(algorithm_key)
+    plan.seed_policy_spec = seed_policy_specs.get(algorithm_key)
     _build_resource_plan(plan)
 
     teacher_key = getattr(config, "teacher_key", None)
@@ -385,6 +405,8 @@ def build_experiment_plan(
         plan.errors.append(f"algorithm_key 未注册 BatchingSpec: {algorithm_key}")
     if not plan.memory_model_spec:
         plan.errors.append(f"algorithm_key 未注册 MemoryModelSpec: {algorithm_key}")
+    if not plan.seed_policy_spec:
+        plan.errors.append(f"algorithm_key 未注册 SeedPolicySpec: {algorithm_key}")
 
     _validate_required_config_paths(plan, parameter_specs)
 
@@ -753,6 +775,15 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "sample_range_policy": plan.memory_model_spec.sample_range_policy if plan.memory_model_spec else "",
             "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
         },
+        "seed_policy": {
+            "policy_key": plan.seed_policy_spec.policy_key if plan.seed_policy_spec else "",
+            "seed_inputs": list(plan.seed_policy_spec.seed_inputs) if plan.seed_policy_spec else [],
+            "random_streams": list(plan.seed_policy_spec.random_streams) if plan.seed_policy_spec else [],
+            "partition_invariant": plan.seed_policy_spec.partition_invariant if plan.seed_policy_spec else False,
+            "batch_partition_sensitive": plan.seed_policy_spec.batch_partition_sensitive if plan.seed_policy_spec else True,
+            "automatic_rebatch_allowed": plan.seed_policy_spec.automatic_rebatch_allowed if plan.seed_policy_spec else False,
+            "notes": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
+        },
         "config_effective": {
             "scan_num_points": len(getattr(scan, "values", []) or []),
             "samples_per_alpha": getattr(training, "samples_per_alpha", None),
@@ -765,6 +796,7 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
         "notes": {
             "resource": plan.resource_spec.notes,
             "batching": plan.batching_spec.notes,
+            "seed_policy": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
         },
     }
 

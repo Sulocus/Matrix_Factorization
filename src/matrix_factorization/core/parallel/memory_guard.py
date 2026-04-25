@@ -2,7 +2,7 @@
 Memory Guard for Smart Parallel Module.
 
 Provides runtime GPU memory monitoring with warning and critical thresholds,
-automatic OOM detection, and recovery mechanisms.
+automatic OOM detection, and abort/checkpoint handoff.
 """
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -313,10 +313,12 @@ class MemoryGuard:
 
 class OOMRecoveryHandler:
     """
-    Automatic OOM recovery handler.
-    
-    Works with ParallelCoordinator to automatically recover from memory
-    pressure by aborting current batch, cleaning up, and replanning.
+    OOM abort/checkpoint handler.
+
+    Works with ParallelCoordinator to abort the current batch and clean up
+    memory. Automatic replan/rebatch is intentionally not performed here; the
+    runner saves a checkpoint and exits so the user can resume with a clean
+    process and unchanged seed/batch semantics.
     
     Example:
         coordinator = ParallelCoordinator(...)
@@ -349,12 +351,12 @@ class OOMRecoveryHandler:
     
     def handle_critical(self, event: MemoryEvent) -> None:
         """
-        Handle critical memory event with batch recovery.
-        
-        When memory exceeds 95%, trigger batch recovery:
+        Handle critical memory event with batch abort.
+
+        When memory exceeds the critical threshold:
         - Abort current batch
         - Cleanup GPU memory
-        - Continue with next batch
+        - Let the runner save checkpoint and exit
         
         Args:
             event: The critical memory event
@@ -365,9 +367,9 @@ class OOMRecoveryHandler:
                 f"({event.used_gb:.1f}/{event.total_gb:.1f} GB)"
             )
             
-            # Batch recovery mode
+            # Abort/checkpoint mode
             print(f"\n⚠️ OOM PROTECTION: Memory at {event.usage_ratio:.1%}")
-            print("🔄 Initiating batch recovery...")
+            print("🔄 Aborting current batch; checkpoint/resume will preserve batch semantics.")
             
             # 0. Request abort - algorithm should check this flag
             if self.coordinator._memory_guard:
@@ -383,17 +385,17 @@ class OOMRecoveryHandler:
             if self.coordinator.estimator:
                 self.coordinator.estimator.record_oom_event(event.usage_ratio)
             
-            # 4. Increment retry counter for tracking
+            # 4. Increment counter for tracking only. This does not replan.
             if self.retry_count < self.max_retries:
                 self.retry_count += 1
                 logger.info(
-                    f"Batch recovery initiated ({self.retry_count}/{self.max_retries})"
+                    f"Batch abort initiated ({self.retry_count}/{self.max_retries})"
                 )
-                print(f"   Recovery attempt {self.retry_count}/{self.max_retries}")
+                print(f"   Abort count {self.retry_count}/{self.max_retries}")
             else:
-                # Max retries exceeded - let the exception propagate
+                # Max abort count exceeded - let the exception propagate
                 raise RuntimeError(
-                    f"OOM recovery failed after {self.max_retries} retries. "
+                    f"OOM abort exceeded {self.max_retries} attempts. "
                     f"Peak usage: {event.usage_ratio:.1%}. "
                     f"Consider reducing problem size or using 'mf resume' to continue."
                 )
@@ -428,12 +430,12 @@ def create_monitored_guard(
         config: AllocationConfig with thresholds (uses coordinator's if None)
         
     Returns:
-        Configured MemoryGuard with OOM recovery
+        Configured MemoryGuard with abort/checkpoint handoff
     """
     if config is None:
         config = coordinator.config
     
-    # Create recovery handler
+    # Create abort/checkpoint handler
     recovery_handler = OOMRecoveryHandler(coordinator)
     
     # Create guard with thresholds from config

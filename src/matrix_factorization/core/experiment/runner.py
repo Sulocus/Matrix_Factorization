@@ -802,9 +802,12 @@ class ExperimentRunner:
 
     def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:
         """Serialize the actual runner-level execution plan as metadata only."""
+        from matrix_factorization.core.contracts import get_seed_policy_specs
+
         allocation = getattr(plan, "allocation_config", None)
         algorithm_params = getattr(config, "algorithm_params", None)
         spreading = getattr(config, "spreading", None)
+        seed_policy = get_seed_policy_specs().get(config.algorithm_key)
         return {
             "algorithm_key": config.algorithm_key,
             "device": str(self.device),
@@ -825,6 +828,15 @@ class ExperimentRunner:
                 "use_bf16": getattr(algorithm_params, "use_bf16", None),
                 "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
                 "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
+            },
+            "seed_policy": {
+                "policy_key": seed_policy.policy_key if seed_policy else "",
+                "seed_inputs": list(seed_policy.seed_inputs) if seed_policy else [],
+                "random_streams": list(seed_policy.random_streams) if seed_policy else [],
+                "partition_invariant": seed_policy.partition_invariant if seed_policy else False,
+                "batch_partition_sensitive": seed_policy.batch_partition_sensitive if seed_policy else True,
+                "automatic_rebatch_allowed": seed_policy.automatic_rebatch_allowed if seed_policy else False,
+                "notes": seed_policy.notes if seed_policy else "",
             },
             "batches": [
                 {

@@ -12,6 +12,7 @@ from matrix_factorization.core.contracts import (
     get_output_specs,
     get_parameter_specs,
     get_resource_specs,
+    get_seed_policy_specs,
 )
 from matrix_factorization.core.planning import build_experiment_plan
 import matrix_factorization.core.planning as planning_module
@@ -122,15 +123,18 @@ def test_active_algorithms_have_resource_and_batching_specs():
     resource_specs = get_resource_specs()
     batching_specs = get_batching_specs()
     memory_model_specs = get_memory_model_specs()
+    seed_policy_specs = get_seed_policy_specs()
 
     for algorithm_key, spec in get_algorithm_specs().items():
         assert algorithm_key in resource_specs
         assert algorithm_key in batching_specs
         assert algorithm_key in memory_model_specs
+        assert algorithm_key in seed_policy_specs
         if spec.status == "active":
             assert resource_specs[algorithm_key].estimator_key
             assert batching_specs[algorithm_key].planner_layers
             assert memory_model_specs[algorithm_key].calibration_status
+            assert seed_policy_specs[algorithm_key].policy_key
 
 
 def test_algorithm_required_config_paths_are_preflight_checked(tmp_path, monkeypatch):

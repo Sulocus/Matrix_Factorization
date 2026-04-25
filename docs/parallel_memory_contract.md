@@ -71,10 +71,14 @@ probe: A=1 tensor supergraph probe
 dtype: float32 / bf16 storage / tf32 matmul
 compile: torch.compile default optional
 seed sensitive: true
+seed policy: legacy_tensor_parallel_batch_idx_seed
+automatic rebatch allowed: false
 estimation params: tensor_order and tensor_dims are passed explicitly to MemoryEstimator
 ```
 
-风险：algorithm 内部会排序 alpha，并使用 `seed + batch_idx`。改变 batch partition 会改变 graph/F/student random stream。当前所有 ResourceSpec/BatchingSpec 都是 metadata-only，不能直接用来自动调 batch。
+风险：algorithm 内部会排序 alpha，并使用 `seed + batch_idx`。改变 batch partition 会改变 graph/F/student random stream。当前 `SeedPolicySpec` 明确标记 `partition_invariant=false`、`automatic_rebatch_allowed=false`；所以 OOM retry / 自动缩 batch 只能先做 preflight 或 metadata，不能静默改变执行分批后继续声称等价。
+
+`ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint 并退出，用户再用 clean process resume。
 
 ## Metadata 写入位置
 
@@ -98,6 +102,13 @@ resource_plan
     probe_required
     sample_range_policy
     drives_execution
+  seed_policy
+    policy_key
+    seed_inputs
+    random_streams
+    partition_invariant
+    batch_partition_sensitive
+    automatic_rebatch_allowed
 ```
 
 真实 run 的 `metadata.json` 会包含：
@@ -113,6 +124,7 @@ contract.runtime_resource_plan
   num_batches
   allocation
   config_effective
+  seed_policy
   batches
   metadata_only
 ```

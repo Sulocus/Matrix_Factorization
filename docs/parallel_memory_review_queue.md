@@ -9,6 +9,7 @@
 - tensor serial 使用 `seed + s * 1000 + int(alpha * 100)`。
 - tensor parallel 内部分批使用 `seed + batch_idx`，并会排序 alpha。
 - spreading path 也存在 per-batch graph creation 和 seed offset。
+- 当前 `SeedPolicySpec` 已把这些策略机器可读化；`bigamp_tensor_parallel` 标记为 `partition_invariant=false`、`automatic_rebatch_allowed=false`。
 
 需要确认：
 

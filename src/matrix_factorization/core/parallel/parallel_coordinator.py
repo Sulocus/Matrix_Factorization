@@ -268,6 +268,10 @@ class ParallelCoordinator:
     def replan_with_safety(self, factor: float = 0.7) -> ExecutionPlan:
         """
         Create a more conservative plan after OOM.
+
+        Automatic replan is deliberately disabled until the active algorithm's
+        seed policy is partition-invariant. Returning the old plan here would
+        make a failed retry look like a real smaller-batch plan.
         
         Args:
             factor: Multiplier for allocation ratio (< 1.0)
@@ -277,30 +281,26 @@ class ParallelCoordinator:
         """
         if self.current_plan is None:
             raise RuntimeError("No current plan to replan from")
-        
-        # Create more conservative config
-        new_config = replace(
-            self.config,
-            allocation_ratio=self.config.allocation_ratio * factor
-        )
-        
-        old_config = self.config
-        self.config = new_config
-        
-        try:
-            # Reconstruct params from current plan
-            params = EstimationParams(
-                N1=0,  # These need to be passed differently
-                N2=0,
-                M=0,
-                S=0,
-                alpha_values=[],
-                algorithm_key=self.current_plan.algorithm_key,
+
+        from matrix_factorization.core.contracts import get_seed_policy_specs
+
+        algorithm_key = self.current_plan.algorithm_key
+        seed_policy = get_seed_policy_specs().get(algorithm_key)
+        if seed_policy and seed_policy.automatic_rebatch_allowed:
+            raise NotImplementedError(
+                f"Automatic replan is not implemented for algorithm '{algorithm_key}' "
+                "even though its SeedPolicySpec allows rebatching. Implement a real "
+                "plan reconstruction using the original EstimationParams before enabling it."
             )
-            # Note: Full replan would need original params, this is a simplified version
-            return self.current_plan  # Placeholder
-        finally:
-            self.config = old_config
+
+        policy_key = seed_policy.policy_key if seed_policy else "<missing SeedPolicySpec>"
+        raise RuntimeError(
+            f"Automatic OOM replan is disabled for algorithm '{algorithm_key}' "
+            f"(seed_policy={policy_key}). The current seed policy is not guaranteed "
+            "partition-invariant, so shrinking or regrouping batches could change random "
+            "streams. Use checkpoint/resume or define a partition-invariant SeedPolicySpec "
+            "before enabling automatic rebatch."
+        )
     
     def set_memory_guard(self, guard) -> None:
         """Set the memory guard for runtime monitoring."""

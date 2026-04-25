@@ -254,6 +254,8 @@ def test_runner_resource_plan_report_is_metadata_only():
     assert report["num_batches"] >= 1
     assert report["batches"][0]["sample_range_honored_by_runner"] is False
     assert "allocation_ratio" in report["allocation"]
+    assert report["seed_policy"]["policy_key"] == "legacy_vectorized_batch_manual_seed"
+    assert report["seed_policy"]["automatic_rebatch_allowed"] is False
 
 
 def test_runner_batch_end_event_records_elapsed_duration():

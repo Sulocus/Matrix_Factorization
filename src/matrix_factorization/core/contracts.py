@@ -100,6 +100,18 @@ class MemoryModelSpec:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class SeedPolicySpec:
+    algorithm_key: str
+    policy_key: str
+    seed_inputs: List[str] = field(default_factory=list)
+    random_streams: List[str] = field(default_factory=list)
+    partition_invariant: bool = False
+    batch_partition_sensitive: bool = True
+    automatic_rebatch_allowed: bool = False
+    notes: str = ""
+
+
 @dataclass
 class AlgorithmStateView:
     """Capability-based state exposed to probes/interventions/analyzers.
@@ -637,6 +649,65 @@ def get_memory_model_specs() -> Dict[str, MemoryModelSpec]:
         MemoryModelSpec("agd_tensor", "none", "experimental private path", [], "untracked_experimental", False, "experimental", False),
         MemoryModelSpec("agd_spreading", "none", "legacy broken path", [], "legacy_untracked", False, "legacy", False),
         MemoryModelSpec("combined", "none", "non-trainable helper", [], "not_applicable", False, "none", False),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
+
+
+def get_seed_policy_specs() -> Dict[str, SeedPolicySpec]:
+    specs = [
+        SeedPolicySpec(
+            "agd",
+            "legacy_vectorized_batch_manual_seed",
+            ["seeds.base_seed", "runner batch alpha order"],
+            ["student_initialization"],
+            partition_invariant=False,
+            batch_partition_sensitive=True,
+            automatic_rebatch_allowed=False,
+            notes="AGD vectorized batch calls torch.manual_seed(seed) once per runner batch; changing alpha batch partition can change/repeat student streams.",
+        ),
+        SeedPolicySpec(
+            "bigamp",
+            "legacy_vectorized_batch_manual_seed",
+            ["seeds.base_seed", "runner batch alpha order"],
+            ["student_initialization"],
+            partition_invariant=False,
+            batch_partition_sensitive=True,
+            automatic_rebatch_allowed=False,
+            notes="Dense BiGAMP vectorized batch calls torch.manual_seed(seed) once per runner batch; changing alpha batch partition can change/repeat student streams.",
+        ),
+        SeedPolicySpec(
+            "bigamp_spreading",
+            "legacy_spreading_batch_offset",
+            ["seeds.base_seed", "spreading.seed", "algorithm internal batch_idx"],
+            ["student_initialization", "spreading_graph", "F_super"],
+            partition_invariant=False,
+            batch_partition_sensitive=True,
+            automatic_rebatch_allowed=False,
+            notes="Spreading path offsets seed by internal batch index for some training batches; auto-rebatch must not be silent.",
+        ),
+        SeedPolicySpec(
+            "bigamp_tensor",
+            "legacy_tensor_serial_alpha_sample_seed",
+            ["seeds.base_seed", "alpha", "sample_index"],
+            ["student_initialization", "tensor_hypergraph", "F_tensor"],
+            partition_invariant=True,
+            batch_partition_sensitive=False,
+            automatic_rebatch_allowed=True,
+            notes="Serial tensor path uses seed + sample_index * 1000 + int(alpha * 100), so it is independent of runner batch partition.",
+        ),
+        SeedPolicySpec(
+            "bigamp_tensor_parallel",
+            "legacy_tensor_parallel_batch_idx_seed",
+            ["seeds.base_seed", "sorted internal alpha batches", "algorithm internal batch_idx"],
+            ["student_initialization", "tensor_supergraph", "F_tensor"],
+            partition_invariant=False,
+            batch_partition_sensitive=True,
+            automatic_rebatch_allowed=False,
+            notes="Tensor parallel sorts alpha values and calls _train_full_parallel(..., seed + batch_idx); changing internal batch partition changes random streams.",
+        ),
+        SeedPolicySpec("agd_tensor", "experimental_untracked", [], [], False, True, False, "Experimental tensor AGD path; seed semantics are not active-path contract."),
+        SeedPolicySpec("agd_spreading", "legacy_untracked", [], [], False, True, False, "Broken legacy spreading AGD path; not an active runner contract."),
+        SeedPolicySpec("combined", "not_applicable", [], [], True, False, False, "Non-trainable helper."),
     ]
     return {spec.algorithm_key: spec for spec in specs}
 
