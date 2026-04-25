@@ -605,6 +605,7 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     assert result.metadata["graph_kind"] in {"tensor_hypergraph", "tensor_supergraph"}
     assert result.metadata["tensor_execution"]["metadata_only"] is True
     assert result.metadata["tensor_execution"]["effective_use_bf16"] is False
+    assert result.metadata["tensor_execution"]["compile_status"]
     assert result.metadata["internal_alpha_batch_plan"]["metadata_only"] is True
 
     check = ExperimentRunner._validate_metric_payload(
@@ -658,6 +659,35 @@ def test_tensor_parallel_respects_requested_bf16_false(monkeypatch):
     assert algorithm.requested_use_bf16 is False
     assert algorithm.use_bf16 is False
     assert algorithm.storage_dtype == torch.float32
+
+
+def test_tensor_parallel_execution_metadata_reports_super_compile_fallback(monkeypatch):
+    monkeypatch.setattr(BiGAMPTensorSpreadingParallel, "_compiled_step", object())
+    monkeypatch.setattr(BiGAMPTensorSpreadingParallel, "_compiled_step_super", None)
+
+    algorithm = object.__new__(BiGAMPTensorSpreadingParallel)
+    algorithm.order = 3
+    algorithm.dims = (2, 2, 2)
+    algorithm.device = torch.device("cpu")
+    algorithm.requested_use_bf16 = False
+    algorithm.use_bf16 = False
+    algorithm.storage_dtype = torch.float32
+    algorithm.requested_use_compile = True
+    algorithm.use_compile = True
+    algorithm.compile_attempts = [
+        {"target": "tensor_step_super", "success": False, "error": "compile_exception"}
+    ]
+    algorithm._batch_metrics = {0.5: {"Q_Y_mean": 0.8}}
+
+    result = algorithm._metrics_only_algorithm_result("bigamp_tensor_parallel")
+    execution = result.metadata["tensor_execution"]
+
+    assert execution["requested_use_compile"] is True
+    assert execution["effective_use_compile"] is False
+    assert execution["compiled_step_available"] is True
+    assert execution["compiled_super_step_available"] is False
+    assert execution["compile_status"] == "fallback_to_eager_tensor_step_super"
+    assert execution["compile_attempts"][0]["target"] == "tensor_step_super"
 
 
 def test_tensor_parallel_cpu_alpha_batch_plan_is_recorded_without_probe(monkeypatch):

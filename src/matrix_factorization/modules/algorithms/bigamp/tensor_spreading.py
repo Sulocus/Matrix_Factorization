@@ -313,6 +313,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                         effective_use_compile=False,
                         compiled_step_available=False,
                         compiled_super_step_available=False,
+                        compile_status="not_applicable_serial_tensor",
+                        compile_attempts=[],
                         notes="Serial tensor metadata only; this path has no compile/dtype planner.",
                     ),
                     "internal_alpha_batch_plan": {

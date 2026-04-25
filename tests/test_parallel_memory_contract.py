@@ -131,6 +131,8 @@ def test_tensor_execution_metadata_is_json_friendly_and_non_driving():
         effective_use_compile=False,
         compiled_step_available=False,
         compiled_super_step_available=False,
+        compile_status="disabled_by_config",
+        compile_attempts=[],
         tf32_matmul_enabled=True,
         tf32_cudnn_enabled=True,
     )
@@ -139,6 +141,8 @@ def test_tensor_execution_metadata_is_json_friendly_and_non_driving():
     assert metadata["storage_dtype"] == "float32"
     assert metadata["requested_use_bf16"] is False
     assert metadata["effective_use_compile"] is False
+    assert metadata["compile_status"] == "disabled_by_config"
+    assert metadata["compile_attempts"] == []
     assert metadata["metadata_only"] is True
 
 

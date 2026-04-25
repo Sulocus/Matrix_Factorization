@@ -142,6 +142,8 @@ tensor_execution
   effective_use_compile
   compiled_step_available
   compiled_super_step_available
+  compile_status
+  compile_attempts
   tf32_matmul_enabled
   tf32_cudnn_enabled
   metadata_only

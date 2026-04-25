@@ -27,6 +27,7 @@
 - Tensor parallel dead-path cleanup：删除 `bigamp_tensor_parallel` 中 `_compute_alpha_batches()` 返回后的不可达 legacy memory-estimate 残片；当前显存估计入口以 `MemoryModelSpec`、runner estimator 和 tensor probe metadata 为准。
 - Runtime batch timing metadata：runner 的 `BATCH_END` 事件记录真实 elapsed duration，不再写固定 `0.0` 占位值。
 - OOM replan gate：`ParallelCoordinator.replan_with_safety()` 不再返回当前 plan 伪装成缩 batch，而是根据 `SeedPolicySpec` 明确拒绝未实现/不安全的自动重分批；`MemoryGuard` 文案改为 abort/checkpoint handoff。
+- Compile status metadata：tensor parallel 的 `tensor_execution` 区分 `requested_use_compile` 和实际 super-step compile 是否生效，并记录 `compile_status/compile_attempts`。
 
 ## 本轮继续推进
 
@@ -43,13 +44,14 @@
   - batch end progress event 已记录真实 elapsed duration。
   - seed policy 已机器可读化；当前 partition-sensitive 算法禁止把自动重分批当成等价行为。
   - OOM 自动 replan 已 hard-gate；当前策略是 checkpoint/resume，不自动改变 batch partition。
+  - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
   - Resource/Batching 与 tensor parity 的显存约束已加入测试。
 
 ## 尚未完成
 
 - 真正的 seed partition invariant 改造。
 - OOM retry 自动缩 batch 的真实实现（当前已 hard-gate，不会伪装成已实现）。
-- compile/dtype fallback 策略。
+- compile/dtype fallback 的用户策略选择（当前已记录 metadata，但未新增“失败即报错/允许 fallback”的可配策略）。
 - spreading chunk size auto tuning。
 - tensor serial/parallel 训练 loop 合并。
 - tensor serial/parallel teacher scale、alpha graph、damping 语义统一。

@@ -181,6 +181,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         # === Phase 1.5: torch.compile Support ===
         self.use_compile = bool(self.requested_use_compile)
+        self.compile_attempts = []
         if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is None:
             try:
                 # Use 'default' mode for safety (no CUDA Graph issues)
@@ -189,8 +190,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     mode='default',
                     fullgraph=False,
                 )
+                self._record_compile_attempt("tensor_step_batch", True, "")
             except Exception:
                 self.use_compile = False
+                self._record_compile_attempt("tensor_step_batch", False, "compile_exception")
 
         # Phase 3: Compile tensor_step_super for Alpha + Sample parallelization
         if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step_super is None:
@@ -200,8 +203,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     mode='default',
                     fullgraph=False,
                 )
+                self._record_compile_attempt("tensor_step_super", True, "")
             except Exception:
                 # Fall back to non-compiled version
+                self._record_compile_attempt("tensor_step_super", False, "compile_exception")
                 pass
 
         # Batch metrics storage
@@ -210,6 +215,23 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
     # =========================================================================
     # AlgorithmBase Interface Implementation
     # =========================================================================
+
+    def _record_compile_attempt(self, target: str, success: bool, error: str) -> None:
+        self.compile_attempts.append({
+            "target": target,
+            "success": bool(success),
+            "error": error,
+        })
+
+    def _compile_status_for_super_path(self) -> str:
+        if not bool(getattr(self, "requested_use_compile", True)):
+            return "disabled_by_config"
+        if (
+            bool(getattr(self, "use_compile", False))
+            and BiGAMPTensorSpreadingParallel._compiled_step_super is not None
+        ):
+            return "effective_for_tensor_step_super"
+        return "fallback_to_eager_tensor_step_super"
 
     def train_single_alpha(
         self,
@@ -401,9 +423,14 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         effective_use_bf16=bool(getattr(self, "use_bf16", False)),
                         storage_dtype=getattr(self, "storage_dtype", None),
                         requested_use_compile=bool(getattr(self, "requested_use_compile", True)),
-                        effective_use_compile=bool(getattr(self, "use_compile", False)),
+                        effective_use_compile=bool(
+                            getattr(self, "use_compile", False)
+                            and BiGAMPTensorSpreadingParallel._compiled_step_super is not None
+                        ),
                         compiled_step_available=BiGAMPTensorSpreadingParallel._compiled_step is not None,
                         compiled_super_step_available=BiGAMPTensorSpreadingParallel._compiled_step_super is not None,
+                        compile_status=self._compile_status_for_super_path(),
+                        compile_attempts=getattr(self, "compile_attempts", []),
                         tf32_matmul_enabled=torch.backends.cuda.matmul.allow_tf32,
                         tf32_cudnn_enabled=torch.backends.cudnn.allow_tf32,
                         notes="Execution metadata only; it does not change tensor update formulas.",
