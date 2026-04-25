@@ -4,12 +4,19 @@ BiG-AMP (Bilinear Generalized Approximate Message Passing) algorithm.
 Supports torch.compile for kernel fusion acceleration (~2-3x speedup).
 """
 
+import hashlib
 from typing import Tuple, Optional, Callable
 import torch
 
 from ...registry import register_algorithm
 from ..base import AlgorithmBase
 from ....core.config import Config
+
+
+def _stable_partition_seed(base_seed: int, *parts: object) -> int:
+    payload = "|".join([str(int(base_seed)), *(str(part) for part in parts)]).encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "little") % (2**31 - 1)
 
 
 def _bigamp_step(
@@ -112,6 +119,12 @@ class BiGAMPAlgorithm(AlgorithmBase):
         self.noise_var = config.algorithm.noise_var
         self.max_steps = config.training.max_steps
         self.S = config.training.samples_per_alpha
+        self.seed_partition_policy = getattr(config.algorithm, 'seed_partition_policy', 'legacy')
+        if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
+            raise ValueError(
+                "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
+                f"got {self.seed_partition_policy!r}"
+            )
         self.requested_use_tf32 = getattr(config.algorithm, 'use_tf32', True)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
@@ -158,8 +171,38 @@ class BiGAMPAlgorithm(AlgorithmBase):
             "requested_use_tf32": bool(self.requested_use_tf32),
             "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
             "tf32_cudnn_enabled": torch.backends.cudnn.allow_tf32,
+            "seed_partition_policy": self.seed_partition_policy,
             "metadata_only": True,
         }
+
+    def _uses_partition_invariant_seed_policy(self) -> bool:
+        return self.seed_partition_policy == "partition_invariant"
+
+    def _randn_partitioned_matrix(
+        self,
+        *,
+        alpha_values: list[float],
+        sample_count: int,
+        shape: Tuple[int, ...],
+        seed: int,
+        device: torch.device,
+        scale: float,
+        role: str,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        alpha_blocks = []
+        for alpha in alpha_values:
+            sample_blocks = []
+            alpha_token = f"{float(alpha):.12g}"
+            for sample_idx in range(sample_count):
+                gen = torch.Generator(device=device).manual_seed(
+                    _stable_partition_seed(seed, "bigamp", role, alpha_token, sample_idx)
+                )
+                sample_blocks.append(
+                    torch.randn(shape, generator=gen, device=device, dtype=dtype) * scale
+                )
+            alpha_blocks.append(torch.stack(sample_blocks, dim=0))
+        return torch.stack(alpha_blocks, dim=0)
 
     def _record_compile_attempt(self, target: str, success: bool, error: str) -> None:
         self.compile_attempts.append({
@@ -259,9 +302,31 @@ class BiGAMPAlgorithm(AlgorithmBase):
                  Y_teacher = Y_teacher.unsqueeze(0)
 
         # Initialize student (stored in storage_dtype)
-        torch.manual_seed(seed)
-        w_hat = (torch.randn((S, N1, M), device=device) * scale).to(storage_dtype)
-        x_hat = (torch.randn((S, M, N2), device=device) * scale).to(storage_dtype)
+        if self._uses_partition_invariant_seed_policy():
+            w_hat = self._randn_partitioned_matrix(
+                alpha_values=[alpha],
+                sample_count=S,
+                shape=(N1, M),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="W_student",
+                dtype=storage_dtype,
+            )[0]
+            x_hat = self._randn_partitioned_matrix(
+                alpha_values=[alpha],
+                sample_count=S,
+                shape=(M, N2),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="X_student",
+                dtype=storage_dtype,
+            )[0]
+        else:
+            torch.manual_seed(seed)
+            w_hat = (torch.randn((S, N1, M), device=device) * scale).to(storage_dtype)
+            x_hat = (torch.randn((S, M, N2), device=device) * scale).to(storage_dtype)
         w_var = (torch.ones((S, N1, M), device=device) * (1.0 / M)).to(storage_dtype)
         x_var = (torch.ones((S, M, N2), device=device) * (1.0 / M)).to(storage_dtype)
 
@@ -323,9 +388,29 @@ class BiGAMPAlgorithm(AlgorithmBase):
         A_all = masks.unsqueeze(1)
 
         # Initialize student - (num_alphas, S, N1, M)
-        torch.manual_seed(seed)
-        w_hat = torch.randn((num_alphas, S, N1, M), device=device) * scale
-        x_hat = torch.randn((num_alphas, S, M, N2), device=device) * scale
+        if self._uses_partition_invariant_seed_policy():
+            w_hat = self._randn_partitioned_matrix(
+                alpha_values=alpha_values,
+                sample_count=S,
+                shape=(N1, M),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="W_student",
+            )
+            x_hat = self._randn_partitioned_matrix(
+                alpha_values=alpha_values,
+                sample_count=S,
+                shape=(M, N2),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="X_student",
+            )
+        else:
+            torch.manual_seed(seed)
+            w_hat = torch.randn((num_alphas, S, N1, M), device=device) * scale
+            x_hat = torch.randn((num_alphas, S, M, N2), device=device) * scale
         w_var = torch.ones_like(w_hat) * (1.0 / M)
         x_var = torch.ones_like(x_hat) * (1.0 / M)
 

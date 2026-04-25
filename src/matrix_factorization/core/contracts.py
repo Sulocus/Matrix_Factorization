@@ -374,7 +374,7 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("algorithm_params.use_bf16", "bool", True, "algorithm", ["agd", "bigamp_spreading", "bigamp_tensor_parallel"], False),
         ParameterSpec("algorithm_params.dtype_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["agd", "bigamp_spreading", "bigamp_tensor_parallel"], False),
         ParameterSpec("algorithm_params.use_tf32", "bool", True, "algorithm", ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], False),
-        ParameterSpec("algorithm_params.seed_partition_policy", "enum[legacy,partition_invariant]", "legacy", "algorithm", ["bigamp_tensor_parallel"], True),
+        ParameterSpec("algorithm_params.seed_partition_policy", "enum[legacy,partition_invariant]", "legacy", "algorithm", ["agd", "bigamp", "bigamp_tensor_parallel"], True),
         ParameterSpec("algorithm_params.use_early_stop", "bool", False, "algorithm", ["AGDAlgorithm"], False),
         ParameterSpec("algorithm_params.target_loss_threshold", "float", 1e-8, "algorithm", ["AGDAlgorithm"], True),
         ParameterSpec("algorithm_params.default_alpha", "float", 1.0, "algorithm", ["steps_scan"], True),

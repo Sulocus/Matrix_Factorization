@@ -287,6 +287,33 @@ def test_runtime_resource_plan_uses_effective_tensor_seed_policy():
     assert report["seed_policy"]["automatic_rebatch_allowed"] is True
 
 
+@pytest.mark.parametrize("algorithm_key", ["agd", "bigamp"])
+def test_runtime_resource_plan_uses_effective_matrix_seed_policy(algorithm_key):
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=2, max_epochs=2),
+        algorithm_key=algorithm_key,
+        scan=ScanConfig(dimension="alpha", values=[0.0, 0.5]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=False,
+            seed_partition_policy="partition_invariant",
+        ),
+        teacher_key="standard",
+    )
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    params = runner._estimation_params_for_config(config, config.scan.values)
+    plan = runner.parallel_coordinator.plan_execution(params)
+    report = runner._runtime_resource_plan_report(config, plan)
+
+    assert report["config_effective"]["seed_partition_policy"] == "partition_invariant"
+    assert report["seed_policy"]["policy_key"] == "matrix_student_init_partition_invariant_v1"
+    assert report["seed_policy"]["random_streams"] == ["student_initialization"]
+    assert report["seed_policy"]["partition_invariant"] is True
+    assert report["seed_policy"]["batch_partition_sensitive"] is False
+    assert report["seed_policy"]["automatic_rebatch_allowed"] is True
+
+
 def test_spreading_chunk_policy_is_preserved_in_algorithm_result_metadata():
     algorithm = object.__new__(BiGAMPSpreading)
     algorithm.chunk_size = 1024

@@ -65,6 +65,40 @@ output:
     )
 
 
+def _write_matrix_config(path: Path, algorithm: int) -> None:
+    path.write_text(
+        f"""
+tensor_order: 2
+algorithm: {algorithm}
+teacher: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.2
+  step: 0.1
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+  max_epochs: 2
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  learning_rate: 0.01
+  use_compile: false
+  use_bf16: false
+  seed_partition_policy: partition_invariant
+output:
+  enable_heatmap: false
+  save_tensors: false
+""",
+        encoding="utf-8",
+    )
+
+
 def test_parallel_memory_contract_docs_cover_runtime_metadata():
     contract = Path("docs/parallel_memory_contract.md")
     review = Path("docs/parallel_memory_review_queue.md")
@@ -288,6 +322,31 @@ def test_tensor_parallel_partition_invariant_seed_policy_updates_resource_plan(t
 
     assert plan.resource_plan["config_effective"]["seed_partition_policy"] == "partition_invariant"
     assert plan.resource_plan["seed_policy"]["policy_key"] == "tensor_parallel_partition_invariant_v1"
+    assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
+    assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
+    assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
+
+
+@pytest.mark.parametrize(
+    ("algorithm_id", "algorithm_key"),
+    [
+        (1, "bigamp"),
+        (3, "agd"),
+    ],
+)
+def test_matrix_partition_invariant_seed_policy_updates_resource_plan(
+    tmp_path, algorithm_id, algorithm_key
+):
+    config_path = tmp_path / "matrix_config.yaml"
+    _write_matrix_config(config_path, algorithm_id)
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert plan.algorithm_spec.key == algorithm_key
+    assert plan.resource_plan["config_effective"]["seed_partition_policy"] == "partition_invariant"
+    assert plan.resource_plan["seed_policy"]["policy_key"] == "matrix_student_init_partition_invariant_v1"
+    assert plan.resource_plan["seed_policy"]["random_streams"] == ["student_initialization"]
     assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
     assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
     assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True

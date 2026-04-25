@@ -10,11 +10,12 @@
 - tensor parallel 内部分批使用 `seed + batch_idx`，并会排序 alpha。
 - spreading path 也存在 per-batch graph creation 和 seed offset。
 - 当前 `SeedPolicySpec` 已把这些策略机器可读化；`bigamp_tensor_parallel` 标记为 `partition_invariant=false`、`automatic_rebatch_allowed=false`。
-- tensor parallel 已有 opt-in `algorithm_params.seed_partition_policy=partition_invariant` v1；默认 legacy 不变，且 spreading/dense/AGD 仍未完成 partition-invariant seed 改造。
+- tensor parallel、dense BigAMP 和 AGD 已有 opt-in `algorithm_params.seed_partition_policy=partition_invariant` v1；默认 legacy 不变。
+- spreading 仍未完成 partition-invariant seed 改造。
 
 需要确认：
 
-- spreading、dense BigAMP、AGD 是否也需要 `seed = hash(base_seed, alpha, sample, role)` 这类 partition-invariant seed policy。
+- spreading 是否也需要 `seed = hash(base_seed, alpha, sample, role)` 这类 partition-invariant seed policy。
 - tensor parallel v1 是否需要本地 GPU 长跑确认曲线是否和 legacy 可比。
 
 未确认前禁止：

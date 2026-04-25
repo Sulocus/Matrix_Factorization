@@ -698,7 +698,7 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     if path in {
         "algorithm_params.seed_partition_policy",
     }:
-        return algorithm_key in {"bigamp_tensor_parallel"}
+        return algorithm_key in {"agd", "bigamp", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.compile_fallback_policy",
     }:
@@ -904,18 +904,27 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
 def _effective_seed_policy_summary(plan: ExperimentPlan) -> Dict[str, Any]:
     algorithm_params = getattr(plan.config, "algorithm_params", None)
     requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
+    algorithm_key = getattr(plan.config, "algorithm_key", None)
     if (
-        getattr(plan.config, "algorithm_key", None) == "bigamp_tensor_parallel"
+        algorithm_key in {"agd", "bigamp", "bigamp_tensor_parallel"}
         and requested_policy == "partition_invariant"
     ):
+        if algorithm_key == "bigamp_tensor_parallel":
+            policy_key = "tensor_parallel_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
+            random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
+        else:
+            policy_key = "matrix_student_init_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]
+            random_streams = ["student_initialization"]
         return {
-            "policy_key": "tensor_parallel_partition_invariant_v1",
-            "seed_inputs": ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"],
-            "random_streams": ["student_initialization", "tensor_supergraph", "F_tensor"],
+            "policy_key": policy_key,
+            "seed_inputs": seed_inputs,
+            "random_streams": random_streams,
             "partition_invariant": True,
             "batch_partition_sensitive": False,
             "automatic_rebatch_allowed": True,
-            "notes": "Opt-in tensor parallel seed policy; default legacy behavior is unchanged.",
+            "notes": "Opt-in partition-invariant seed policy; default legacy behavior is unchanged.",
             "requested_policy": requested_policy,
         }
     return {

@@ -4,12 +4,19 @@ AGD (Alternating Gradient Descent) algorithm for matrix factorization.
 Migrated from Wang/agd/train_parallel.py
 """
 
+import hashlib
 from typing import Tuple, Optional, Callable
 import torch
 
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ...core.config import Config
+
+
+def _stable_partition_seed(base_seed: int, *parts: object) -> int:
+    payload = "|".join([str(int(base_seed)), *(str(part) for part in parts)]).encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "little") % (2**31 - 1)
 
 
 @register_algorithm(
@@ -39,6 +46,12 @@ class AGDAlgorithm(AlgorithmBase):
         self.lr = config.algorithm.learning_rate
         self.max_epochs = config.training.max_epochs
         self.S = config.training.samples_per_alpha
+        self.seed_partition_policy = getattr(config.algorithm, 'seed_partition_policy', 'legacy')
+        if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
+            raise ValueError(
+                "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
+                f"got {self.seed_partition_policy!r}"
+            )
         self.requested_use_tf32 = getattr(config.algorithm, 'use_tf32', True)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
@@ -81,8 +94,35 @@ class AGDAlgorithm(AlgorithmBase):
             "requested_use_tf32": bool(self.requested_use_tf32),
             "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
             "tf32_cudnn_enabled": torch.backends.cudnn.allow_tf32,
+            "seed_partition_policy": self.seed_partition_policy,
             "metadata_only": True,
         }
+
+    def _uses_partition_invariant_seed_policy(self) -> bool:
+        return self.seed_partition_policy == "partition_invariant"
+
+    def _randn_partitioned_matrix(
+        self,
+        *,
+        alpha_values: list[float],
+        sample_count: int,
+        shape: Tuple[int, ...],
+        seed: int,
+        device: torch.device,
+        scale: float,
+        role: str,
+    ) -> torch.Tensor:
+        alpha_blocks = []
+        for alpha in alpha_values:
+            sample_blocks = []
+            alpha_token = f"{float(alpha):.12g}"
+            for sample_idx in range(sample_count):
+                gen = torch.Generator(device=device).manual_seed(
+                    _stable_partition_seed(seed, "agd", role, alpha_token, sample_idx)
+                )
+                sample_blocks.append(torch.randn(shape, generator=gen, device=device) * scale)
+            alpha_blocks.append(torch.stack(sample_blocks, dim=0))
+        return torch.stack(alpha_blocks, dim=0)
 
     def train_single_alpha(
         self,
@@ -109,9 +149,29 @@ class AGDAlgorithm(AlgorithmBase):
         Y_teacher_b = Y_teacher.unsqueeze(0)  # (1, N1, N2)
 
         # Initialize student
-        torch.manual_seed(seed)
-        W = torch.randn((S, N1, M), device=device, dtype=torch.float32) * scale
-        X = torch.randn((S, M, N2), device=device, dtype=torch.float32) * scale
+        if self._uses_partition_invariant_seed_policy():
+            W = self._randn_partitioned_matrix(
+                alpha_values=[alpha],
+                sample_count=S,
+                shape=(N1, M),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="W_student",
+            )[0].to(torch.float32)
+            X = self._randn_partitioned_matrix(
+                alpha_values=[alpha],
+                sample_count=S,
+                shape=(M, N2),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="X_student",
+            )[0].to(torch.float32)
+        else:
+            torch.manual_seed(seed)
+            W = torch.randn((S, N1, M), device=device, dtype=torch.float32) * scale
+            X = torch.randn((S, M, N2), device=device, dtype=torch.float32) * scale
 
         # Early stop tracking
         from collections import deque
@@ -196,9 +256,29 @@ class AGDAlgorithm(AlgorithmBase):
         Y_teacher_b = Y_teacher.unsqueeze(0).unsqueeze(0)  # (1, 1, N1, N2)
 
         # Initialize student - (num_alphas, S, N1, M)
-        torch.manual_seed(seed)
-        W = torch.randn((num_alphas, S, N1, M), device=device, dtype=torch.float32) * scale
-        X = torch.randn((num_alphas, S, M, N2), device=device, dtype=torch.float32) * scale
+        if self._uses_partition_invariant_seed_policy():
+            W = self._randn_partitioned_matrix(
+                alpha_values=alpha_values,
+                sample_count=S,
+                shape=(N1, M),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="W_student",
+            ).to(torch.float32)
+            X = self._randn_partitioned_matrix(
+                alpha_values=alpha_values,
+                sample_count=S,
+                shape=(M, N2),
+                seed=seed,
+                device=device,
+                scale=scale,
+                role="X_student",
+            ).to(torch.float32)
+        else:
+            torch.manual_seed(seed)
+            W = torch.randn((num_alphas, S, N1, M), device=device, dtype=torch.float32) * scale
+            X = torch.randn((num_alphas, S, M, N2), device=device, dtype=torch.float32) * scale
 
         for step in range(steps):
             with torch.autocast(device_type=device.type, dtype=self.compute_dtype,

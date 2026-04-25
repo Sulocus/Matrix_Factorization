@@ -40,7 +40,7 @@
 - DType fallback policy：新增 `algorithm_params.dtype_fallback_policy`，默认 `allow` 保持 BF16 不可用时回到 FP32 的旧行为；设为 `error` 时 AGD/spreading/tensor parallel 请求 BF16 但不可用会初始化失败。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
 - TF32 policy：新增 `algorithm_params.use_tf32`，默认 `true` 保持旧的全局 TF32 开启行为；AGD、dense BigAMP、spreading 和 tensor parallel 初始化时会按该字段设置 torch backend，并写入 execution metadata。
 - Resource parameter route narrowing：`algorithm_params.use_compile/use_bf16` 的 `ParameterSpec` 和 active-route 判断已收窄到真实消费它们的 algorithm；例如 dense `bigamp` 下写 `use_bf16` 会显示 inactive，AGD 下写 `use_compile` 会显示 inactive。
-- Tensor seed partition policy v1：新增 `algorithm_params.seed_partition_policy`，默认 `legacy` 保持 `seed + batch_idx`；`partition_invariant` 为 tensor parallel 启用按 alpha/sample/dimension/role 分流的稳定 seed，并在 resource plan 中标记 `automatic_rebatch_allowed=true`。
+- Seed partition policy v1：`algorithm_params.seed_partition_policy` 默认 `legacy` 保持旧随机流；`partition_invariant` 已覆盖 tensor parallel、AGD 和 dense BigAMP。tensor parallel 按 alpha/sample/dimension/role 分流 graph/F/student initialization；AGD/dense BigAMP 按 alpha/sample/role 分流 student initialization。resource plan 与 runtime metadata 会标记 `automatic_rebatch_allowed=true`。
 - Runtime seed policy metadata：run metadata 的 `runtime_resource_plan.seed_policy` 现在使用 effective seed policy；显式 `partition_invariant` 不会出现 plan 与 run metadata 一个说 invariant、一个说 legacy 的断裂。
 - Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
 
@@ -59,6 +59,7 @@
   - batch end progress event 已记录真实 elapsed duration。
   - seed policy 已机器可读化；当前 partition-sensitive 算法禁止把自动重分批当成等价行为。
   - tensor parallel 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 tensor supergraph index 前缀和 student init 随机流不依赖 internal alpha batch 的 C_max。
+  - AGD 与 dense BigAMP 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后同一个 alpha/sample 的 student initialization 不依赖 alpha batch 分组。
   - OOM 自动 replan 已 hard-gate；当前策略是 checkpoint/resume，不自动改变 batch partition。
   - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
   - dense `bigamp` compile fallback 已进入 metadata；compile 失败时不再只靠 console print 暴露。
@@ -71,7 +72,7 @@
 
 ## 尚未完成
 
-- spreading/dense/AGD 的真正 seed partition invariant 改造（tensor parallel 已有 opt-in v1，默认仍是 legacy）。
+- spreading 的真正 seed partition invariant 改造（tensor parallel、dense BigAMP、AGD 已有 opt-in v1，默认仍是 legacy）。
 - OOM retry 自动缩 batch 的真实实现（当前已 hard-gate，不会伪装成已实现）。
 - TF32 OOM fallback 的用户策略选择（`use_tf32` 已可显式控制，但 OOM 后不自动切换）。
 - spreading chunk size auto tuning 的真实实现（当前已记录执行 metadata，但不自动调参）。

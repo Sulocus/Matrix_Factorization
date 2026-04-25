@@ -210,6 +210,82 @@ def test_bigamp_records_compile_fallback_policy(tmp_path):
     assert algorithm._contract_execution_metadata["compile_status"] == "disabled_by_config"
 
 
+def test_agd_partition_invariant_seed_is_alpha_batch_independent():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=2, max_steps=1, max_epochs=1),
+        algorithm_key="agd",
+        scan=ScanConfig(dimension="alpha", values=[0.5]),
+        algorithm_params=AlgorithmParams(
+            use_bf16=False,
+            seed_partition_policy="partition_invariant",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    algorithm = AGDAlgorithm(algo_config, device=torch.device("cpu"))
+
+    single = algorithm._randn_partitioned_matrix(
+        alpha_values=[0.5],
+        sample_count=2,
+        shape=(2, 1),
+        seed=17,
+        device=torch.device("cpu"),
+        scale=1.0,
+        role="W_student",
+    )
+    combined = algorithm._randn_partitioned_matrix(
+        alpha_values=[0.5, 0.8],
+        sample_count=2,
+        shape=(2, 1),
+        seed=17,
+        device=torch.device("cpu"),
+        scale=1.0,
+        role="W_student",
+    )
+
+    assert torch.equal(single[0], combined[0])
+    assert algorithm._contract_execution_metadata["seed_partition_policy"] == "partition_invariant"
+
+
+def test_bigamp_partition_invariant_seed_is_alpha_batch_independent():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=2, max_steps=1),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.5]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            seed_partition_policy="partition_invariant",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    algorithm = BiGAMPAlgorithm(algo_config, device=torch.device("cpu"))
+
+    single = algorithm._randn_partitioned_matrix(
+        alpha_values=[0.5],
+        sample_count=2,
+        shape=(2, 1),
+        seed=17,
+        device=torch.device("cpu"),
+        scale=1.0,
+        role="W_student",
+    )
+    combined = algorithm._randn_partitioned_matrix(
+        alpha_values=[0.5, 0.8],
+        sample_count=2,
+        shape=(2, 1),
+        seed=17,
+        device=torch.device("cpu"),
+        scale=1.0,
+        role="W_student",
+    )
+
+    assert torch.equal(single[0], combined[0])
+    assert algorithm._contract_execution_metadata["seed_partition_policy"] == "partition_invariant"
+
+
 def test_bigamp_honors_use_tf32_false(tmp_path):
     original_matmul = torch.backends.cuda.matmul.allow_tf32
     original_cudnn = torch.backends.cudnn.allow_tf32
