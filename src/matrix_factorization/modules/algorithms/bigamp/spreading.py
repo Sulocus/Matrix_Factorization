@@ -204,11 +204,29 @@ class BiGAMPSpreading(AlgorithmBase):
                 pass  # Fall back to uncompiled if fails
 
         # Phase 3: BF16 mixed precision (auto-detect hardware support)
+        self.requested_use_bf16 = getattr(config.algorithm_params, 'use_bf16', True)
+        self.dtype_fallback_policy = getattr(config.algorithm_params, 'dtype_fallback_policy', 'allow')
+        if self.dtype_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
+                f"got {self.dtype_fallback_policy!r}"
+            )
         self.use_bf16 = False
         self.storage_dtype = torch.float32
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        bf16_supported = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        if self.requested_use_bf16 and bf16_supported:
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
+            self.dtype_status = "bf16_requested_and_effective"
+        elif self.requested_use_bf16:
+            self.dtype_status = "fallback_to_float32_bf16_unavailable"
+            if self.dtype_fallback_policy == 'error':
+                raise RuntimeError(
+                    "BF16 was requested but is unavailable and "
+                    "algorithm_params.dtype_fallback_policy='error'"
+                )
+        else:
+            self.dtype_status = "bf16_disabled_by_config"
 
         self._contract_execution_metadata = self._build_spreading_execution_metadata([])
 
@@ -224,7 +242,10 @@ class BiGAMPSpreading(AlgorithmBase):
             "chunking_enabled": chunk_size > 0,
             "chunk_policy": "manual_config" if chunk_size > 0 else "disabled_legacy_unchunked",
             "requested_use_compile": bool(getattr(self, "use_compile", False)),
+            "requested_use_bf16": bool(getattr(self, "requested_use_bf16", True)),
             "effective_use_bf16": bool(getattr(self, "use_bf16", False)),
+            "dtype_fallback_policy": getattr(self, "dtype_fallback_policy", "allow"),
+            "dtype_status": getattr(self, "dtype_status", ""),
             "storage_dtype": str(getattr(self, "storage_dtype", torch.float32)).replace("torch.", ""),
             "alpha_values": [float(alpha) for alpha in alpha_values],
             "dynamic_batches": [

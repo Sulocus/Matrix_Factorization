@@ -43,6 +43,8 @@ planner layers:
 alpha batching: runner alpha batches
 sample batching: disjoint-union sample parallel
 chunking: spreading.chunk_size edge streaming
+dtype: float32 / bf16 storage, controlled by algorithm_params.use_bf16
+dtype fallback: algorithm_params.dtype_fallback_policy
 seed sensitive: true
 chunk policy: manual_config if spreading.chunk_size > 0, disabled_legacy_unchunked if 0
 ```
@@ -176,7 +178,7 @@ internal_alpha_batch_plan
 
 这个策略不处理 OOM retry，也不自动切换 BF16/TF32。
 
-`algorithm_params.dtype_fallback_policy` 只控制 BF16 请求不能满足时的行为：
+`algorithm_params.dtype_fallback_policy` 只控制 BF16 请求不能满足时的行为，目前接入 `bigamp_spreading` 和 `bigamp_tensor_parallel`：
 
 - `allow`：默认值，保持旧行为；BF16 不可用时使用 FP32，并在 `dtype_status` 里记录 fallback。
 - `error`：严格调试模式；如果用户请求 BF16 但设备不可用或不支持 BF16，初始化直接失败。
@@ -191,7 +193,10 @@ chunk_size
 chunking_enabled
 chunk_policy
 requested_use_compile
+requested_use_bf16
 effective_use_bf16
+dtype_fallback_policy
+dtype_status
 storage_dtype
 alpha_values
 dynamic_batches
