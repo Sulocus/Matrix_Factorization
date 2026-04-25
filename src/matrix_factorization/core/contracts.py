@@ -260,6 +260,7 @@ class ProbeSpec:
     requires_state: List[str] = field(default_factory=list)
     produces: List[str] = field(default_factory=list)
     compatible_algorithms: List[str] = field(default_factory=list)
+    runtime_status: str = "declared_only"
     description: str = ""
 
 
@@ -1331,6 +1332,7 @@ def get_probe_specs() -> Dict[str, ProbeSpec]:
             ["student_factors", "step_index"],
             ["slice_artifact"],
             ["agd", "bigamp", "bigamp_spreading"],
+            "declared_only",
             "Read-only runtime state snapshot for matrix factor algorithms.",
         ),
         ProbeSpec(
@@ -1339,6 +1341,7 @@ def get_probe_specs() -> Dict[str, ProbeSpec]:
             ["tensor_factors", "step_index"],
             ["tensor_slice_artifact"],
             ["bigamp_tensor", "bigamp_tensor_parallel", "agd_tensor"],
+            "declared_only",
             "Read-only runtime state snapshot for tensor factor algorithms.",
         ),
         ProbeSpec(
@@ -1347,6 +1350,7 @@ def get_probe_specs() -> Dict[str, ProbeSpec]:
             ["factor_variances", "step_index"],
             ["variance_slice_artifact"],
             ["bigamp", "bigamp_spreading"],
+            "declared_only",
             "Read-only variance diagnostic slice.",
         ),
         ProbeSpec(
@@ -1355,6 +1359,7 @@ def get_probe_specs() -> Dict[str, ProbeSpec]:
             [],
             ["batch_summary"],
             ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"],
+            "runtime_active",
             "Read-only runner-level batch summary without touching algorithm internals.",
         ),
     ]

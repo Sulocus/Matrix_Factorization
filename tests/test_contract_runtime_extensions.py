@@ -45,10 +45,12 @@ output:
 def test_probe_and_analyzer_specs_exist():
     assert "tensor_state_slice" in get_probe_specs()
     assert "batch_summary" in get_probe_specs()
+    assert get_probe_specs()["tensor_state_slice"].runtime_status == "declared_only"
+    assert get_probe_specs()["batch_summary"].runtime_status == "runtime_active"
     assert "tensor_heatmap_summary" in get_analyzer_specs()
 
 
-def test_compatible_tensor_probe_passes_preflight(tmp_path):
+def test_declared_only_tensor_probe_fails_preflight_until_hook_is_wired(tmp_path):
     config_path = tmp_path / "with_probe.yaml"
     _write_config(
         config_path,
@@ -63,9 +65,10 @@ analyzers:
     config, output_options, raw_yaml = load_yaml_config(config_path)
     plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
 
-    assert not plan.errors
     assert [spec.key for spec in plan.probe_specs] == ["tensor_state_slice"]
     assert [spec.key for spec in plan.analyzer_specs] == ["tensor_heatmap_summary"]
+    assert any("probe 'tensor_state_slice' 当前是 declared_only" in error for error in plan.errors)
+    assert plan.to_dict()["probe_contracts"][0]["runtime_status"] == "declared_only"
 
 
 def test_incompatible_probe_fails_preflight(tmp_path):
@@ -269,6 +272,7 @@ probes:
 
     config, output_options, raw_yaml = load_yaml_config(config_path)
     plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    assert "PROBE_DECLARED_ONLY" in plan.to_dict()["error_codes"]
     executor = RuntimeExtensionExecutor.from_contract(plan.to_dict(), config.algorithm_key)
 
     try:

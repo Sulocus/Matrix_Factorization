@@ -142,6 +142,16 @@ class ExperimentPlan:
             "output_plan": self.output_plan.to_dict(),
             "interventions": [spec.key for spec in self.intervention_specs],
             "probes": [spec.key for spec in self.probe_specs],
+            "probe_contracts": [
+                {
+                    "key": spec.key,
+                    "trigger": spec.trigger,
+                    "requires_state": list(spec.requires_state),
+                    "produces": list(spec.produces),
+                    "runtime_status": spec.runtime_status,
+                }
+                for spec in self.probe_specs
+            ],
             "analyzers": [spec.key for spec in self.analyzer_specs],
             "effective_parameters": dict(self.effective_parameters),
             "parameter_chain": self.parameter_chain(),
@@ -977,6 +987,11 @@ def _validate_runtime_extension_compatibility(plan: ExperimentPlan) -> None:
     for spec in plan.probe_specs:
         if algorithm_key not in spec.compatible_algorithms:
             plan.errors.append(f"probe '{spec.key}' 未声明兼容 algorithm '{algorithm_key}'。")
+        if spec.runtime_status != "runtime_active":
+            plan.errors.append(
+                f"probe '{spec.key}' 当前是 {spec.runtime_status}，runner 尚未接入 "
+                f"{spec.trigger} hook 的实际 payload。"
+            )
         missing_state = sorted(set(spec.requires_state) - state_capabilities)
         if missing_state:
             plan.errors.append(
@@ -1090,6 +1105,8 @@ def _issue_code(message: str) -> str:
         return "INTERVENTION_STATE_UNAVAILABLE"
     if "probe '" in message and "未声明兼容" in message:
         return "PROBE_UNSUPPORTED"
+    if "probe '" in message and "declared_only" in message:
+        return "PROBE_DECLARED_ONLY"
     if "probe '" in message and "需要 state" in message:
         return "PROBE_STATE_UNAVAILABLE"
     if "analyzer '" in message and "未声明兼容" in message:
