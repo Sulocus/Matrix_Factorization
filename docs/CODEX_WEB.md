@@ -12,7 +12,8 @@ pip install -e ".[dev]"
 ## Fast Checks
 
 ```bash
-python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/test_registry_imports.py
+python -m pytest -q tests/test_contract_parameter_specs.py tests/test_config_contract.py tests/test_parallel_memory_contract.py
+python -m pytest -q tests/test_trial_contract.py tests/test_trial_cli.py
 ```
 
 For hard-interface or workflow changes, run the relevant contract tests or the
@@ -35,6 +36,11 @@ mf validate --json path/to/config.yaml
 New algorithms, teachers, graphs, metrics, outputs, probes, analyzers, and
 interventions must be declared in `src/matrix_factorization/core/contracts.py`
 before they are wired into registries or runtime paths.
+
+Every YAML-facing parameter must have a `ParameterSpec`, basic type/enum
+validation, an effective parameter trace, and metadata/result visibility when it
+changes execution. `mf validate --strict` should fail if an active-route
+parameter is only half-wired.
 
 ## Research Trials
 

@@ -8,7 +8,15 @@ Use these commands for lightweight local checks:
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/test_registry_imports.py
+python -m pytest -q tests/test_contract_parameter_specs.py tests/test_config_contract.py tests/test_parallel_memory_contract.py
+python -m pytest -q tests/test_trial_contract.py tests/test_trial_cli.py
+```
+
+Before committing structural hard-interface work, run the default lightweight
+suite:
+
+```bash
+python -m pytest -q
 ```
 
 Do not commit generated experiment data from `runs/`, `results/`,
@@ -28,6 +36,11 @@ runtime. Registries are spec-gated: `@register_algorithm(...)`,
 source files in classified areas must also be added to the source inventory.
 After adding extension points, run `mf validate <config>` plus the contract
 tests covering registry/spec/planning behavior.
+
+Parameter rule: every new YAML-facing knob must have a `ParameterSpec`, type or
+enum validation, an effective parameter trace, and metadata/result visibility if
+it changes execution. A parsed field that is not consumed by the active route
+must show up as an inactive-route warning or strict-mode error.
 
 Research trial rule: if the user asks for a small trial run, quick debug,
 parameter poke, or "see if it runs", use `trials/active/<trial_key>/config.yaml`
