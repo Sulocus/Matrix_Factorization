@@ -29,6 +29,7 @@ from matrix_factorization.modules.algorithms.bigamp.tensor_supergraph import (
     create_tensor_superdata,
     create_tensor_supergraph,
 )
+from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
 
 
 def _write_tensor_config(path: Path) -> None:
@@ -91,6 +92,42 @@ algorithm_params:
   use_compile: false
   use_bf16: false
   seed_partition_policy: partition_invariant
+output:
+  enable_heatmap: false
+  save_tensors: false
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_spreading_config(path: Path, adaptive_restart: bool = False) -> None:
+    path.write_text(
+        f"""
+tensor_order: 2
+algorithm: 2
+teacher: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.2
+  step: 0.1
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  use_compile: false
+  use_bf16: false
+  seed_partition_policy: partition_invariant
+  adaptive_restart: {str(adaptive_restart).lower()}
+spreading:
+  f_distribution: 1
+  seed: 321
 output:
   enable_heatmap: false
   save_tensors: false
@@ -350,6 +387,54 @@ def test_matrix_partition_invariant_seed_policy_updates_resource_plan(
     assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
     assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
     assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
+
+
+def test_spreading_partition_invariant_seed_policy_updates_resource_plan(tmp_path):
+    config_path = tmp_path / "spreading_config.yaml"
+    _write_spreading_config(config_path)
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert plan.algorithm_spec.key == "bigamp_spreading"
+    assert plan.resource_plan["config_effective"]["seed_partition_policy"] == "partition_invariant"
+    assert plan.resource_plan["seed_policy"]["policy_key"] == "spreading_partition_invariant_v1"
+    assert plan.resource_plan["seed_policy"]["random_streams"] == [
+        "student_initialization",
+        "spreading_graph",
+        "F_super",
+    ]
+    assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
+    assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
+    assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
+
+
+def test_spreading_partition_invariant_rejects_adaptive_restart(tmp_path):
+    config_path = tmp_path / "spreading_config.yaml"
+    _write_spreading_config(config_path, adaptive_restart=True)
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert any("adaptive_restart" in error for error in plan.errors)
+
+
+def test_spreading_partition_invariant_data_prefix_is_batch_independent(tmp_path):
+    config_path = tmp_path / "spreading_config.yaml"
+    _write_spreading_config(config_path)
+    config, _, _ = load_yaml_config(config_path)
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+    W_teacher = torch.arange(8, dtype=torch.float32).reshape(4, 2) / 10.0
+    X_teacher = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 10.0
+
+    single = algorithm.create_spreading_data(W_teacher, X_teacher, [0.5], S=2, base_seed=17)
+    combined = algorithm.create_spreading_data(W_teacher, X_teacher, [0.5, 0.8], S=2, base_seed=17)
+    c_small = int(single.supergraph.C_per_alpha[0].item())
+
+    assert torch.equal(single.supergraph.i_idx[:, :c_small], combined.supergraph.i_idx[:, :c_small])
+    assert torch.equal(single.supergraph.j_idx[:, :c_small], combined.supergraph.j_idx[:, :c_small])
+    assert torch.equal(single.F_super[:, :c_small], combined.F_super[:, :c_small])
+    assert torch.equal(single.Y_super[:, :c_small], combined.Y_super[:, :c_small])
 
 
 def test_tensor_memory_estimator_consumes_tensor_order_and_dims():

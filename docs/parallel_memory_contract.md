@@ -104,7 +104,7 @@ tensor parallel 会启用 opt-in v1 seed policy：
 - `resource_plan.seed_policy` 会标记 `partition_invariant=true`、`batch_partition_sensitive=false`、`automatic_rebatch_allowed=true`。
 - run metadata 的 `runtime_resource_plan.seed_policy` 也会记录同一套 effective policy。
 
-AGD 与 dense BigAMP 也可以显式设置同一个字段。它们的 opt-in v1 只覆盖 student initialization：同一个 `(base_seed, alpha, sample, role)` 会得到同一个初始 factor，不依赖当前 alpha batch 怎么分组。默认 `legacy` 不变；spreading 仍不允许自动重分批。
+spreading、AGD 与 dense BigAMP 也可以显式设置同一个字段。AGD/dense BigAMP 的 opt-in v1 只覆盖 student initialization：同一个 `(base_seed, alpha, sample, role)` 会得到同一个初始 factor，不依赖当前 alpha batch 怎么分组。spreading 的 opt-in v1 会保留 graph/F 的 base seed，不再混入 internal `batch_idx`，并让 cold/warm start 初始化按 alpha/sample/role 分流。默认 `legacy` 不变；spreading 的 `adaptive_restart` 暂时不兼容，因为 restart noise 还没有独立 seed contract。
 
 `ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint 并退出，用户再用 clean process resume。
 

@@ -857,11 +857,15 @@ class ExperimentRunner:
         seed_policy = get_seed_policy_specs().get(config.algorithm_key)
         algorithm_params = getattr(config, "algorithm_params", None)
         requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
-        if config.algorithm_key in {"agd", "bigamp", "bigamp_tensor_parallel"} and requested_policy == "partition_invariant":
+        if config.algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"} and requested_policy == "partition_invariant":
             if config.algorithm_key == "bigamp_tensor_parallel":
                 policy_key = "tensor_parallel_partition_invariant_v1"
                 seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
                 random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
+            elif config.algorithm_key == "bigamp_spreading":
+                policy_key = "spreading_partition_invariant_v1"
+                seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
+                random_streams = ["student_initialization", "spreading_graph", "F_super"]
             else:
                 policy_key = "matrix_student_init_partition_invariant_v1"
                 seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]

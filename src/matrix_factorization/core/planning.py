@@ -471,6 +471,7 @@ def build_experiment_plan(
     _validate_output_compatibility(plan)
     _validate_custom_plot_metrics(plan)
     _validate_runtime_extension_compatibility(plan)
+    _validate_seed_policy_compatibility(plan)
     _warn_for_soft_parameters(plan, parameter_specs, strict=strict)
     _warn_for_parameter_consumption(plan, strict=strict)
     _warn_for_route_overrides(plan)
@@ -698,7 +699,7 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     if path in {
         "algorithm_params.seed_partition_policy",
     }:
-        return algorithm_key in {"agd", "bigamp", "bigamp_tensor_parallel"}
+        return algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.compile_fallback_policy",
     }:
@@ -906,13 +907,17 @@ def _effective_seed_policy_summary(plan: ExperimentPlan) -> Dict[str, Any]:
     requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
     algorithm_key = getattr(plan.config, "algorithm_key", None)
     if (
-        algorithm_key in {"agd", "bigamp", "bigamp_tensor_parallel"}
+        algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
         and requested_policy == "partition_invariant"
     ):
         if algorithm_key == "bigamp_tensor_parallel":
             policy_key = "tensor_parallel_partition_invariant_v1"
             seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
             random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
+        elif algorithm_key == "bigamp_spreading":
+            policy_key = "spreading_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
+            random_streams = ["student_initialization", "spreading_graph", "F_super"]
         else:
             policy_key = "matrix_student_init_partition_invariant_v1"
             seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]
@@ -1176,6 +1181,23 @@ def _validate_runtime_extension_compatibility(plan: ExperimentPlan) -> None:
             plan.errors.append(
                 f"analyzer '{spec.key}' 需要 {missing_inputs}，但当前 algorithm/result contract 未声明产出。"
             )
+
+
+def _validate_seed_policy_compatibility(plan: ExperimentPlan) -> None:
+    algorithm_key = getattr(plan.config, "algorithm_key", None)
+    params = getattr(plan.config, "algorithm_params", None)
+    if not params:
+        return
+    if (
+        algorithm_key == "bigamp_spreading"
+        and getattr(params, "seed_partition_policy", "legacy") == "partition_invariant"
+        and getattr(params, "adaptive_restart", False)
+    ):
+        plan.errors.append(
+            "algorithm_params.seed_partition_policy=partition_invariant 当前不支持 "
+            "bigamp_spreading 的 adaptive_restart；restart noise 还没有纳入 "
+            "partition-invariant seed contract。"
+        )
 
 
 def _warn_for_soft_parameters(

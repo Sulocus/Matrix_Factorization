@@ -19,6 +19,7 @@ from typing import Any, Tuple, Callable, Dict, Optional, List
 import math
 from pathlib import Path
 import datetime
+import hashlib
 import torch
 
 from matrix_factorization.modules.registry import register_algorithm
@@ -52,6 +53,12 @@ from .step import (
 # This is a global setting that affects all matmul operations
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+
+def _stable_partition_seed(base_seed: int, *parts: object) -> int:
+    payload = "|".join([str(int(base_seed)), *(str(part) for part in parts)]).encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "little") % (2**31 - 1)
 
 
 
@@ -129,6 +136,21 @@ class BiGAMPSpreading(AlgorithmBase):
         self.noise_var = config.algorithm_params.noise_var
         self.max_steps = config.training.max_steps
         self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
+        self.seed_partition_policy = getattr(config.algorithm_params, 'seed_partition_policy', 'legacy')
+        if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
+            raise ValueError(
+                "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
+                f"got {self.seed_partition_policy!r}"
+            )
+        if (
+            self.seed_partition_policy == 'partition_invariant'
+            and getattr(config.algorithm_params, 'adaptive_restart', False)
+        ):
+            raise ValueError(
+                "bigamp_spreading partition_invariant seed policy does not yet support "
+                "algorithm_params.adaptive_restart=true because restart noise is a separate "
+                "runtime random stream."
+            )
         self.requested_use_tf32 = getattr(config.algorithm_params, 'use_tf32', True)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
@@ -311,10 +333,103 @@ class BiGAMPSpreading(AlgorithmBase):
                 }
                 for start, end, alpha_max in (dynamic_batches or [])
             ],
-            "seed_partition": "seed + batch_idx",
+            "seed_partition_policy": getattr(self, "seed_partition_policy", "legacy"),
+            "seed_partition": (
+                "partition_invariant_alpha_sample_role"
+                if self._uses_partition_invariant_seed_policy()
+                else "seed + batch_idx"
+            ),
             "metadata_only": True,
             "notes": "Spreading execution metadata only; chunk_size is manual config and no auto tuning is applied.",
         }
+
+    def _uses_partition_invariant_seed_policy(self) -> bool:
+        return getattr(self, "seed_partition_policy", "legacy") == "partition_invariant"
+
+    def _spreading_batch_seed(self, seed: int, batch_idx: int) -> int:
+        if self._uses_partition_invariant_seed_policy():
+            return int(seed)
+        return int(seed) + int(batch_idx)
+
+    def _batch_alpha_values(
+        self,
+        spreading_data: SpreadingDataParallel,
+        batch_alpha_indices: Optional[List[int]],
+        batch_alpha_values: Optional[List[float]],
+    ) -> List[float]:
+        if batch_alpha_values is not None:
+            return [float(alpha) for alpha in batch_alpha_values]
+        if batch_alpha_indices is None:
+            batch_alpha_indices = list(range(spreading_data.A))
+        return [float(spreading_data.alpha_values[idx].item()) for idx in batch_alpha_indices]
+
+    def _randn_partitioned_spreading_flat(
+        self,
+        *,
+        alpha_values: List[float],
+        sample_count: int,
+        node_count: int,
+        latent_dim: int,
+        seed: int,
+        role: str,
+        scale: float,
+    ) -> torch.Tensor:
+        alpha_blocks = []
+        for alpha in alpha_values:
+            sample_blocks = []
+            alpha_token = f"{float(alpha):.12g}"
+            for sample_idx in range(sample_count):
+                gen = torch.Generator(device=self.device).manual_seed(
+                    _stable_partition_seed(
+                        seed,
+                        "bigamp_spreading",
+                        role,
+                        alpha_token,
+                        sample_idx,
+                    )
+                )
+                sample_blocks.append(
+                    torch.randn(
+                        (node_count, latent_dim),
+                        generator=gen,
+                        device=self.device,
+                        dtype=self.storage_dtype,
+                    )
+                    * scale
+                )
+            alpha_blocks.append(torch.stack(sample_blocks, dim=0).reshape(sample_count * node_count, latent_dim))
+        return torch.stack(alpha_blocks, dim=0)
+
+    def _initialize_near_teacher_partitioned(
+        self,
+        *,
+        alpha_values: List[float],
+        teacher_tensor: torch.Tensor,
+        init_overlap: float,
+        sample_count: int,
+        seed: int,
+        role: str,
+    ) -> torch.Tensor:
+        node_count, latent_dim = teacher_tensor.shape
+        teacher_expanded = (
+            teacher_tensor.unsqueeze(0)
+            .unsqueeze(0)
+            .expand(len(alpha_values), sample_count, -1, -1)
+            .reshape(len(alpha_values), sample_count * node_count, latent_dim)
+            .to(self.device, dtype=self.storage_dtype)
+        )
+        noise = self._randn_partitioned_spreading_flat(
+            alpha_values=alpha_values,
+            sample_count=sample_count,
+            node_count=node_count,
+            latent_dim=latent_dim,
+            seed=seed,
+            role=role,
+            scale=1.0,
+        )
+        coeff_signal = init_overlap
+        coeff_noise = math.sqrt(1 - init_overlap ** 2)
+        return coeff_signal * teacher_expanded + coeff_noise * noise
 
     @staticmethod
     def _initialize_near_teacher(
@@ -573,6 +688,7 @@ class BiGAMPSpreading(AlgorithmBase):
         step_callback=None,
         max_steps: Optional[int] = None,  # Allow override for step scanning
         batch_alpha_values: Optional[List[float]] = None,
+        base_seed: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Train all samples in parallel using Disjoint Union with optimized flat tensors.
@@ -606,13 +722,13 @@ class BiGAMPSpreading(AlgorithmBase):
         # Check for General Graph Mode
         if getattr(self, 'allow_intra_connection', False):
             return self._train_full_parallel_general(
-                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values
+                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values, base_seed
             )
 
         # Check for Adaptive Damping
         if hasattr(self.config.algorithm_params, 'adaptive_damping') and self.config.algorithm_params.adaptive_damping:
             return self._train_full_parallel_adaptive(
-                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values
+                spreading_data, batch_alpha_indices, verbose, step_callback, max_steps, batch_alpha_values, base_seed
             )
 
 
@@ -620,6 +736,11 @@ class BiGAMPSpreading(AlgorithmBase):
         if batch_alpha_indices is None:
             batch_alpha_indices = list(range(A))
         B = len(batch_alpha_indices)
+        effective_alpha_values = self._batch_alpha_values(
+            spreading_data, batch_alpha_indices, batch_alpha_values
+        )
+        if self._uses_partition_invariant_seed_policy() and base_seed is None:
+            raise RuntimeError("bigamp_spreading partition_invariant initialization requires base_seed.")
 
         # Get alpha mask for this batch
         full_alpha_mask = spreading_data.supergraph.alpha_mask  # (A, C_max)
@@ -643,7 +764,26 @@ class BiGAMPSpreading(AlgorithmBase):
         init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
         init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
 
-        if init_mode == 'teacher':
+        if init_mode == 'teacher' and self._uses_partition_invariant_seed_policy():
+            W_flat = self._initialize_near_teacher_partitioned(
+                alpha_values=effective_alpha_values,
+                teacher_tensor=spreading_data.W_teacher,
+                init_overlap=init_overlap,
+                sample_count=S,
+                seed=base_seed,
+                role="W_student",
+            )
+            X_flat = self._initialize_near_teacher_partitioned(
+                alpha_values=effective_alpha_values,
+                teacher_tensor=spreading_data.X_teacher.T,
+                init_overlap=init_overlap,
+                sample_count=S,
+                seed=base_seed,
+                role="X_student",
+            )
+            if verbose:
+                print(f"  [Init] Teacher-Assisted (m={init_overlap})")
+        elif init_mode == 'teacher':
             # Teacher-Assisted Initialization (Warm Start for Hysteresis Analysis)
             W_flat = self._initialize_near_teacher(
                 (B, S * N1, M),
@@ -665,8 +805,28 @@ class BiGAMPSpreading(AlgorithmBase):
                 print(f"  [Init] Teacher-Assisted (m={init_overlap})")
         else:
             # Random Initialization (Cold Start - default)
-            W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-            X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+            if self._uses_partition_invariant_seed_policy():
+                W_flat = self._randn_partitioned_spreading_flat(
+                    alpha_values=effective_alpha_values,
+                    sample_count=S,
+                    node_count=N1,
+                    latent_dim=M,
+                    seed=base_seed,
+                    role="W_student",
+                    scale=0.1,
+                )
+                X_flat = self._randn_partitioned_spreading_flat(
+                    alpha_values=effective_alpha_values,
+                    sample_count=S,
+                    node_count=N2,
+                    latent_dim=M,
+                    seed=base_seed,
+                    role="X_student",
+                    scale=0.1,
+                )
+            else:
+                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
+                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
 
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
@@ -762,6 +922,7 @@ class BiGAMPSpreading(AlgorithmBase):
         step_callback,
         max_steps: Optional[int],
         batch_alpha_values: Optional[List[float]] = None,
+        base_seed: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Adaptive Damping Training Loop with Backtracking.
@@ -778,6 +939,11 @@ class BiGAMPSpreading(AlgorithmBase):
         if batch_alpha_indices is None:
             batch_alpha_indices = list(range(A))
         B = len(batch_alpha_indices)
+        effective_alpha_values = self._batch_alpha_values(
+            spreading_data, batch_alpha_indices, batch_alpha_values
+        )
+        if self._uses_partition_invariant_seed_policy() and base_seed is None:
+            raise RuntimeError("bigamp_spreading partition_invariant initialization requires base_seed.")
         
         # Determine params
         params = self.config.algorithm_params
@@ -808,7 +974,26 @@ class BiGAMPSpreading(AlgorithmBase):
         init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
         init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
 
-        if init_mode == 'teacher':
+        if init_mode == 'teacher' and self._uses_partition_invariant_seed_policy():
+            W_flat = self._initialize_near_teacher_partitioned(
+                alpha_values=effective_alpha_values,
+                teacher_tensor=spreading_data.W_teacher,
+                init_overlap=init_overlap,
+                sample_count=S,
+                seed=base_seed,
+                role="W_student",
+            )
+            X_flat = self._initialize_near_teacher_partitioned(
+                alpha_values=effective_alpha_values,
+                teacher_tensor=spreading_data.X_teacher.T,
+                init_overlap=init_overlap,
+                sample_count=S,
+                seed=base_seed,
+                role="X_student",
+            )
+            if verbose:
+                print(f"  [Init] Teacher-Assisted Adaptive (m={init_overlap})")
+        elif init_mode == 'teacher':
             # Teacher-Assisted Initialization (Warm Start for Hysteresis Analysis)
             W_flat = self._initialize_near_teacher(
                 (B, S * N1, M),
@@ -830,8 +1015,28 @@ class BiGAMPSpreading(AlgorithmBase):
                 print(f"  [Init] Teacher-Assisted Adaptive (m={init_overlap})")
         else:
             # Random Initialization (Cold Start - default)
-            W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-            X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+            if self._uses_partition_invariant_seed_policy():
+                W_flat = self._randn_partitioned_spreading_flat(
+                    alpha_values=effective_alpha_values,
+                    sample_count=S,
+                    node_count=N1,
+                    latent_dim=M,
+                    seed=base_seed,
+                    role="W_student",
+                    scale=0.1,
+                )
+                X_flat = self._randn_partitioned_spreading_flat(
+                    alpha_values=effective_alpha_values,
+                    sample_count=S,
+                    node_count=N2,
+                    latent_dim=M,
+                    seed=base_seed,
+                    role="X_student",
+                    scale=0.1,
+                )
+            else:
+                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
+                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
 
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
@@ -1125,10 +1330,10 @@ class BiGAMPSpreading(AlgorithmBase):
 
             # Create per-batch spreading_data to optimize memory (C_max tailored to batch max)
             # This ensures we don't allocate massive tensors for small alphas.
-            # We offset seed by batch_idx to avoid identical random streams for different batches if safe
-            # but usually base_seed is fine if alphas differ. We'll use base_seed + batch_idx for safety.
+            # Legacy offsets seed by batch_idx; partition_invariant keeps base_seed stable.
+            batch_seed = self._spreading_batch_seed(seed, batch_idx)
             batch_spreading_data = self.create_spreading_data(
-                W_teacher, X_teacher, batch_alpha_list, S, seed + batch_idx
+                W_teacher, X_teacher, batch_alpha_list, S, batch_seed
             )
 
             # Train this batch using LOCAL spreading_data
@@ -1140,6 +1345,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 step_callback=step_callback,
                 max_steps=max_steps,
                 batch_alpha_values=batch_alpha_list,
+                base_seed=batch_seed,
             )
             
             # free memory
@@ -1180,6 +1386,7 @@ class BiGAMPSpreading(AlgorithmBase):
         step_callback=None,
         max_steps: Optional[int] = None,
         batch_alpha_values: Optional[List[float]] = None,
+        base_seed: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Unified Vector implementation for general graphs."""
         S = spreading_data.S
@@ -1195,6 +1402,11 @@ class BiGAMPSpreading(AlgorithmBase):
         if batch_alpha_indices is None:
             batch_alpha_indices = list(range(A))
         B = len(batch_alpha_indices)
+        effective_alpha_values = self._batch_alpha_values(
+            spreading_data, batch_alpha_indices, batch_alpha_values
+        )
+        if self._uses_partition_invariant_seed_policy() and base_seed is None:
+            raise RuntimeError("bigamp_spreading partition_invariant initialization requires base_seed.")
 
         # DEBUG: Check Edge Distribution
         if verbose: # Print stats only if verbose requested
@@ -1256,20 +1468,41 @@ class BiGAMPSpreading(AlgorithmBase):
             W_teacher = spreading_data.W_teacher  # (N1, M)
             X_teacher_T = spreading_data.X_teacher.T  # (M, N2) -> (N2, M)
             V_teacher = torch.cat([W_teacher, X_teacher_T], dim=0)  # (N_total, M)
-            
-            V_flat = self._initialize_near_teacher(
-                (B, S * N_total, M),
-                V_teacher,
-                init_overlap,
-                S,
-                self.device,
-                self.storage_dtype
-            )
+
+            if self._uses_partition_invariant_seed_policy():
+                V_flat = self._initialize_near_teacher_partitioned(
+                    alpha_values=effective_alpha_values,
+                    teacher_tensor=V_teacher,
+                    init_overlap=init_overlap,
+                    sample_count=S,
+                    seed=base_seed,
+                    role="V_student",
+                )
+            else:
+                V_flat = self._initialize_near_teacher(
+                    (B, S * N_total, M),
+                    V_teacher,
+                    init_overlap,
+                    S,
+                    self.device,
+                    self.storage_dtype
+                )
             if verbose:
                 print(f"  [Init] Teacher-Assisted General (m={init_overlap})")
         else:
             # Random Initialization (Cold Start - default)
-            V_flat = torch.randn(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * 0.1
+            if self._uses_partition_invariant_seed_policy():
+                V_flat = self._randn_partitioned_spreading_flat(
+                    alpha_values=effective_alpha_values,
+                    sample_count=S,
+                    node_count=N_total,
+                    latent_dim=M,
+                    seed=base_seed,
+                    role="V_student",
+                    scale=0.1,
+                )
+            else:
+                V_flat = torch.randn(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * 0.1
 
         V_var_flat = torch.ones(B, S * N_total, M, device=self.device, dtype=self.storage_dtype)
 
@@ -1443,7 +1676,8 @@ def run_spreading_parallel(
         W_batch, X_batch = algorithm.train_full_parallel(
             spreading_data,
             batch_alpha_indices=batch_indices,
-            verbose=verbose
+            verbose=verbose,
+            base_seed=seed,
         )
         
         # W_batch: (S, B, N1, M) -> assign to main storage
