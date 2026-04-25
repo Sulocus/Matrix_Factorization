@@ -695,6 +695,10 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     }:
         return algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
     if path in {
+        "algorithm_params.seed_partition_policy",
+    }:
+        return algorithm_key in {"bigamp_tensor_parallel"}
+    if path in {
         "algorithm_params.compile_fallback_policy",
     }:
         return algorithm_key in {"bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
@@ -792,6 +796,7 @@ def _effective_parameter_summary(
         "algorithm_params.use_bf16": getattr(algorithm_params, "use_bf16", None),
         "algorithm_params.dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
         "algorithm_params.use_tf32": getattr(algorithm_params, "use_tf32", None),
+        "algorithm_params.seed_partition_policy": getattr(algorithm_params, "seed_partition_policy", None),
         "algorithm_params.init_mode": getattr(algorithm_params, "init_mode", None),
         "algorithm_params.init_overlap": getattr(algorithm_params, "init_overlap", None),
         "algorithm_params.adaptive_restart": getattr(algorithm_params, "adaptive_restart", None),
@@ -837,15 +842,7 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "sample_range_policy": plan.memory_model_spec.sample_range_policy if plan.memory_model_spec else "",
             "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
         },
-        "seed_policy": {
-            "policy_key": plan.seed_policy_spec.policy_key if plan.seed_policy_spec else "",
-            "seed_inputs": list(plan.seed_policy_spec.seed_inputs) if plan.seed_policy_spec else [],
-            "random_streams": list(plan.seed_policy_spec.random_streams) if plan.seed_policy_spec else [],
-            "partition_invariant": plan.seed_policy_spec.partition_invariant if plan.seed_policy_spec else False,
-            "batch_partition_sensitive": plan.seed_policy_spec.batch_partition_sensitive if plan.seed_policy_spec else True,
-            "automatic_rebatch_allowed": plan.seed_policy_spec.automatic_rebatch_allowed if plan.seed_policy_spec else False,
-            "notes": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
-        },
+        "seed_policy": _effective_seed_policy_summary(plan),
         "config_effective": {
             "scan_num_points": len(getattr(scan, "values", []) or []),
             "samples_per_alpha": getattr(training, "samples_per_alpha", None),
@@ -855,6 +852,7 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "use_bf16": getattr(algorithm_params, "use_bf16", None),
             "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
             "use_tf32": getattr(algorithm_params, "use_tf32", None),
+            "seed_partition_policy": getattr(algorithm_params, "seed_partition_policy", None),
             "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
             "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
         },
@@ -863,6 +861,35 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "batching": plan.batching_spec.notes,
             "seed_policy": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
         },
+    }
+
+
+def _effective_seed_policy_summary(plan: ExperimentPlan) -> Dict[str, Any]:
+    algorithm_params = getattr(plan.config, "algorithm_params", None)
+    requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
+    if (
+        getattr(plan.config, "algorithm_key", None) == "bigamp_tensor_parallel"
+        and requested_policy == "partition_invariant"
+    ):
+        return {
+            "policy_key": "tensor_parallel_partition_invariant_v1",
+            "seed_inputs": ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"],
+            "random_streams": ["student_initialization", "tensor_supergraph", "F_tensor"],
+            "partition_invariant": True,
+            "batch_partition_sensitive": False,
+            "automatic_rebatch_allowed": True,
+            "notes": "Opt-in tensor parallel seed policy; default legacy behavior is unchanged.",
+            "requested_policy": requested_policy,
+        }
+    return {
+        "policy_key": plan.seed_policy_spec.policy_key if plan.seed_policy_spec else "",
+        "seed_inputs": list(plan.seed_policy_spec.seed_inputs) if plan.seed_policy_spec else [],
+        "random_streams": list(plan.seed_policy_spec.random_streams) if plan.seed_policy_spec else [],
+        "partition_invariant": plan.seed_policy_spec.partition_invariant if plan.seed_policy_spec else False,
+        "batch_partition_sensitive": plan.seed_policy_spec.batch_partition_sensitive if plan.seed_policy_spec else True,
+        "automatic_rebatch_allowed": plan.seed_policy_spec.automatic_rebatch_allowed if plan.seed_policy_spec else False,
+        "notes": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
+        "requested_policy": requested_policy,
     }
 
 

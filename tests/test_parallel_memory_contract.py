@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 
 from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
@@ -23,6 +24,10 @@ from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
 from matrix_factorization.modules.algorithms.bigamp.tensor_contract import (
     build_tensor_alpha_batch_metadata,
     build_tensor_execution_metadata,
+)
+from matrix_factorization.modules.algorithms.bigamp.tensor_supergraph import (
+    create_tensor_superdata,
+    create_tensor_supergraph,
 )
 
 
@@ -96,6 +101,83 @@ def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     assert seed_policy.batch_partition_sensitive is True
     assert seed_policy.automatic_rebatch_allowed is False
     assert "batch_idx" in seed_policy.notes
+
+
+def test_tensor_supergraph_partition_invariant_indices_do_not_depend_on_batch_cmax():
+    dims = (4, 4, 4)
+    device = torch.device("cpu")
+
+    single = create_tensor_supergraph(
+        dims,
+        [0.5],
+        M=2,
+        S=2,
+        seed=123,
+        device=device,
+        partition_invariant=True,
+    )
+    combined = create_tensor_supergraph(
+        dims,
+        [0.5, 1.0],
+        M=2,
+        S=2,
+        seed=123,
+        device=device,
+        partition_invariant=True,
+    )
+
+    c_alpha = single.C_per_alpha[0]
+    assert c_alpha == combined.C_per_alpha[0]
+    for dim_idx in range(len(dims)):
+        assert torch.equal(
+            single.indices[dim_idx][:, :c_alpha],
+            combined.indices[dim_idx][:, :c_alpha],
+        )
+
+
+def test_tensor_superdata_partition_invariant_F_and_Y_do_not_depend_on_batch_cmax():
+    dims = (4, 4, 4)
+    device = torch.device("cpu")
+    teacher_factors = [
+        torch.arange(dim * 2, dtype=torch.float32, device=device).reshape(dim, 2) / 10.0
+        for dim in dims
+    ]
+    single_graph = create_tensor_supergraph(
+        dims,
+        [0.5],
+        M=2,
+        S=2,
+        seed=123,
+        device=device,
+        partition_invariant=True,
+    )
+    combined_graph = create_tensor_supergraph(
+        dims,
+        [0.5, 1.0],
+        M=2,
+        S=2,
+        seed=123,
+        device=device,
+        partition_invariant=True,
+    )
+    single_data = create_tensor_superdata(
+        single_graph,
+        teacher_factors,
+        f_distribution="rademacher",
+        seed=1123,
+        partition_invariant=True,
+    )
+    combined_data = create_tensor_superdata(
+        combined_graph,
+        teacher_factors,
+        f_distribution="rademacher",
+        seed=1123,
+        partition_invariant=True,
+    )
+
+    c_alpha = single_graph.C_per_alpha[0]
+    assert torch.equal(single_data.F_super[:, :c_alpha, :], combined_data.F_super[:, :c_alpha, :])
+    assert torch.allclose(single_data.Y_super[:, :c_alpha], combined_data.Y_super[:, :c_alpha])
 
 
 def test_active_algorithms_have_memory_model_specs():
@@ -190,6 +272,25 @@ def test_tensor_parallel_experiment_plan_resource_summary_is_metadata_only(tmp_p
     assert plan.seed_policy_spec.policy_key == "legacy_tensor_parallel_batch_idx_seed"
     assert plan.resource_plan["config_effective"]["use_bf16"] is False
     assert plan.resource_plan["config_effective"]["use_compile"] is False
+
+
+def test_tensor_parallel_partition_invariant_seed_policy_updates_resource_plan(tmp_path):
+    config_path = tmp_path / "tensor_config.yaml"
+    _write_tensor_config(config_path)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "  use_bf16: false",
+        "  use_bf16: false\n  seed_partition_policy: partition_invariant",
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert plan.resource_plan["config_effective"]["seed_partition_policy"] == "partition_invariant"
+    assert plan.resource_plan["seed_policy"]["policy_key"] == "tensor_parallel_partition_invariant_v1"
+    assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
+    assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
+    assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
 
 
 def test_tensor_memory_estimator_consumes_tensor_order_and_dims():

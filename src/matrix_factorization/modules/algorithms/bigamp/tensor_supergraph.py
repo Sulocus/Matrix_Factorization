@@ -11,6 +11,7 @@ Key concepts:
 - Disjoint Union format: (A, S*N_d, M) enables parallel processing
 """
 
+import hashlib
 import math
 import torch
 from dataclasses import dataclass
@@ -18,6 +19,13 @@ from typing import List, Tuple, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def stable_partition_seed(base_seed: int, *parts: object) -> int:
+    """Return a deterministic torch seed independent of Python hash randomization."""
+    payload = "|".join([str(int(base_seed)), *(str(part) for part in parts)]).encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "little") % (2**31 - 1)
 
 
 @dataclass
@@ -139,6 +147,7 @@ def create_tensor_supergraph(
     S: int,
     seed: int,
     device: torch.device,
+    partition_invariant: bool = False,
 ) -> TensorSuperGraph:
     """
     Create TensorSuperGraph with shared index structure.
@@ -187,12 +196,28 @@ def create_tensor_supergraph(
     C_per_alpha = [int(alpha * M * ref_dim) for alpha in capped_alpha_values]
     C_max = max(1, max(C_per_alpha) if C_per_alpha else 1)
     
-    # Generate indices for C_max edges (shared across alphas)
-    torch.manual_seed(seed)
-    indices = [
-        torch.randint(0, dims[d], (S, C_max), device=device)
-        for d in range(n)
-    ]
+    # Generate indices for C_max edges (shared across alphas).  The legacy path
+    # intentionally preserves the previous global RNG behavior.  The opt-in
+    # partition-invariant path gives each (dimension, sample) its own stream so
+    # the first C edges for one alpha do not depend on the batch C_max.
+    if partition_invariant:
+        indices = []
+        for d in range(n):
+            sample_indices = []
+            for s in range(S):
+                gen = torch.Generator(device=device).manual_seed(
+                    stable_partition_seed(seed, "tensor_supergraph", "indices", d, s)
+                )
+                sample_indices.append(
+                    torch.randint(0, dims[d], (C_max,), generator=gen, device=device)
+                )
+            indices.append(torch.stack(sample_indices, dim=0))
+    else:
+        torch.manual_seed(seed)
+        indices = [
+            torch.randint(0, dims[d], (S, C_max), device=device)
+            for d in range(n)
+        ]
     
     # Create alpha mask: (A, C_max)
     # True if edge index < C for this alpha
@@ -234,6 +259,7 @@ def create_tensor_superdata(
     teacher_factors: List[torch.Tensor],
     f_distribution: str = 'rademacher',
     seed: int = 12345,
+    partition_invariant: bool = False,
 ) -> TensorSuperData:
     """
     Create TensorSuperData with F and Y tensors.
@@ -253,12 +279,27 @@ def create_tensor_superdata(
     n = supergraph.n
     device = supergraph.device
     
-    # Generate F: (S, C_max, M)
-    torch.manual_seed(seed)
-    if f_distribution == 'rademacher':
-        F_super = (torch.randint(0, 2, (S, C_max, M), device=device, dtype=torch.int8) * 2 - 1)
+    # Generate F: (S, C_max, M).  The legacy path intentionally keeps the old
+    # global RNG behavior.  The opt-in partition-invariant path gives each
+    # sample its own stream so the first C edges do not depend on batch C_max.
+    if partition_invariant:
+        f_samples = []
+        for s in range(S):
+            gen = torch.Generator(device=device).manual_seed(
+                stable_partition_seed(seed, "tensor_superdata", "F", s)
+            )
+            if f_distribution == 'rademacher':
+                F_s = (torch.randint(0, 2, (C_max, M), generator=gen, device=device, dtype=torch.int8) * 2 - 1)
+            else:
+                F_s = torch.randn(C_max, M, generator=gen, device=device)
+            f_samples.append(F_s)
+        F_super = torch.stack(f_samples, dim=0)
     else:
-        F_super = torch.randn(S, C_max, M, device=device)
+        torch.manual_seed(seed)
+        if f_distribution == 'rademacher':
+            F_super = (torch.randint(0, 2, (S, C_max, M), device=device, dtype=torch.int8) * 2 - 1)
+        else:
+            F_super = torch.randn(S, C_max, M, device=device)
     
     # Compute Y using teacher factors
     # Y[s, c] = (1/sqrt(M)) * sum_m F[s,c,m] * prod_d teacher[d][idx[s,c], m]

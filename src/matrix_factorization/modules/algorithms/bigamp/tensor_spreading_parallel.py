@@ -36,7 +36,7 @@ from .tensor_hypergraph import (
 )
 from .tensor_supergraph import (
     TensorSuperGraph, TensorSuperData,
-    create_tensor_supergraph, create_tensor_superdata,
+    create_tensor_supergraph, create_tensor_superdata, stable_partition_seed,
 )
 from .tensor_step_super import tensor_step_super, forward_pass_tensor_super
 
@@ -116,6 +116,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.requested_use_bf16 = kwargs.get('use_bf16', True)
             self.dtype_fallback_policy = kwargs.get('dtype_fallback_policy', 'allow')
             self.requested_use_tf32 = kwargs.get('use_tf32', True)
+            self.seed_partition_policy = kwargs.get('seed_partition_policy', 'legacy')
             self.requested_use_compile = kwargs.get('use_compile', True)
             self.compile_fallback_policy = kwargs.get('compile_fallback_policy', 'allow')
 
@@ -150,6 +151,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
             self.dtype_fallback_policy = getattr(algorithm_params, 'dtype_fallback_policy', 'allow')
             self.requested_use_tf32 = getattr(algorithm_params, 'use_tf32', True)
+            self.seed_partition_policy = getattr(algorithm_params, 'seed_partition_policy', 'legacy')
             self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
             self.compile_fallback_policy = getattr(algorithm_params, 'compile_fallback_policy', 'allow')
 
@@ -172,6 +174,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.requested_use_bf16 = True
             self.dtype_fallback_policy = 'allow'
             self.requested_use_tf32 = True
+            self.seed_partition_policy = 'legacy'
             self.requested_use_compile = True
             self.compile_fallback_policy = 'allow'
         else:
@@ -188,6 +191,11 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             raise ValueError(
                 "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
                 f"got {self.dtype_fallback_policy!r}"
+            )
+        if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
+            raise ValueError(
+                "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
+                f"got {self.seed_partition_policy!r}"
             )
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
@@ -374,8 +382,9 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
             # Process this batch
             try:
+                batch_seed = self._seed_for_internal_alpha_batch(seed, batch_idx, batch_alphas)
                 result = self._train_full_parallel(
-                    teacher_factors, batch_alphas, seed + batch_idx, self.device, current_callback
+                    teacher_factors, batch_alphas, batch_seed, self.device, current_callback
                 )
 
                 # Store metrics for each alpha in this batch
@@ -483,9 +492,55 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         notes="Execution metadata only; it does not change tensor update formulas.",
                     ),
                     "internal_alpha_batch_plan": internal_alpha_batch_plan,
+                    "seed_partition_policy": {
+                        "requested_policy": getattr(self, "seed_partition_policy", "legacy"),
+                        "partition_invariant": self._uses_partition_invariant_seed_policy(),
+                        "metadata_only": True,
+                    },
                 },
             ),
         )
+
+    def _uses_partition_invariant_seed_policy(self) -> bool:
+        return getattr(self, "seed_partition_policy", "legacy") == "partition_invariant"
+
+    def _seed_for_internal_alpha_batch(
+        self,
+        base_seed: int,
+        batch_idx: int,
+        batch_alphas: List[float],
+    ) -> int:
+        if self._uses_partition_invariant_seed_policy():
+            return int(base_seed)
+        return int(base_seed) + int(batch_idx)
+
+    def _randn_partitioned_factor(
+        self,
+        *,
+        alpha_values: List[float],
+        N_d: int,
+        M: int,
+        dim_index: int,
+        seed: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        scale: float,
+        role: str,
+    ) -> torch.Tensor:
+        """Generate (A, S*N_d, M) noise independent of alpha batch partition."""
+        alpha_blocks = []
+        for alpha in alpha_values:
+            sample_blocks = []
+            alpha_token = f"{float(alpha):.12g}"
+            for sample_idx in range(self.S):
+                gen = torch.Generator(device=device).manual_seed(
+                    stable_partition_seed(seed, role, alpha_token, dim_index, sample_idx)
+                )
+                sample_blocks.append(
+                    torch.randn(N_d, M, generator=gen, device=device, dtype=dtype) * scale
+                )
+            alpha_blocks.append(torch.cat(sample_blocks, dim=0))
+        return torch.stack(alpha_blocks, dim=0)
 
     def _compute_alpha_batches(self, alpha_values: List[float]) -> List[List[float]]:
         """
@@ -501,12 +556,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 planner="cpu_no_internal_alpha_batching",
                 device=self.device,
                 alpha_values_input=alpha_values,
-                alpha_batches=[alpha_values],
-                sort_policy="preserve_input_order",
-                probe_enabled=False,
-                seed_partition_sensitive=True,
-                empty_cache_between_batches=False,
-            )
+            alpha_batches=[alpha_values],
+            sort_policy="preserve_input_order",
+            probe_enabled=False,
+            seed_partition_sensitive=not self._uses_partition_invariant_seed_policy(),
+            empty_cache_between_batches=False,
+        )
             return [alpha_values]  # No batching needed on CPU
 
         # Sort alphas (process smaller alphas first for better cache behavior)
@@ -580,7 +635,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             target_memory_fraction=0.8,
             max_alphas_per_batch=max_alphas,
             fallback_reason=fallback_reason,
-            seed_partition_sensitive=True,
+            seed_partition_sensitive=not self._uses_partition_invariant_seed_policy(),
             empty_cache_between_batches=True,
         )
         return batches
@@ -625,12 +680,22 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         # Create TensorSuperGraph
         supergraph = create_tensor_supergraph(
-            self.dims, alpha_values, M, S, seed, device
+            self.dims,
+            alpha_values,
+            M,
+            S,
+            seed,
+            device,
+            partition_invariant=self._uses_partition_invariant_seed_policy(),
         )
 
         # Create TensorSuperData
         superdata = create_tensor_superdata(
-            supergraph, teacher_factors, self.f_distribution, seed + 1000
+            supergraph,
+            teacher_factors,
+            self.f_distribution,
+            seed + 1000,
+            partition_invariant=self._uses_partition_invariant_seed_policy(),
         )
 
         # Get flat tensors and PRECOMPUTED offset_indices
@@ -660,7 +725,20 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 # 2. Flatten S and N_d -> (A, S*N_d, M)
                 t_expanded = t_expanded_temp.reshape(A, S * self.dims[d], M)
 
-                noise = torch.randn_like(t_expanded)
+                if self._uses_partition_invariant_seed_policy():
+                    noise = self._randn_partitioned_factor(
+                        alpha_values=alpha_values,
+                        N_d=self.dims[d],
+                        M=M,
+                        dim_index=d,
+                        seed=seed,
+                        device=device,
+                        dtype=t_expanded.dtype,
+                        scale=1.0,
+                        role="warm_start_noise",
+                    )
+                else:
+                    noise = torch.randn_like(t_expanded)
                 # Mix
                 f_init = t_expanded * rho + noise * math.sqrt(1 - rho**2)
                 factors.append(f_init.to(device))
@@ -672,10 +750,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
              # Spectral Initialization: Use power method
              # First initialize factors randomly as starting point for power method
              init_scale = 1.0
-             factors = [
-                  torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
-                  for N_d in self.dims
-             ]
+             if self._uses_partition_invariant_seed_policy():
+                 factors = [
+                     self._randn_partitioned_factor(
+                         alpha_values=alpha_values,
+                         N_d=N_d,
+                         M=M,
+                         dim_index=d,
+                         seed=seed,
+                         device=device,
+                         dtype=self.storage_dtype,
+                         scale=init_scale,
+                         role="spectral_init",
+                     )
+                     for d, N_d in enumerate(self.dims)
+                 ]
+             else:
+                 factors = [
+                     torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
+                     for N_d in self.dims
+                 ]
              # Then refine using spectral method
              factors = self._spectral_initialization(
                 supergraph, Y_flat, F_flat, factors, offset_indices, iterations=30
@@ -699,10 +793,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                  print("=" * 60, flush=True)
 
              init_scale = 0.1
-             factors = [
-                 torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
-                 for N_d in self.dims
-             ]
+             if self._uses_partition_invariant_seed_policy():
+                 factors = [
+                     self._randn_partitioned_factor(
+                         alpha_values=alpha_values,
+                         N_d=N_d,
+                         M=M,
+                         dim_index=d,
+                         seed=seed,
+                         device=device,
+                         dtype=self.storage_dtype,
+                         scale=init_scale,
+                         role="random_init",
+                     )
+                     for d, N_d in enumerate(self.dims)
+                 ]
+             else:
+                 factors = [
+                     torch.randn(A, S * N_d, M, device=device, dtype=self.storage_dtype) * init_scale
+                     for N_d in self.dims
+                 ]
              if DEBUG_VERBOSE:
                  for d in range(self.order):
                      print(f"DEBUG: Factor {d} init stats: Mean={factors[d].mean():.6e}, Std={factors[d].std():.6e}", flush=True)

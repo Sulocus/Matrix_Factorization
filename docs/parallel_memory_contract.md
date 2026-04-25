@@ -89,6 +89,22 @@ estimation params: tensor_order and tensor_dims are passed explicitly to MemoryE
 
 风险：algorithm 内部会排序 alpha，并使用 `seed + batch_idx`。改变 batch partition 会改变 graph/F/student random stream。当前 `SeedPolicySpec` 明确标记 `partition_invariant=false`、`automatic_rebatch_allowed=false`；所以 OOM retry / 自动缩 batch 只能先做 preflight 或 metadata，不能静默改变执行分批后继续声称等价。
 
+如果显式设置：
+
+```yaml
+algorithm_params:
+  seed_partition_policy: partition_invariant
+```
+
+tensor parallel 会启用 opt-in v1 seed policy：
+
+- tensor supergraph indices 按 `(base_seed, dimension, sample)` 分流，单个 alpha 的前缀不依赖同 batch 的 `C_max`。
+- student initialization 按 `(base_seed, alpha, sample, dimension, role)` 分流。
+- internal batch seed 不再使用 `seed + batch_idx`。
+- `resource_plan.seed_policy` 会标记 `partition_invariant=true`、`batch_partition_sensitive=false`、`automatic_rebatch_allowed=true`。
+
+默认 `legacy` 不变；spreading、dense BigAMP 和 AGD 仍不允许自动重分批。
+
 `ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint 并退出，用户再用 clean process resume。
 
 ## Metadata 写入位置

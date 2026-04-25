@@ -177,6 +177,7 @@ class AlgorithmParams:
     use_bf16: bool = True
     dtype_fallback_policy: str = "allow"  # "allow" keeps FP32 fallback; "error" fails if BF16 is unavailable
     use_tf32: bool = True
+    seed_partition_policy: str = "legacy"
     
     # Early stop (AGD)
     use_early_stop: bool = False
