@@ -1,5 +1,10 @@
 from matrix_factorization.cli import load_yaml_config
-from matrix_factorization.core.contracts import AlgorithmStateView, get_analyzer_specs, get_probe_specs
+from matrix_factorization.core.contracts import (
+    AlgorithmResult,
+    AlgorithmStateView,
+    get_analyzer_specs,
+    get_probe_specs,
+)
 from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
 from matrix_factorization.core.experiment.runner import ExperimentRunner
 from matrix_factorization.core.planning import build_experiment_plan
@@ -323,7 +328,13 @@ probes:
         config=config,
         batch_idx=0,
         alpha_values=[0.0],
-        algorithm_result=None,
+        algorithm_result=AlgorithmResult.from_metrics_only(
+            metrics_by_alpha={0.0: {"Q_Y_mean": 0.5}},
+            metadata={
+                "tensor_execution": {"compile_status": "disabled_by_config"},
+                "execution_metadata": {"chunk_policy": "manual_config"},
+            },
+        ),
         result=result,
     )
 
@@ -337,6 +348,16 @@ probes:
     assert report["probe_reports"]["batch_summary"][0]["metric_keys"] == [
         "Q_Y_mean",
         "overlap_matrix",
+    ]
+    assert report["probe_reports"]["batch_summary"][0]["algorithm_result_outputs"] == [
+        "metrics_by_alpha"
+    ]
+    assert "tensor_execution" in report["probe_reports"]["batch_summary"][0]["algorithm_result_metadata_keys"]
+    assert report["probe_reports"]["batch_summary"][0]["tensor_execution_keys"] == [
+        "compile_status"
+    ]
+    assert report["probe_reports"]["batch_summary"][0]["execution_metadata_keys"] == [
+        "chunk_policy"
     ]
     assert report["probe_reports"]["batch_summary"][0]["metadata_only"] is True
 

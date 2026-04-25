@@ -145,6 +145,9 @@ class RuntimeExtensionExecutor:
                 "alpha_values": list(context.metadata.get("alpha_values", state.metadata.get("alpha_values", []))),
                 "metric_keys": list(state.metadata.get("metric_keys", [])),
                 "algorithm_result_outputs": list(state.metadata.get("algorithm_result_outputs", [])),
+                "algorithm_result_metadata_keys": list(state.metadata.get("algorithm_result_metadata_keys", [])),
+                "execution_metadata_keys": list(state.metadata.get("execution_metadata_keys", [])),
+                "tensor_execution_keys": list(state.metadata.get("tensor_execution_keys", [])),
                 "state_capabilities": state.available_capabilities(),
                 "metadata_only": True,
             }

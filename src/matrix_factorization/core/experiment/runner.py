@@ -1294,17 +1294,24 @@ class ExperimentRunner:
             if alpha in result.results
             for key in (result.results[alpha].metrics or {})
         })
-        state = AlgorithmStateView(
-            metadata={
-                "batch_idx": batch_idx,
-                "alpha_values": list(alpha_values),
-                "metric_keys": metric_keys,
-                "algorithm_result_outputs": (
-                    algorithm_result.available_outputs()
-                    if algorithm_result is not None else []
-                ),
-            }
-        )
+        state_metadata = {
+            "batch_idx": batch_idx,
+            "alpha_values": list(alpha_values),
+            "metric_keys": metric_keys,
+            "algorithm_result_outputs": (
+                algorithm_result.available_outputs()
+                if algorithm_result is not None else []
+            ),
+        }
+        if algorithm_result is not None:
+            algorithm_metadata = dict(getattr(algorithm_result, "metadata", {}) or {})
+            state_metadata["algorithm_result_metadata_keys"] = sorted(algorithm_metadata)
+            if isinstance(algorithm_metadata.get("execution_metadata"), dict):
+                state_metadata["execution_metadata_keys"] = sorted(algorithm_metadata["execution_metadata"])
+            if isinstance(algorithm_metadata.get("tensor_execution"), dict):
+                state_metadata["tensor_execution_keys"] = sorted(algorithm_metadata["tensor_execution"])
+
+        state = AlgorithmStateView(metadata=state_metadata)
         runtime_extensions.dispatch(
             "after_batch",
             state,
