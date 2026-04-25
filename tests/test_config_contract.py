@@ -9,7 +9,7 @@ from matrix_factorization.core.experiment.config import (
     TeacherConfig,
     TrainingParams,
 )
-from matrix_factorization.core.experiment.result import ExperimentResult
+from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
 from matrix_factorization.core.experiment.runner import ExperimentRunner
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import (
     BiGAMPTensorSpreadingParallel,
@@ -133,3 +133,61 @@ def test_scaling_sweep_propagates_teacher_and_contract_metadata(monkeypatch):
     assert captured["config"].teacher.init_distribution == "rademacher"
     assert captured["config"].matrix.N1 == 4
     assert captured["output_options"]["experiment_plan"]["algorithm"] == "bigamp"
+
+
+def test_algorithm_cache_is_keyed_by_effective_config():
+    runner = ExperimentRunner(device=None, verbose=False)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=2),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(damping=0.5, use_compile=False),
+        teacher_key="standard",
+    )
+
+    first = runner._get_algorithm(config)
+    second = runner._get_algorithm(config)
+
+    config_changed = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=2),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(damping=0.8, use_compile=False),
+        teacher_key="standard",
+    )
+    third = runner._get_algorithm(config_changed)
+
+    assert first is second
+    assert third is not first
+    assert first._contract_config_trace["algorithm_params"]["damping"] == 0.5
+    assert third._contract_config_trace["algorithm_params"]["damping"] == 0.8
+    assert first._contract_config_trace["cache_signature"] != third._contract_config_trace["cache_signature"]
+
+
+def test_runner_writes_algorithm_config_trace_to_metadata(monkeypatch):
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=2),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(damping=0.7, use_compile=False),
+        teacher_key="standard",
+    )
+    runner = ExperimentRunner(device=None, verbose=False)
+
+    def fake_standard_scan(config, algorithm, result, observer, resume_results=None, output_options=None, raw_yaml=""):
+        result.add_result(
+            0.0,
+            SingleRunResult(scan_value=0.0, metrics={"Q_Y_mean": 0.1}),
+        )
+
+    monkeypatch.setattr(runner, "_run_standard_scan", fake_standard_scan)
+    result = runner.run(config, output_options={"enable_heatmap": False})
+    trace = result.metadata.contract["algorithm_config_trace"]
+
+    assert trace["algorithm_key"] == "bigamp"
+    assert trace["algorithm_params"]["damping"] == 0.7
+    assert trace["mock_config_shape"]["has_algorithm_params_alias"] is True
+    assert trace["metadata_only"] is True

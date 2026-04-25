@@ -16,9 +16,10 @@
 - Tensor parallel metrics-only 主路径：`train_batch_result()` 不再分配 legacy placeholder `W_all/X_all`，旧 tuple API 仍保留。
 - Parallel memory contract tests：`tests/test_parallel_memory_contract.py` 强制检查 metadata-only、seed partition review、tensor batch metadata schema。
 - Memory model contract：`MemoryModelSpec` 记录每个 algorithm 的 estimator 入口、公式依据、component、probe/calibration 状态；进入 `ExperimentPlan.resource_plan.memory_model`。
-- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `167 passed, 9 skipped`。
+- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `169 passed, 9 skipped`。
 - Legacy pytest inventory：`get_legacy_pytest_inventory()` 和 `tests/test_source_inventory.py` 强制这些 legacy/local-GPU 测试必须登记并模块级 skip。
 - Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
+- Algorithm config trace：runner algorithm cache 已按 effective config signature 分区，run metadata 写入 `algorithm_config_trace`，防止同 key 不同参数复用旧 algorithm 实例。
 
 ## 本轮继续推进
 

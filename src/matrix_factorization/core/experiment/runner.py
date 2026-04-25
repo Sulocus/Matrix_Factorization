@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 from pathlib import Path
 from enum import Enum
+import hashlib
+import json
 import time
 import logging
 import torch
@@ -271,6 +273,11 @@ class ExperimentRunner:
             
             # Get algorithm
             algorithm = self._get_algorithm(config)
+            result.metadata.contract["algorithm_config_trace"] = getattr(
+                algorithm,
+                "_contract_config_trace",
+                self._algorithm_config_trace(config, None),
+            )
             
             # Route to appropriate scan handler
             if getattr(config.scan, 'is_steps_scan', config.scan.dimension == 'steps'):
@@ -1147,13 +1154,67 @@ class ExperimentRunner:
     def _get_algorithm(self, config: ExperimentConfig) -> 'AlgorithmBase':
         """Get or create algorithm instance."""
         key = config.algorithm_key
-        if key not in self._algorithm_cache:
+        cache_key = (key, self._algorithm_cache_signature(config))
+        if cache_key not in self._algorithm_cache:
             from ...modules.registry import get_algorithm
             algo_config = self._build_algorithm_config(config)
             module_info = get_algorithm(key)
             algorithm = module_info.cls(algo_config, self.device)
-            self._algorithm_cache[key] = algorithm
-        return self._algorithm_cache[key]
+            algorithm._contract_config_trace = self._algorithm_config_trace(config, algo_config)
+            self._algorithm_cache[cache_key] = algorithm
+        return self._algorithm_cache[cache_key]
+
+    @staticmethod
+    def _algorithm_cache_signature(config: ExperimentConfig) -> str:
+        payload = config.to_dict() if hasattr(config, "to_dict") else str(config)
+        encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:16]
+
+    @staticmethod
+    def _algorithm_config_trace(config: ExperimentConfig, algo_config: Any) -> Dict[str, Any]:
+        spreading = getattr(config, "spreading", None)
+        algorithm_params = getattr(config, "algorithm_params", None)
+        training = getattr(config, "training", None)
+        trace = {
+            "algorithm_key": config.algorithm_key,
+            "cache_signature": ExperimentRunner._algorithm_cache_signature(config),
+            "matrix": {
+                "N1": config.matrix.N1,
+                "N2": config.matrix.N2,
+                "M": config.matrix.M,
+            },
+            "training": {
+                "samples_per_alpha": getattr(training, "samples_per_alpha", None),
+                "max_steps": getattr(training, "max_steps", None),
+                "max_epochs": getattr(training, "max_epochs", None),
+                "seed": getattr(config.seeds, "base_seed", None),
+            },
+            "algorithm_params": {
+                "damping": getattr(algorithm_params, "damping", None),
+                "noise_var": getattr(algorithm_params, "noise_var", None),
+                "learning_rate": getattr(algorithm_params, "learning_rate", None),
+                "use_compile": getattr(algorithm_params, "use_compile", None),
+                "use_bf16": getattr(algorithm_params, "use_bf16", None),
+                "adaptive_damping": getattr(algorithm_params, "adaptive_damping", None),
+                "init_mode": getattr(algorithm_params, "init_mode", None),
+                "init_overlap": getattr(algorithm_params, "init_overlap", None),
+            },
+            "spreading": {
+                "f_distribution": getattr(spreading, "f_distribution", None),
+                "onsager_correction": getattr(spreading, "onsager_correction", None),
+                "allow_intra_connection": getattr(spreading, "allow_intra_connection", None),
+                "seed": getattr(spreading, "seed", None),
+                "chunk_size": getattr(spreading, "chunk_size", None),
+                "tensor_order": getattr(spreading, "tensor_order", None),
+            },
+            "mock_config_shape": {
+                "has_algorithm_alias": hasattr(algo_config, "algorithm") if algo_config is not None else None,
+                "has_algorithm_params_alias": hasattr(algo_config, "algorithm_params") if algo_config is not None else None,
+                "has_spreading": hasattr(algo_config, "spreading") if algo_config is not None else None,
+            },
+            "metadata_only": True,
+        }
+        return trace
 
     @staticmethod
     def _build_runtime_extension_executor(contract: Dict[str, Any], algorithm_key: str):

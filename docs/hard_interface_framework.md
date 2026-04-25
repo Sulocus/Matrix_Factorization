@@ -83,6 +83,7 @@ deprecated
 - tensor 路径的 `bigamp_tensor_parallel` 仍保持现有数值行为，但 `use_compile` 不再被硬编码覆盖。
 - runner 会优先调用 algorithm 的 `train_batch_result()`；`bigamp_tensor` 和 `bigamp_tensor_parallel` 已经显式返回 metrics-only `AlgorithmResult`。active path 在拿到 `AlgorithmResult` 后不会再从私有 `_batch_metrics` 补缺失指标；旧 `_batch_metrics` 只保留为 tensor 数值实现内部的临时缓冲和未迁移 legacy fallback。
 - tensor metrics-only result 的 `SingleRunResult.W_students/X_students` 保存为 `None`，避免把 placeholder 当成真实 factor。
+- runner 的 algorithm cache 已按 effective config signature 分区，不再只按 algorithm key 复用。每个 algorithm 实例会带 `_contract_config_trace`，run metadata 中写入 `algorithm_config_trace`，用于追踪参数是否实际传入 algorithm 构造。
 - `metrics.json` 保留旧 flat keys，同时新增 `metric_semantics` 和 `factor_payload_contract`，用于区分同名 key 在 matrix/tensor/spreading 中的语义，并声明当前 run 是否真的有 `W_students/X_students`。
 - runner 中的 matrix/spreading metric fallback 已移到 `modules/metrics/contract_compute.py`；runner 只负责选择 metric 来源，metrics package 负责生成 payload 并接受 `MetricSpecAdapter` 校验。
 - `modules/metrics/` 已纳入 source inventory。新增 metric 源文件如果没有分类，source inventory 测试会失败。
