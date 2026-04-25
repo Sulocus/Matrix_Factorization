@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -112,6 +113,25 @@ def test_experiment_result_directory_schema(tmp_path):
     assert output_contract["is_valid"] is True
     assert "config.json" in output_contract["available_artifacts"]
     assert "metrics_by_alpha" in output_contract["available_artifacts"]
+
+
+def test_result_schema_contract_doc_covers_canonical_files():
+    doc = (Path("docs/result_schema_contract.md")).read_text(encoding="utf-8")
+
+    for required in [
+        "config.json",
+        "metadata.json",
+        "metrics.json",
+        "output_contract.json",
+        "events.jsonl",
+        "manifest.json",
+        "artifacts/results.pt",
+        "results/latest",
+        "index.json",
+        "summary.json",
+        "selected_overview.png",
+    ]:
+        assert required in doc
 
 
 def test_latest_export_is_lightweight_display_schema(tmp_path):

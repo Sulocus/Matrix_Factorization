@@ -23,6 +23,71 @@ run_dir/
 
 `results/latest/` 只是展示快照，不是正式分析输入。它只复制轻量 summary 和选中的 plot。
 
+## Result Schema Map
+
+```text
+ExperimentResult
+├─ config
+│  └─ config.json
+│     role: canonical run input snapshot
+│     analysis_input: yes
+├─ metadata
+│  └─ metadata.json
+│     role: run-level metadata and hard-interface contract summary
+│     analysis_input: yes
+├─ metric payload
+│  └─ metrics.json
+│     role: lightweight canonical scalar result and metric schema
+│     analysis_input: yes
+│     contains:
+│       ├─ available_metric_keys
+│       ├─ metric_schema
+│       ├─ metric_semantics
+│       ├─ metric_contracts
+│       ├─ factor_payload_contract
+│       ├─ metrics
+│       └─ results
+├─ output contract
+│  └─ output_contract.json
+│     role: plot/export dependency check
+│     analysis_input: yes for debugging output integration
+├─ event log
+│  └─ events.jsonl
+│     role: append-only run lifecycle events
+│     analysis_input: diagnostic
+├─ artifact manifest
+│  └─ manifest.json
+│     role: file-level artifact index
+│     analysis_input: diagnostic
+├─ tensor/factor artifacts
+│  ├─ artifacts/results.pt
+│  │  role: optional local tensor payload
+│  │  analysis_input: local only
+│  └─ results.pt -> artifacts/results.pt
+│     role: backward-compatible pointer only
+├─ checkpoints
+│  └─ checkpoints/
+│     role: resumability, not scalar result
+└─ display
+   └─ plots/
+      role: generated visualization
+      analysis_input: no unless explicitly referenced
+
+results/latest
+├─ index.json
+├─ <run_id>/summary.json
+└─ <run_id>/plots/selected_overview.png
+   role: lightweight display snapshot only
+   analysis_input: no
+```
+
+新增结果字段时，优先判断它属于哪一层：
+
+- 新 scalar 或 per-alpha 数值：必须进入 `MetricSpec`，再进入 `metrics.json`。
+- 新 matrix/tensor diagnostic：必须声明 artifact/metric semantics，不能只塞进 plot。
+- 新大 payload：默认进入 ignored artifact workspace，或进入 `artifacts/results.pt` 并写 `factor_payload_contract`/manifest。
+- 新展示图：必须经过 `OutputSpec` 和 `output_contract.json`，不能作为正式分析输入。
+
 ## metrics.json
 
 `metrics.json` 是轻量后处理优先读取的文件：
@@ -127,4 +192,3 @@ display snapshot
 - `ResultStorage.save()` 仍支持旧 dict output schema。
 - `export/bundler.py` 仍支持 standalone export workflow。
 - 旧 flat metric key 继续保留；新的语义解释依赖 `metric_schema` 和 algorithm context。
-

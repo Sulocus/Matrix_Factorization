@@ -44,6 +44,7 @@
 - Runtime seed policy metadata：run metadata 的 `runtime_resource_plan.seed_policy` 现在使用 effective seed policy；显式 `partition_invariant` 不会出现 plan 与 run metadata 一个说 invariant、一个说 legacy 的断裂。
 - Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
 - Metric naming decisions：新增 `docs/metric_naming_decisions.md`，把所有 `MetricSemanticClass.canonical_key` 按 equivalent class 列成命名决策表。contract test 会检查 `metrics_semantics.md` 和命名表覆盖所有 canonical metric class，避免后续新增 metric 只改代码不改语义文档。
+- Result schema map：`docs/result_schema_contract.md` 新增 run directory/result/latest 的层级地图，明确 `config.json`、`metadata.json`、`metrics.json`、`output_contract.json`、`events.jsonl`、`manifest.json`、`artifacts/results.pt`、`plots/` 和 `results/latest` 的角色。测试会检查文档覆盖 canonical result files。
 
 ## 本轮继续推进
 
