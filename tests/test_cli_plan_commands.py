@@ -78,6 +78,8 @@ def test_explain_config_command_reports_effective_route(tmp_path):
     assert "memory_model: MemoryEstimator.register('bigamp_tensor_parallel')" in result.stdout
     assert "seed_policy: legacy_tensor_parallel_batch_idx_seed" in result.stdout
     assert "automatic_rebatch_allowed: False" in result.stdout
+    assert "tensor serial/parallel parity:" in result.stdout
+    assert "serial_missing_parallel_metrics: tensor.full.Q_Y, tensor.observed.Q_Y, tensor.physical_overlap_Y" in result.stdout
 
 
 def test_validate_command_supports_json_output(tmp_path):
@@ -106,6 +108,9 @@ def test_validate_command_supports_json_output(tmp_path):
     assert payload["resource_plan"]["probe_support"] == "A=1 tensor supergraph probe"
     assert payload["resource_plan"]["memory_model"]["drives_execution"] is False
     assert payload["resource_plan"]["seed_policy"]["policy_key"] == "legacy_tensor_parallel_batch_idx_seed"
+    assert payload["tensor_parity_report"]["serial_key"] == "bigamp_tensor"
+    assert payload["tensor_parity_report"]["parallel_key"] == "bigamp_tensor_parallel"
+    assert "tensor.full.Q_Y" in payload["tensor_parity_report"]["serial_missing_parallel_metrics"]
     assert "plots/animation_Y.gif" in payload["output_plan"]["output_files"]
     assert "ALGORITHM_ROUTE_OVERRIDE" in payload["warning_codes"]
     assert all("code" in issue and "message" in issue for issue in payload["issues"])

@@ -33,6 +33,8 @@
 - Compile status metadata：tensor parallel 的 `tensor_execution` 区分 `requested_use_compile` 和实际 super-step compile 是否生效，并记录 `compile_status/compile_attempts`。
 - Spreading chunk metadata：`bigamp_spreading` 的 `AlgorithmResult.metadata.execution_metadata` 记录 `chunk_size/chunk_policy/dynamic_batches`，说明当前是手动 chunk 配置，不做 auto tuning。
 - Memory breakdown reporting：`MemoryEstimator.estimate()` 现在会返回按组件拆分的 `breakdown`，覆盖 AGD、dense BiGAMP、spreading BiGAMP 和 tensor spreading；每个 runner batch 的 `runtime_resource_plan.batches[*].memory_breakdown` 会保存这份 metadata。这只暴露已有估计公式，不改变训练或 batching 行为。
+- Tensor parity report in plan：tensor serial/parallel gap report 已接入 `ExperimentPlan`、`mf explain-config` 和 `mf validate --json`，tensor 配置会直接显示 shared/missing metrics 与 result contract 差异。
+- Intervention contract detail：`ExperimentPlan.to_dict()` 现在输出 `intervention_contracts`，记录 trigger、requires_state、modifies_state 和 physical_sensitive；后续新增 intervention 不会只在名字层面接入。
 
 ## 本轮继续推进
 

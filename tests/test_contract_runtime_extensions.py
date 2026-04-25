@@ -166,6 +166,12 @@ output:
     )
 
     assert not plan.errors
+    contract = plan.to_dict()["intervention_contracts"][0]
+    assert contract["key"] == "warm_start"
+    assert contract["trigger"] == "before_initialize"
+    assert contract["requires_state"] == ["teacher_factors"]
+    assert contract["modifies_state"] == ["student_factors"]
+    assert contract["physical_sensitive"] is True
     returned = executor.dispatch(
         HookPoint.BEFORE_INITIALIZE,
         state,

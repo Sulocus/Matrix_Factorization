@@ -34,6 +34,7 @@ from .contracts import (
     get_resource_specs,
     get_seed_policy_specs,
     get_teacher_specs,
+    get_tensor_parity_report,
 )
 
 
@@ -80,6 +81,7 @@ class ExperimentPlan:
     probe_specs: List[ProbeSpec] = field(default_factory=list)
     analyzer_specs: List[AnalyzerSpec] = field(default_factory=list)
     effective_parameters: Dict[str, Any] = field(default_factory=dict)
+    tensor_parity_report: Optional[Dict[str, Any]] = None
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -149,11 +151,23 @@ class ExperimentPlan:
                 "notes": self.seed_policy_spec.notes,
             } if self.seed_policy_spec else None,
             "resource_plan": dict(self.resource_plan),
+            "tensor_parity_report": dict(self.tensor_parity_report or {}),
             "metrics": [spec.key for spec in self.metric_specs],
             "available_metric_keys": _available_metric_keys(self),
             "outputs": [spec.key for spec in self.output_specs],
             "output_plan": self.output_plan.to_dict(),
             "interventions": [spec.key for spec in self.intervention_specs],
+            "intervention_contracts": [
+                {
+                    "key": spec.key,
+                    "trigger": spec.trigger,
+                    "requires_state": list(spec.requires_state),
+                    "modifies_state": list(spec.modifies_state),
+                    "compatible_algorithms": list(spec.compatible_algorithms),
+                    "physical_sensitive": spec.physical_sensitive,
+                }
+                for spec in self.intervention_specs
+            ],
             "probes": [spec.key for spec in self.probe_specs],
             "probe_contracts": [
                 {
@@ -233,6 +247,24 @@ class ExperimentPlan:
                 lines.append(f"  seed_policy: {seed_policy.get('policy_key')}")
                 lines.append(f"  partition_invariant: {seed_policy.get('partition_invariant')}")
                 lines.append(f"  automatic_rebatch_allowed: {seed_policy.get('automatic_rebatch_allowed')}")
+        if self.tensor_parity_report:
+            lines.append("")
+            lines.append("tensor serial/parallel parity:")
+            lines.append(
+                f"  same_result_contract: {self.tensor_parity_report.get('same_result_contract')}"
+            )
+            lines.append(
+                "  shared_metrics: "
+                f"{', '.join(self.tensor_parity_report.get('shared_metrics') or []) or 'none'}"
+            )
+            lines.append(
+                "  serial_missing_parallel_metrics: "
+                f"{', '.join(self.tensor_parity_report.get('serial_missing_parallel_metrics') or []) or 'none'}"
+            )
+            lines.append(
+                "  parallel_missing_serial_metrics: "
+                f"{', '.join(self.tensor_parity_report.get('parallel_missing_serial_metrics') or []) or 'none'}"
+            )
         lines.append("")
         lines.append("有效参数摘要:")
         for key in sorted(self.effective_parameters):
@@ -262,7 +294,12 @@ class ExperimentPlan:
             lines.append("")
             lines.append("将使用的 intervention contract:")
             for spec in self.intervention_specs:
-                lines.append(f"  - {spec.key}: trigger={spec.trigger}")
+                lines.append(
+                    f"  - {spec.key}: trigger={spec.trigger}, "
+                    f"requires_state={spec.requires_state}, "
+                    f"modifies_state={spec.modifies_state}, "
+                    f"physical_sensitive={spec.physical_sensitive}"
+                )
         if self.probe_specs:
             lines.append("")
             lines.append("将使用的 probe contract:")
@@ -388,6 +425,8 @@ def build_experiment_plan(
     else:
         plan.errors.append(f"algorithm_key 未注册 AlgorithmSpec: {algorithm_key}")
         return plan
+    if algorithm_key in {"bigamp_tensor", "bigamp_tensor_parallel"}:
+        plan.tensor_parity_report = get_tensor_parity_report()
     plan.resource_spec = resource_specs.get(algorithm_key)
     plan.batching_spec = batching_specs.get(algorithm_key)
     plan.memory_model_spec = memory_model_specs.get(algorithm_key)
