@@ -45,6 +45,7 @@ sample batching: disjoint-union sample parallel
 chunking: spreading.chunk_size edge streaming
 dtype: float32 / bf16 storage, controlled by algorithm_params.use_bf16
 dtype fallback: algorithm_params.dtype_fallback_policy
+compile fallback: algorithm_params.compile_fallback_policy
 seed sensitive: true
 chunk policy: manual_config if spreading.chunk_size > 0, disabled_legacy_unchunked if 0
 ```
@@ -171,7 +172,7 @@ internal_alpha_batch_plan
 
 这两块 metadata 只记录实际执行选择和内部分批；不做自动 retry，不自动改变 batch partition。
 
-`algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为：
+`algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为，目前接入 `bigamp_spreading` 和 `bigamp_tensor_parallel`：
 
 - `allow`：默认值，保持旧行为；compile 失败会记录到 `compile_attempts`，然后继续 eager path。
 - `error`：严格调试模式；compile 失败会立即抛错，避免用户以为 compile 已经生效。
@@ -193,6 +194,10 @@ chunk_size
 chunking_enabled
 chunk_policy
 requested_use_compile
+effective_use_compile
+compile_fallback_policy
+compile_status
+compile_attempts
 requested_use_bf16
 effective_use_bf16
 dtype_fallback_policy

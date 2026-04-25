@@ -142,6 +142,28 @@ def test_tensor_parallel_records_compile_fallback_policy(tmp_path):
     assert algorithm.compile_fallback_policy == "error"
 
 
+def test_spreading_records_compile_fallback_policy(tmp_path):
+    config_path = tmp_path / "general.yaml"
+    _write_config(config_path, tensor_order=1, algorithm=2)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "  use_compile: false",
+        "  use_compile: false\n  compile_fallback_policy: error",
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    from matrix_factorization.core.planning import build_experiment_plan
+
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+
+    assert chain["algorithm_params.compile_fallback_policy"]["effective_value"] == "error"
+    assert plan.resource_plan["config_effective"]["compile_fallback_policy"] == "error"
+    assert algorithm.compile_fallback_policy == "error"
+    assert algorithm._contract_execution_metadata["compile_status"] == "disabled_by_config"
+
+
 def test_tensor_parallel_records_dtype_fallback_policy(tmp_path):
     config_path = tmp_path / "tensor.yaml"
     _write_config(config_path, tensor_order=3, algorithm=4)
@@ -215,6 +237,61 @@ def test_tensor_parallel_compile_fallback_policy_allow_preserves_legacy_fallback
     assert algorithm.use_compile is False
     assert algorithm.compile_attempts[0]["target"] == "tensor_step_batch"
     assert algorithm.compile_attempts[0]["success"] is False
+
+
+def test_spreading_compile_fallback_policy_error_raises(monkeypatch):
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
+
+    def fail_compile(*args, **kwargs):
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(torch, "compile", fail_compile)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=True,
+            use_bf16=False,
+            compile_fallback_policy="error",
+        ),
+        spreading=SpreadingConfig(tensor_order=1),
+        teacher_key="standard",
+    )
+
+    with pytest.raises(RuntimeError, match="compile_fallback_policy='error'"):
+        BiGAMPSpreading(config, device=torch.device("cpu"))
+
+
+def test_spreading_compile_fallback_policy_allow_preserves_legacy_fallback(monkeypatch):
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
+
+    def fail_compile(*args, **kwargs):
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(torch, "compile", fail_compile)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=True,
+            use_bf16=False,
+            compile_fallback_policy="allow",
+        ),
+        spreading=SpreadingConfig(tensor_order=1),
+        teacher_key="standard",
+    )
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+
+    assert algorithm.use_compile is False
+    assert algorithm.compile_attempts[0]["target"] == "bigamp_step_disjoint_union_flat"
+    assert algorithm.compile_attempts[0]["success"] is False
+    assert algorithm._contract_execution_metadata["compile_status"] == "fallback_to_eager_spreading_step"
 
 
 def test_tensor_parallel_dtype_fallback_policy_error_raises(monkeypatch):

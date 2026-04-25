@@ -165,7 +165,15 @@ class BiGAMPSpreading(AlgorithmBase):
         # torch.compile for kernel fusion (Phase 1 optimization - upgraded)
         # NOTE: max-autotune and reduce-overhead use CUDA Graphs which can cause issues
         # For large problems, we use 'default' mode (no CUDA Graphs, still has Triton kernels)
-        self.use_compile = getattr(config.algorithm_params, 'use_compile', True)
+        self.requested_use_compile = getattr(config.algorithm_params, 'use_compile', True)
+        self.compile_fallback_policy = getattr(config.algorithm_params, 'compile_fallback_policy', 'allow')
+        if self.compile_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.compile_fallback_policy must be 'allow' or 'error', "
+                f"got {self.compile_fallback_policy!r}"
+            )
+        self.use_compile = bool(self.requested_use_compile)
+        self.compile_attempts = []
         if self.use_compile and BiGAMPSpreading._compiled_step is None:
             # Determine if problem is "large" (needs memory-safe mode)
             N1 = config.matrix.N1
@@ -179,7 +187,7 @@ class BiGAMPSpreading(AlgorithmBase):
             else:
                 # Normal size: try more aggressive modes first
                 compile_modes = ['reduce-overhead', 'default']
-            
+            last_exc = None
             for mode in compile_modes:
                 try:
                     BiGAMPSpreading._compiled_step = torch.compile(
@@ -187,10 +195,18 @@ class BiGAMPSpreading(AlgorithmBase):
                         mode=mode,
                         fullgraph=False,
                     )
+                    self._record_compile_attempt("bigamp_step_disjoint_union_flat", True, "")
                     break
-                except Exception:
+                except Exception as exc:
+                    last_exc = exc
                     if mode == compile_modes[-1]:
                         self.use_compile = False
+                        self._record_compile_attempt(
+                            "bigamp_step_disjoint_union_flat",
+                            False,
+                            type(exc).__name__,
+                        )
+                        self._handle_compile_failure("bigamp_step_disjoint_union_flat", exc)
         
         # Also compile adaptive step function if needed
         if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is None:
@@ -200,8 +216,14 @@ class BiGAMPSpreading(AlgorithmBase):
                     mode='default',  # Use safe mode for adaptive (more intermediates)
                     fullgraph=False,
                 )
-            except Exception:
-                pass  # Fall back to uncompiled if fails
+                self._record_compile_attempt("bigamp_step_disjoint_union_flat_adaptive", True, "")
+            except Exception as exc:
+                self._record_compile_attempt(
+                    "bigamp_step_disjoint_union_flat_adaptive",
+                    False,
+                    type(exc).__name__,
+                )
+                self._handle_compile_failure("bigamp_step_disjoint_union_flat_adaptive", exc)
 
         # Phase 3: BF16 mixed precision (auto-detect hardware support)
         self.requested_use_bf16 = getattr(config.algorithm_params, 'use_bf16', True)
@@ -230,6 +252,27 @@ class BiGAMPSpreading(AlgorithmBase):
 
         self._contract_execution_metadata = self._build_spreading_execution_metadata([])
 
+    def _record_compile_attempt(self, target: str, success: bool, error: str) -> None:
+        self.compile_attempts.append({
+            "target": target,
+            "success": bool(success),
+            "error": error,
+        })
+
+    def _handle_compile_failure(self, target: str, exc: Exception) -> None:
+        if self.compile_fallback_policy == 'error':
+            raise RuntimeError(
+                f"torch.compile failed for {target} and "
+                "algorithm_params.compile_fallback_policy='error'"
+            ) from exc
+
+    def _compile_status_for_spreading_path(self) -> str:
+        if not bool(getattr(self, "requested_use_compile", True)):
+            return "disabled_by_config"
+        if bool(getattr(self, "use_compile", False)) and BiGAMPSpreading._compiled_step is not None:
+            return "effective_for_spreading_step"
+        return "fallback_to_eager_spreading_step"
+
     def _build_spreading_execution_metadata(
         self,
         alpha_values: List[float],
@@ -241,7 +284,13 @@ class BiGAMPSpreading(AlgorithmBase):
             "chunk_size": chunk_size,
             "chunking_enabled": chunk_size > 0,
             "chunk_policy": "manual_config" if chunk_size > 0 else "disabled_legacy_unchunked",
-            "requested_use_compile": bool(getattr(self, "use_compile", False)),
+            "requested_use_compile": bool(getattr(self, "requested_use_compile", False)),
+            "effective_use_compile": bool(
+                getattr(self, "use_compile", False) and BiGAMPSpreading._compiled_step is not None
+            ),
+            "compile_fallback_policy": getattr(self, "compile_fallback_policy", "allow"),
+            "compile_status": self._compile_status_for_spreading_path(),
+            "compile_attempts": list(getattr(self, "compile_attempts", [])),
             "requested_use_bf16": bool(getattr(self, "requested_use_bf16", True)),
             "effective_use_bf16": bool(getattr(self, "use_bf16", False)),
             "dtype_fallback_policy": getattr(self, "dtype_fallback_policy", "allow"),
