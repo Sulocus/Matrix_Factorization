@@ -173,6 +173,7 @@ class AlgorithmParams:
     
     # Optimization
     use_compile: bool = True
+    compile_fallback_policy: str = "allow"  # "allow" keeps eager fallback; "error" fails if compile fails
     use_bf16: bool = True
     
     # Early stop (AGD)

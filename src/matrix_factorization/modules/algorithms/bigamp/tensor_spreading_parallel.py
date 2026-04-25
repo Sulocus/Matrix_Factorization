@@ -115,6 +115,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.device = kwargs.get('device', device) or torch.device('cpu')
             self.requested_use_bf16 = kwargs.get('use_bf16', True)
             self.requested_use_compile = kwargs.get('use_compile', True)
+            self.compile_fallback_policy = kwargs.get('compile_fallback_policy', 'allow')
 
         # === From runner ===
         elif hasattr(config, 'matrix'):
@@ -146,6 +147,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.debug_verbose = getattr(algorithm_params, 'debug_verbose', False)
             self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
             self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
+            self.compile_fallback_policy = getattr(algorithm_params, 'compile_fallback_policy', 'allow')
 
             if DEBUG_VERBOSE:
                 print(f"DEBUG: Configured Init Mode: {self.init_mode}, Init Overlap (rho): {self.warm_start_rho}", flush=True)
@@ -165,11 +167,17 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.debug_verbose = False
             self.requested_use_bf16 = True
             self.requested_use_compile = True
+            self.compile_fallback_policy = 'allow'
         else:
             raise ValueError(f"config must be a config object or int, got {type(config)}")
 
         if len(self.dims) != self.order:
             raise ValueError(f"dims length {len(self.dims)} must match tensor_order {self.order}")
+        if self.compile_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.compile_fallback_policy must be 'allow' or 'error', "
+                f"got {self.compile_fallback_policy!r}"
+            )
 
         # === Phase 1.5: BF16 Mixed Precision ===
         # Auto-detect hardware support for BF16 (Ampere+ GPUs)
@@ -191,9 +199,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     fullgraph=False,
                 )
                 self._record_compile_attempt("tensor_step_batch", True, "")
-            except Exception:
+            except Exception as exc:
                 self.use_compile = False
-                self._record_compile_attempt("tensor_step_batch", False, "compile_exception")
+                self._record_compile_attempt("tensor_step_batch", False, type(exc).__name__)
+                self._handle_compile_failure("tensor_step_batch", exc)
 
         # Phase 3: Compile tensor_step_super for Alpha + Sample parallelization
         if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step_super is None:
@@ -204,10 +213,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     fullgraph=False,
                 )
                 self._record_compile_attempt("tensor_step_super", True, "")
-            except Exception:
+            except Exception as exc:
                 # Fall back to non-compiled version
-                self._record_compile_attempt("tensor_step_super", False, "compile_exception")
-                pass
+                self._record_compile_attempt("tensor_step_super", False, type(exc).__name__)
+                self._handle_compile_failure("tensor_step_super", exc)
 
         # Batch metrics storage
         self._batch_metrics = {}
@@ -222,6 +231,13 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             "success": bool(success),
             "error": error,
         })
+
+    def _handle_compile_failure(self, target: str, exc: Exception) -> None:
+        if self.compile_fallback_policy == "error":
+            raise RuntimeError(
+                f"torch.compile failed for {target} and "
+                "algorithm_params.compile_fallback_policy='error'"
+            ) from exc
 
     def _compile_status_for_super_path(self) -> str:
         if not bool(getattr(self, "requested_use_compile", True)):
@@ -423,6 +439,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         effective_use_bf16=bool(getattr(self, "use_bf16", False)),
                         storage_dtype=getattr(self, "storage_dtype", None),
                         requested_use_compile=bool(getattr(self, "requested_use_compile", True)),
+                        compile_fallback_policy=getattr(self, "compile_fallback_policy", "allow"),
                         effective_use_compile=bool(
                             getattr(self, "use_compile", False)
                             and BiGAMPTensorSpreadingParallel._compiled_step_super is not None

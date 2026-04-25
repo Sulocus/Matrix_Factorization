@@ -310,6 +310,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                         effective_use_bf16=False,
                         storage_dtype="float32",
                         requested_use_compile=False,
+                        compile_fallback_policy="not_applicable",
                         effective_use_compile=False,
                         compiled_step_available=False,
                         compiled_super_step_available=False,

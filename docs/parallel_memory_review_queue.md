@@ -41,6 +41,7 @@
 - `use_compile`、BF16 storage、TF32 matmul 不是纯性能参数，可能带来数值差异。
 - tensor parallel 的实际 dtype/compile 状态已进入 `tensor_execution` metadata。
 - `algorithm_params.use_bf16=false` 已经会阻止 tensor parallel 自动启用 BF16；这是参数生效链路修正，不是 fallback 策略。
+- `algorithm_params.compile_fallback_policy` 已经把普通 `torch.compile` 初始化失败分成 `allow/error` 两种策略；默认 `allow` 保持旧 eager fallback，`error` 用于严格调试。
 
 需要确认：
 

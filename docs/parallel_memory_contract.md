@@ -140,6 +140,7 @@ tensor_execution
   effective_use_bf16
   storage_dtype
   requested_use_compile
+  compile_fallback_policy
   effective_use_compile
   compiled_step_available
   compiled_super_step_available
@@ -165,6 +166,13 @@ internal_alpha_batch_plan
 ```
 
 这两块 metadata 只记录实际执行选择和内部分批；不做自动 retry，不自动改变 batch partition。
+
+`algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为：
+
+- `allow`：默认值，保持旧行为；compile 失败会记录到 `compile_attempts`，然后继续 eager path。
+- `error`：严格调试模式；compile 失败会立即抛错，避免用户以为 compile 已经生效。
+
+这个策略不处理 OOM retry，也不自动切换 BF16/TF32。
 
 `bigamp_spreading` 的 matrix-factor `AlgorithmResult.metadata.execution_metadata` 还会记录：
 
@@ -192,7 +200,7 @@ metadata_only
 
 - 不根据 ResourceSpec 自动改 batch size。
 - 不自动切换 dtype。
-- 不自动关闭 compile。
+- 不在 OOM 后自动关闭 compile；普通 `torch.compile` 初始化失败只按 `compile_fallback_policy` 处理。
 - 不在 OOM 后自动重试。
 - 不改变 seed 与 batch partition 的关系。
 - 不把 tensor serial/parallel 合并。

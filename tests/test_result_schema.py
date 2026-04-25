@@ -711,6 +711,7 @@ def test_tensor_parallel_execution_metadata_reports_super_compile_fallback(monke
     execution = result.metadata["tensor_execution"]
 
     assert execution["requested_use_compile"] is True
+    assert execution["compile_fallback_policy"] == "allow"
     assert execution["effective_use_compile"] is False
     assert execution["compiled_step_available"] is True
     assert execution["compiled_super_step_available"] is False

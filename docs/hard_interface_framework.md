@@ -82,6 +82,7 @@ deprecated
 - analyzer 必须和 algorithm/result contract 的产出匹配。
 - tensor 路径的 `bigamp_tensor_parallel` 仍保持现有数值行为，但 `use_compile` 不再被硬编码覆盖。
 - tensor parallel 的 `tensor_execution` 会区分 compile 请求和实际 super-step compile 是否生效：`compile_status` 为 `effective_for_tensor_step_super`、`disabled_by_config` 或 `fallback_to_eager_tensor_step_super`。
+- tensor parallel 新增 `algorithm_params.compile_fallback_policy`：默认 `allow` 保持旧行为，`torch.compile` 失败后继续 eager path；设为 `error` 时 compile 失败会在初始化阶段直接报错。该字段进入 `ParameterSpec`、`parameter_chain`、`resource_plan`、`algorithm_config_trace` 和 `tensor_execution` metadata，用来区分“允许 fallback”和“必须硬失败”的调试场景。
 - runner 会优先调用 algorithm 的 `train_batch_result()`；`bigamp_tensor` 和 `bigamp_tensor_parallel` 已经显式返回 metrics-only `AlgorithmResult`。active path 在拿到 `AlgorithmResult` 后不会再从私有 `_batch_metrics` 补缺失指标；旧 `_batch_metrics` 只保留为 tensor 数值实现内部的临时缓冲和未迁移 legacy fallback。
 - tensor metrics-only result 的 `SingleRunResult.W_students/X_students` 保存为 `None`，避免把 placeholder 当成真实 factor。
 - runner 的 algorithm cache 已按 effective config signature 分区，不再只按 algorithm key 复用。每个 algorithm 实例会带 `_contract_config_trace`，run metadata 中写入 `algorithm_config_trace`，用于追踪参数是否实际传入 algorithm 构造。

@@ -370,6 +370,7 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("algorithm_params.noise_var", "float", 1e-10, "algorithm", ["algorithms"], True),
         ParameterSpec("algorithm_params.learning_rate", "float", 1e-2, "algorithm", ["AGDAlgorithm"], True),
         ParameterSpec("algorithm_params.use_compile", "bool", True, "algorithm", ["algorithms"], False),
+        ParameterSpec("algorithm_params.compile_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["bigamp_tensor_parallel"], False),
         ParameterSpec("algorithm_params.use_bf16", "bool", True, "algorithm", ["algorithms"], False),
         ParameterSpec("algorithm_params.use_early_stop", "bool", False, "algorithm", ["AGDAlgorithm"], False),
         ParameterSpec("algorithm_params.target_loss_threshold", "float", 1e-8, "algorithm", ["AGDAlgorithm"], True),
