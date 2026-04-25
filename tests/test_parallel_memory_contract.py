@@ -220,6 +220,58 @@ def test_tensor_memory_estimator_consumes_tensor_order_and_dims():
     assert estimator.estimate(order4).total_gb > estimator.estimate(order3).total_gb
 
 
+@pytest.mark.parametrize(
+    ("algorithm_key", "expected_component"),
+    [
+        ("agd", "Parameters & Gradients"),
+        ("bigamp", "Dense Intermediate (N1×N2)"),
+        ("bigamp_spreading", "SuperGraph Data"),
+        ("bigamp_tensor_parallel", "Tensor Scatter/Gather Temporaries"),
+    ],
+)
+def test_memory_estimates_expose_component_breakdown(algorithm_key, expected_component):
+    estimator = MemoryEstimator()
+    params = EstimationParams(
+        N1=4,
+        N2=5,
+        M=2,
+        S=1,
+        alpha_values=[0.2],
+        algorithm_key=algorithm_key,
+        use_bf16=False,
+        tensor_order=3,
+        tensor_dims=(4, 5, 4),
+    )
+
+    estimate = estimator.estimate(params)
+
+    assert estimate.breakdown
+    assert expected_component in estimate.breakdown
+    assert estimate.breakdown[expected_component] > 0.0
+
+
+def test_execution_plan_batches_preserve_memory_breakdown():
+    ParallelCoordinator = get_parallel_coordinator()
+    coordinator = ParallelCoordinator(
+        estimator=MemoryEstimator(),
+        config=AllocationPresets.CONSERVATIVE,
+    )
+    plan = coordinator.plan_execution(
+        EstimationParams(
+            N1=4,
+            N2=5,
+            M=2,
+            S=1,
+            alpha_values=[0.1],
+            algorithm_key="bigamp",
+            use_bf16=False,
+        )
+    )
+
+    assert plan.batches[0].memory_breakdown
+    assert "Dense Intermediate (N1×N2)" in plan.batches[0].memory_breakdown
+
+
 def test_parallel_coordinator_replan_is_hard_gated_by_seed_policy():
     ParallelCoordinator = get_parallel_coordinator()
     coordinator = ParallelCoordinator(

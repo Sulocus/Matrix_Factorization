@@ -359,6 +359,10 @@ class MemoryEstimator:
         total_gb = raw_tensor_gb + overhead_gb
         
         breakdown = self._get_breakdown(params)
+        if context_gb:
+            breakdown["runtime.context_gb"] = context_gb
+        if fragmentation_gb:
+            breakdown["runtime.fragmentation_gb"] = fragmentation_gb
         breakdown_msg = (
             f"  Math Tensors: {raw_tensor_gb:.2f} GB\n"
             f"  + Context:    {context_gb:.2f} GB\n"
@@ -551,8 +555,29 @@ class MemoryEstimator:
     
     def _get_breakdown(self, params: EstimationParams) -> Dict[str, float]:
         """Get memory breakdown by component (algorithm-specific)."""
-        # Default empty breakdown
-        return {}
+        try:
+            if params.algorithm_key == "bigamp":
+                breakdown = get_bigamp_standard_breakdown(params)
+            elif params.algorithm_key == "agd":
+                breakdown = get_agd_breakdown(params)
+            elif params.algorithm_key == "bigamp_spreading":
+                if getattr(params, "allow_intra_connection", False):
+                    from .memory_estimator_general import get_general_spreading_breakdown
+                    breakdown = get_general_spreading_breakdown(params)
+                else:
+                    breakdown = get_spreading_parallel_breakdown(params)
+            elif params.algorithm_key in {"bigamp_tensor", "bigamp_tensor_parallel"}:
+                breakdown = get_tensor_spreading_breakdown(params)
+            else:
+                return {}
+        except Exception as exc:
+            logger.warning(
+                "Failed to build memory breakdown for %s: %s",
+                params.algorithm_key,
+                exc,
+            )
+            return {}
+        return {component.name: component.gb for component in breakdown.components}
 
 
 # =============================================================================
@@ -994,9 +1019,20 @@ def estimate_tensor_spreading(params: EstimationParams) -> float:
     Works for both serial (bigamp_tensor) and parallel (bigamp_tensor_parallel) versions.
     Parallel version processes all S samples simultaneously, so memory scales with S.
     """
+    breakdown = get_tensor_spreading_breakdown(params)
+    return breakdown.total_gb
+
+
+def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
+    """
+    Get modular memory breakdown for tensor spreading.
+
+    This mirrors ``estimate_tensor_spreading`` and only exposes the existing
+    formula as component metadata. It does not change the estimator total.
+    """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
     alpha_max = params.alpha_max
-    
+
     tensor_order = getattr(params, 'tensor_order', 3)
     tensor_dims = getattr(params, 'tensor_dims', None) or tuple([N1] * tensor_order)
     
@@ -1021,11 +1057,58 @@ def estimate_tensor_spreading(params: EstimationParams) -> float:
     
     # Scatter/gather temporaries: (S, C, M)
     temp_memory = 3 * S * C * M * storage_bytes
-    
-    total_bytes = factor_memory + fy_memory + var_memory + temp_memory
-    
-    # Safety margin (1.2 for torch.compile overhead)
-    return (total_bytes / (1024**3)) * 1.2
+
+    breakdown = MemoryBreakdown(
+        algorithm_key=params.algorithm_key,
+        safety_margin=1.2,
+    )
+    factors = MemoryComponent(name="Tensor Factors")
+    factors.add(TensorSpec(
+        name="factor tensors",
+        shape=(S, sum(tensor_dims), M),
+        shape_formula="S × sum(N_d) × M",
+        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+    ))
+    breakdown.add_component(factors)
+
+    observations = MemoryComponent(name="Tensor Observations")
+    observations.add(TensorSpec(
+        name="F coefficients",
+        shape=(S, C, M),
+        shape_formula="S × C × M",
+        dtype=DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32,
+    ))
+    observations.add(TensorSpec(
+        name="Y values",
+        shape=(S, C),
+        shape_formula="S × C",
+        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+    ))
+    breakdown.add_component(observations)
+
+    variances = MemoryComponent(name="Tensor Variances")
+    variances.add(TensorSpec(
+        name="factor variances",
+        shape=(S, sum(tensor_dims), M),
+        shape_formula="S × sum(N_d) × M",
+        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+    ))
+    breakdown.add_component(variances)
+
+    temporaries = MemoryComponent(name="Tensor Scatter/Gather Temporaries")
+    temporaries.add(TensorSpec(
+        name="scatter/gather temporaries",
+        shape=(S, C, M),
+        shape_formula="3 × S × C × M",
+        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+        count=3,
+    ))
+    breakdown.add_component(temporaries)
+
+    # Keep these local names referenced so future formula edits stay visibly
+    # paired with the component structure above.
+    assert factor_memory + fy_memory + var_memory + temp_memory == breakdown.total_bytes
+    return breakdown
 
 
 def get_bigamp_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:

@@ -280,20 +280,26 @@ class ExperimentResult:
         contracts = {}
         algorithm_key = getattr(self.config, "algorithm_key", None)
         for scan_value, result in self._sorted_result_items():
-            if result.metric_contract:
-                contracts[str(scan_value)] = result.metric_contract
-                continue
             if not algorithm_key:
                 continue
             try:
                 from matrix_factorization.modules.metrics.spec_adapter import MetricSpecAdapter
-                contracts[str(scan_value)] = MetricSpecAdapter.describe_payload(
+                validation = MetricSpecAdapter.validate_payload(
                     algorithm_key,
                     result.metrics,
-                    source="result_schema_fallback",
+                    source=(
+                        result.metric_contract.get("source", "result_metric_contract")
+                        if result.metric_contract else "result_schema_fallback"
+                    ),
                 )
-            except Exception:
+            except Exception as exc:
+                raise ValueError(
+                    f"result metrics for scan value {scan_value!r} failed MetricSpec validation"
+                ) from exc
+            if result.metric_contract:
+                contracts[str(scan_value)] = result.metric_contract
                 continue
+            contracts[str(scan_value)] = validation.to_dict()
         return contracts
 
     def metric_semantics(self) -> Dict[str, List[Dict[str, str]]]:
@@ -458,6 +464,7 @@ class ExperimentResult:
             "factor_payload_contract": self.factor_payload_contract(),
             "scan_dimension": self.scan_dimension,
             "scan_values": [str(v) for v in self.scan_values],
+            "available_metric_keys": sorted(self._available_metric_keys()),
             "metric_schema": self.metric_schema(),
             "metric_semantics": self.metric_semantics(),
             "metric_contracts": self.metric_contracts(),

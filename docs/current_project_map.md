@@ -165,6 +165,8 @@ run_dir/
 - `ResultStorage.save()` 对普通 dict 有 fallback schema。
 - `export/bundler.py` 会为部分旧 workflow 写 standalone result JSON。
 
+详细 schema contract 见 `docs/result_schema_contract.md`。当前保存阶段会重新校验每个 scan point 的 metric payload；未声明 key 不能落盘。
+
 ## 已知控制风险
 
 - `nested_scan` 和 `hysteresis_scan` 仍是 dict config 特例，虽然 CLI 已避免在分派前访问 `config.experiment_name`，但它们还没有完全进入统一 `ExperimentPlan` schema。

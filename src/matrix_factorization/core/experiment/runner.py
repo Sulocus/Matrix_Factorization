@@ -846,6 +846,10 @@ class ExperimentRunner:
                     "alpha_range": list(batch.alpha_range),
                     "alpha_values": [float(value) for value in batch.alpha_values],
                     "estimated_memory_gb": float(batch.estimated_memory_gb),
+                    "memory_breakdown": {
+                        str(key): float(value)
+                        for key, value in (getattr(batch, "memory_breakdown", {}) or {}).items()
+                    },
                 }
                 for idx, batch in enumerate(getattr(plan, "batches", []) or [])
             ],

@@ -91,6 +91,7 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]
+    assert metrics["available_metric_keys"] == ["MSE", "Q_W_mean", "Q_Y_mean"]
     assert metrics["metric_schema"]["schema_version"] == 2
     assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
     assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "matrix.full.teacher_student.output_cosine"
@@ -254,6 +255,7 @@ def test_runner_resource_plan_report_is_metadata_only():
     assert report["mode"]
     assert report["num_batches"] >= 1
     assert report["batches"][0]["sample_range_honored_by_runner"] is False
+    assert report["batches"][0]["memory_breakdown"]
     assert "allocation_ratio" in report["allocation"]
     assert report["seed_policy"]["policy_key"] == "legacy_vectorized_batch_manual_seed"
     assert report["seed_policy"]["automatic_rebatch_allowed"] is False
@@ -741,6 +743,29 @@ def test_runner_rejects_undeclared_metric_payload_keys():
         )
 
 
+def test_experiment_result_save_rejects_undeclared_metric_keys(tmp_path):
+    result = ExperimentResult(
+        experiment_id="bad_metric_payload",
+        config=_tiny_config(),
+        scan_dimension="alpha",
+        scan_values=[0.0],
+    )
+    result.add_result(
+        0.0,
+        SingleRunResult(
+            scan_value=0.0,
+            metrics={"Q_Y_mean": 0.2, "new_unregistered_metric": 1.0},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="failed MetricSpec validation"):
+        result.save(
+            tmp_path / "bad_metric_payload",
+            save_tensors=False,
+            output_options={"enable_heatmap": False},
+        )
+
+
 def test_active_metrics_only_path_does_not_read_private_batch_metrics():
     class DummyTensorAlgorithm:
         _batch_metrics = {0.5: {"Q_Y_mean": 0.8}}
@@ -835,9 +860,11 @@ def test_heatmap_plot_failure_is_hard_error(tmp_path, monkeypatch):
         raise RuntimeError("plot backend failed")
 
     monkeypatch.setattr(plotting, "plot_replica_heatmap", fail_plot)
+    config = _tiny_config()
+    config.algorithm_key = "bigamp_tensor_parallel"
     result = ExperimentResult(
         experiment_id="hard_heatmap_failure",
-        config=_tiny_config(),
+        config=config,
         scan_dimension="alpha",
         scan_values=[0.0],
     )

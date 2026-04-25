@@ -23,6 +23,8 @@
 - Source inventory expansion：根目录表面文件、`experiments/`、`scripts/analysis|debug|experiments|maintenance|verification/`、`tests/debug|verification/`、`trials/`、config 入口、teacher/graph/metric/output/runtime-extension 源文件都已进入机器清点测试。
 - Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
 - Runtime probe metadata keys：`batch_summary` 还会记录 `AlgorithmResult.metadata`、`execution_metadata`、`tensor_execution` 的 key 列表，只暴露轻量索引，不复制 factor/tensor payload。
+- Metric schema coverage gate：active algorithm 声明的每个 legacy flat metric key 都必须被 `get_metric_schema()` 索引；新增 metric 如果没有 semantic class / flat-key 映射，contract 测试会失败。
+- Result-save metric gate：`ExperimentResult.save()` 现在会重新校验每个 scan point 的 metric payload；手工塞入未声明 metric/artifact 也会在落盘前失败。
 - Probe wiring hardening：未接入实际 runtime hook 的 `state_slice/tensor_state_slice/variance_slice` 标记为 `declared_only`，YAML 请求会 preflight error，而不是静默无产物。
 - Algorithm config trace：runner algorithm cache 已按 effective config signature 分区，run metadata 写入 `algorithm_config_trace`，防止同 key 不同参数复用旧 algorithm 实例。
 - Tensor parallel dead-path cleanup：删除 `bigamp_tensor_parallel` 中 `_compute_alpha_batches()` 返回后的不可达 legacy memory-estimate 残片；当前显存估计入口以 `MemoryModelSpec`、runner estimator 和 tensor probe metadata 为准。
@@ -30,6 +32,7 @@
 - OOM replan gate：`ParallelCoordinator.replan_with_safety()` 不再返回当前 plan 伪装成缩 batch，而是根据 `SeedPolicySpec` 明确拒绝未实现/不安全的自动重分批；`MemoryGuard` 文案改为 abort/checkpoint handoff。
 - Compile status metadata：tensor parallel 的 `tensor_execution` 区分 `requested_use_compile` 和实际 super-step compile 是否生效，并记录 `compile_status/compile_attempts`。
 - Spreading chunk metadata：`bigamp_spreading` 的 `AlgorithmResult.metadata.execution_metadata` 记录 `chunk_size/chunk_policy/dynamic_batches`，说明当前是手动 chunk 配置，不做 auto tuning。
+- Memory breakdown reporting：`MemoryEstimator.estimate()` 现在会返回按组件拆分的 `breakdown`，覆盖 AGD、dense BiGAMP、spreading BiGAMP 和 tensor spreading；每个 runner batch 的 `runtime_resource_plan.batches[*].memory_breakdown` 会保存这份 metadata。这只暴露已有估计公式，不改变训练或 batching 行为。
 
 ## 本轮继续推进
 

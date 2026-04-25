@@ -90,6 +90,7 @@ class BatchConfig:
     alpha_range: Tuple[int, int]   # (start, end)
     estimated_memory_gb: float
     alpha_values: List[float] = field(default_factory=list)
+    memory_breakdown: Dict[str, float] = field(default_factory=dict)
     
     @property
     def num_samples(self) -> int:

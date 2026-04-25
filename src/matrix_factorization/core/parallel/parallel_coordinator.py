@@ -121,6 +121,7 @@ class ParallelCoordinator:
                     alpha_range=(0, A),
                     estimated_memory_gb=full_estimate.total_gb,
                     alpha_values=params.alpha_values,
+                    memory_breakdown=dict(full_estimate.breakdown),
                 )],
                 total_estimated_memory_gb=full_estimate.total_gb,
                 allocation_config=self.config,
@@ -355,6 +356,7 @@ class ParallelCoordinator:
                         alpha_range=(current_start, end),
                         estimated_memory_gb=estimate.total_gb,
                         alpha_values=batch_alphas,
+                        memory_breakdown=dict(estimate.breakdown),
                     ))
                     current_start = end
                     break
@@ -381,6 +383,7 @@ class ParallelCoordinator:
                 alpha_range=(i, i + 1),
                 estimated_memory_gb=estimate.total_gb,
                 alpha_values=[alpha],
+                memory_breakdown=dict(estimate.breakdown),
             ))
         
         total_mem = max(b.estimated_memory_gb for b in batches) if batches else 0

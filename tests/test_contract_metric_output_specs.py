@@ -166,6 +166,16 @@ def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
     )
 
 
+def test_active_algorithm_metric_keys_are_all_indexed_by_metric_schema():
+    for algorithm_key, algorithm_spec in get_algorithm_specs().items():
+        if algorithm_spec.status != "active":
+            continue
+        keys = set(get_algorithm_metric_keys(algorithm_key))
+        schema = get_metric_schema(algorithm_key, metric_keys=sorted(keys))
+
+        assert keys <= set(schema["flat_key_index"]), algorithm_key
+
+
 def test_metric_spec_adapter_validates_legacy_flat_payloads():
     check = MetricSpecAdapter.check_payload(
         "bigamp",
