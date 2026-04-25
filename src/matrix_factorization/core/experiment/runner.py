@@ -431,6 +431,7 @@ class ExperimentRunner:
         skipped_msg_printed = False
         
         for batch_idx, batch in enumerate(plan.batches):
+            batch_start_time = time.time()
             batch_alpha_values = batch.alpha_values
             
             # Skip if all alphas in this batch are already completed (resume mode)
@@ -553,7 +554,7 @@ class ExperimentRunner:
                 # Emit Batch End Event
                 self._emit(observer, ProgressEventType.BATCH_END, {
                     'batch_idx': batch_idx, 
-                    'duration': 0.0 # TODO: Track actual duration
+                    'duration': time.time() - batch_start_time
                 })
                 self._dispatch_after_batch_runtime_extensions(
                     config=config,
@@ -656,6 +657,7 @@ class ExperimentRunner:
         data = self.data_factory.create(config, alpha_values=[default_alpha])
         checkpoint = None
         prev_steps = 0
+        batch_start_time = time.time()
         
         # Step callback wrapper
         def internal_step_callback(step, total, metrics=None):
@@ -720,7 +722,10 @@ class ExperimentRunner:
                 'metrics': metrics
             })
             
-        self._emit(observer, ProgressEventType.BATCH_END, {'batch_idx': 0})
+        self._emit(observer, ProgressEventType.BATCH_END, {
+            'batch_idx': 0,
+            'duration': time.time() - batch_start_time,
+        })
         self._dispatch_after_batch_runtime_extensions(
             config=config,
             batch_idx=0,

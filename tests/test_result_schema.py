@@ -14,7 +14,7 @@ from matrix_factorization.core.experiment.config import (
 )
 from matrix_factorization.core.experiment.data_factory import ExperimentData
 from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
-from matrix_factorization.core.experiment.runner import ExperimentRunner
+from matrix_factorization.core.experiment.runner import ExperimentRunner, ProgressEventType
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading import BiGAMPTensorSpreading
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import BiGAMPTensorSpreadingParallel
@@ -254,6 +254,26 @@ def test_runner_resource_plan_report_is_metadata_only():
     assert report["num_batches"] >= 1
     assert report["batches"][0]["sample_range_honored_by_runner"] is False
     assert "allocation_ratio" in report["allocation"]
+
+
+def test_runner_batch_end_event_records_elapsed_duration():
+    config = _tiny_config()
+    config.scan.values = [0.1]
+    config.training.max_steps = 1
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    events = []
+
+    runner.run(
+        config,
+        observer=events.append,
+        output_options={"enable_heatmap": False},
+    )
+
+    batch_end_events = [
+        event for event in events if event.type is ProgressEventType.BATCH_END
+    ]
+    assert batch_end_events
+    assert batch_end_events[-1].payload["duration"] >= 0.0
 
 
 def test_runner_wraps_tensor_legacy_metrics_without_dummy_matrix_factors():

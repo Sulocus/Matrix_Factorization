@@ -19,9 +19,12 @@
 - Tensor memory estimator 参数链路：`EstimationParams` 现在显式携带 `tensor_order/tensor_dims`，tensor memory estimator 不再隐式默认三阶张量。
 - Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `170 passed, 9 skipped`。
 - Legacy pytest inventory：`get_legacy_pytest_inventory()` 和 `tests/test_source_inventory.py` 强制这些 legacy/local-GPU 测试必须登记并模块级 skip。
+- Source inventory expansion：根目录表面文件、`experiments/`、`scripts/analysis|debug|experiments|maintenance|verification/`、`tests/debug|verification/`、`trials/`、config 入口、teacher/graph/metric/output/runtime-extension 源文件都已进入机器清点测试。
 - Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
 - Probe wiring hardening：未接入实际 runtime hook 的 `state_slice/tensor_state_slice/variance_slice` 标记为 `declared_only`，YAML 请求会 preflight error，而不是静默无产物。
 - Algorithm config trace：runner algorithm cache 已按 effective config signature 分区，run metadata 写入 `algorithm_config_trace`，防止同 key 不同参数复用旧 algorithm 实例。
+- Tensor parallel dead-path cleanup：删除 `bigamp_tensor_parallel` 中 `_compute_alpha_batches()` 返回后的不可达 legacy memory-estimate 残片；当前显存估计入口以 `MemoryModelSpec`、runner estimator 和 tensor probe metadata 为准。
+- Runtime batch timing metadata：runner 的 `BATCH_END` 事件记录真实 elapsed duration，不再写固定 `0.0` 占位值。
 
 ## 本轮继续推进
 
@@ -34,6 +37,8 @@
   - execution metadata 已接入 tensor result。
   - internal alpha batch plan 已接入 tensor result。
   - metrics-only tensor path 已避免无用 placeholder factor 分配。
+  - tensor parallel 不再保留不可达的旧 `_estimate_batch_memory` 残片。
+  - batch end progress event 已记录真实 elapsed duration。
   - Resource/Batching 与 tensor parity 的显存约束已加入测试。
 
 ## 尚未完成
@@ -46,7 +51,6 @@
 - tensor serial/parallel teacher scale、alpha graph、damping 语义统一。
 - per-algorithm memory formula 的数值校准与真实 probe 对照。
 - runtime probe/intervention 真正接入算法内部 step state（当前未接线 probe 已 hard error）。
-- source inventory 扩展到 scripts/debug/verification 与 trial 之外的所有探索文件。
 - metric/review queue 的最终命名选择需要人工确认。
 
 ## 暂不自动改的高风险项

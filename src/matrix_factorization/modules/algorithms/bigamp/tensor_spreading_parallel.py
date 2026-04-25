@@ -511,45 +511,6 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         )
         return batches
 
-    # _estimate_batch_memory is no longer needed (replaced by probing)
-    # Kept for compatibility but not used
-        M = self.M
-        n = self.order
-
-        # Compute C_max (depends on alpha_max)
-        alpha_max = max(batch_alphas) if batch_alphas else 1.0
-        dof = sum(self.dims) * M
-        C_max = max(1, int(alpha_max * dof))
-
-        # Storage bytes
-        storage_bytes = 2 if self.storage_dtype == torch.bfloat16 else 4
-
-        # factors: n tensors of (A, S*N_d, M)
-        factors_bytes = n * A * S * sum(self.dims) * M * storage_bytes / n
-        factors_bytes = A * S * sum(self.dims) * M * storage_bytes
-
-        # factor_vars: same as factors
-        vars_bytes = factors_bytes
-
-        # F_flat: (S*C_max, M), Y_flat: (S*C_max)
-        f_bytes = S * C_max * M * storage_bytes
-        y_bytes = S * C_max * storage_bytes
-
-        # Gathered tensors: (n, A, S*C_max, M) - this is the main memory consumer
-        gathered_bytes = n * A * S * C_max * M * storage_bytes
-
-        # Scatter temporaries: (A, S*N_d, M) for each dimension
-        scatter_bytes = n * A * S * max(self.dims) * M * storage_bytes
-
-        # Total with LARGE safety margin (5x) for:
-        # - torch.compile overhead
-        # - Autograd graph
-        # - Additional temporaries during BiG-AMP step
-        # - CUDA memory fragmentation
-        total_bytes = (factors_bytes + vars_bytes + f_bytes + y_bytes + gathered_bytes + scatter_bytes) * 5.0
-
-        return total_bytes / (1024**3)
-
     def supports_batch_training(self) -> bool:
         """Tensor parallel supports batch training."""
         return True
