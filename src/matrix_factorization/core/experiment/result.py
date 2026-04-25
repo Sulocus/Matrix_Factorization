@@ -305,6 +305,18 @@ class ExperimentResult:
         algorithm_key = getattr(self.config, "algorithm_key", None)
         return get_algorithm_metric_semantics(algorithm_key) if algorithm_key else {}
 
+    def metric_schema(self) -> Dict[str, Any]:
+        """Structured semantic schema for this run's flat metric payload."""
+        try:
+            from matrix_factorization.core.contracts import get_metric_schema
+        except ImportError:
+            return {}
+        algorithm_key = getattr(self.config, "algorithm_key", None)
+        if not algorithm_key:
+            return {}
+        metric_keys = sorted(self._available_metric_keys())
+        return get_metric_schema(algorithm_key, metric_keys=metric_keys)
+
     def factor_payload_contract(self) -> Dict[str, Any]:
         """Describe which factor payloads are real and serialized.
 
@@ -446,6 +458,7 @@ class ExperimentResult:
             "factor_payload_contract": self.factor_payload_contract(),
             "scan_dimension": self.scan_dimension,
             "scan_values": [str(v) for v in self.scan_values],
+            "metric_schema": self.metric_schema(),
             "metric_semantics": self.metric_semantics(),
             "metric_contracts": self.metric_contracts(),
             "metrics": metrics_dict,

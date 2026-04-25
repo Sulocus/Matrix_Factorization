@@ -8,7 +8,7 @@ uses them for validation and explanation without changing algorithm physics.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 
@@ -169,6 +169,30 @@ class MetricSpec:
     normalization: str = ""
     physical_meaning: str = ""
     compatible_algorithms: List[str] = field(default_factory=list)
+    canonical_key: str = ""
+    equivalence_class: str = ""
+    legacy_aliases: List[str] = field(default_factory=list)
+    result_role: str = "formal"  # formal / diagnostic / plotting_helper
+    order_parameter_status: str = "candidate"  # candidate / diagnostic / not_order_parameter / review
+    review_status: str = "provisional"
+    risk_level: str = "low"
+
+
+@dataclass(frozen=True)
+class MetricSemanticClass:
+    canonical_key: str
+    equivalence_class: str
+    display_name: str
+    legacy_aliases: List[str] = field(default_factory=list)
+    space: str = ""
+    scope: str = ""
+    relation: str = ""
+    normalization: str = ""
+    result_role: str = "formal"
+    order_parameter_status: str = "candidate"
+    risk_level: str = "low"
+    review_status: str = "provisional"
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -504,7 +528,275 @@ def get_metric_specs() -> Dict[str, MetricSpec]:
         MetricSpec("replica.factor", ["student_replicas"], ["Q_W_replica_mean", "Q_X_replica_mean", "Q_W_prime_replica_mean", "Q_X_prime_replica_mean"], "factor", "replica", "student-student", "Gram cosine", "Replica overlap diagnostic.", ["agd", "bigamp", "bigamp_spreading"]),
         MetricSpec("tensor.physical_overlap_Y", ["tensor_student_factors", "tensor_teacher_factors"], ["physical_overlap_Y_mean"], "tensor", "full", "teacher-student", "projection", "Tensor-space physical projection.", ["bigamp_tensor_parallel"]),
     ]
+    specs = _attach_metric_semantic_metadata(specs)
     return {spec.key: spec for spec in specs}
+
+
+def get_metric_semantic_classes() -> Dict[str, MetricSemanticClass]:
+    """Canonical semantic classes for legacy flat metric keys.
+
+    These classes describe what a metric means. They are deliberately separate
+    from flat result names such as ``Q_Y_mean`` because old keys are reused
+    across matrix, spreading, tensor, and replica paths.
+    """
+    classes = [
+        MetricSemanticClass(
+            "matrix.full.teacher_student.output_cosine",
+            "output_similarity.full",
+            "matrix full output cosine",
+            ["Q_Y_mean", "Q_Y_std"],
+            "matrix",
+            "full",
+            "teacher-student",
+            "cosine",
+            "formal",
+            "candidate",
+            "medium",
+            description="Dense matrix output-space cosine between student reconstruction and teacher output.",
+        ),
+        MetricSemanticClass(
+            "matrix.observed.teacher_student.output_cosine",
+            "output_similarity.observed",
+            "matrix observed output cosine",
+            ["Q_Y_observed_mean", "Q_Y_observed_std"],
+            "matrix",
+            "observed",
+            "teacher-student",
+            "masked cosine",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            description="Dense matrix cosine restricted to observed mask entries.",
+        ),
+        MetricSemanticClass(
+            "matrix.unobserved.teacher_student.output_cosine",
+            "output_similarity.unobserved",
+            "matrix unobserved output cosine",
+            ["Q_Y_unobserved_mean", "Q_Y_unobserved_std"],
+            "matrix",
+            "unobserved",
+            "teacher-student",
+            "masked cosine",
+            "formal",
+            "candidate",
+            "medium",
+            description="Dense matrix cosine restricted to unobserved entries.",
+        ),
+        MetricSemanticClass(
+            "spreading.observed.teacher_student.F_aware_output_cosine",
+            "output_similarity.observed",
+            "spreading observed F-aware output cosine",
+            ["Q_Y_observed_mean", "Q_Y_observed_std"],
+            "graph",
+            "observed",
+            "teacher-student",
+            "F-aware cosine",
+            "formal",
+            "candidate",
+            "high",
+            description="Observed graph metric using the quenched spreading coefficients F.",
+        ),
+        MetricSemanticClass(
+            "spreading.unobserved.teacher_student.dense_output_cosine",
+            "output_similarity.unobserved",
+            "spreading induced unobserved dense output cosine",
+            ["Q_Y_unobserved_mean", "Q_Y_unobserved_std"],
+            "matrix",
+            "unobserved",
+            "teacher-student",
+            "cosine",
+            "diagnostic",
+            "diagnostic",
+            "high",
+            description="Dense-output diagnostic induced by the spreading mask, not an F-observed graph metric.",
+        ),
+        MetricSemanticClass(
+            "tensor.full.teacher_student.cp_tensor_cosine",
+            "output_similarity.full",
+            "tensor full CP tensor cosine",
+            ["Q_Y_mean", "Q_Y_std"],
+            "tensor",
+            "full",
+            "teacher-student",
+            "cosine",
+            "formal",
+            "candidate",
+            "high",
+            description="Full tensor cosine computed from CP teacher/student factors.",
+        ),
+        MetricSemanticClass(
+            "tensor.observed.teacher_student.serial_reconstruction_quality",
+            "output_similarity.observed",
+            "serial tensor observed reconstruction quality",
+            ["Q_Y_mean", "Q_Y_std"],
+            "tensor",
+            "observed",
+            "teacher-student",
+            "reconstruction quality",
+            "diagnostic",
+            "diagnostic",
+            "high",
+            description="Legacy serial tensor observed-edge reconstruction quality stored under Q_Y flat keys.",
+        ),
+        MetricSemanticClass(
+            "tensor.observed.teacher_student.reconstruction_quality",
+            "output_similarity.observed",
+            "tensor observed reconstruction quality",
+            ["Q_Y_observed_mean", "Q_Y_observed_std"],
+            "tensor",
+            "observed",
+            "teacher-student",
+            "reconstruction quality",
+            "diagnostic",
+            "diagnostic",
+            "high",
+            description="Tensor observed-edge reconstruction diagnostic.",
+        ),
+        MetricSemanticClass(
+            "factor.W.teacher_student.gram_cosine",
+            "factor_overlap.teacher_student",
+            "W teacher-student Gram overlap",
+            ["Q_W_mean", "Q_W_std", "Q_W_prime_mean", "Q_W_prime_std"],
+            "factor",
+            "full",
+            "teacher-student",
+            "Gram cosine",
+            "formal",
+            "candidate",
+            "medium",
+            description="Left-factor Gram overlap diagnostics; prime keys are baseline-corrected variants.",
+        ),
+        MetricSemanticClass(
+            "factor.X.teacher_student.gram_cosine",
+            "factor_overlap.teacher_student",
+            "X teacher-student Gram overlap",
+            ["Q_X_mean", "Q_X_std", "Q_X_prime_mean", "Q_X_prime_std"],
+            "factor",
+            "full",
+            "teacher-student",
+            "Gram cosine",
+            "formal",
+            "candidate",
+            "medium",
+            description="Right-factor Gram overlap diagnostics; prime keys are baseline-corrected variants.",
+        ),
+        MetricSemanticClass(
+            "matrix.full.teacher_student.projection_overlap",
+            "physical_projection",
+            "matrix projection-style physical overlap",
+            [
+                "physical_overlap_W_mean",
+                "physical_overlap_W_std",
+                "physical_overlap_X_mean",
+                "physical_overlap_X_std",
+                "physical_overlap_Y_mean",
+                "physical_overlap_Y_std",
+            ],
+            "matrix",
+            "full",
+            "teacher-student",
+            "projection",
+            "diagnostic",
+            "review",
+            "high",
+            description="Projection-style overlap diagnostics; factor variants remain gauge/sign sensitive.",
+        ),
+        MetricSemanticClass(
+            "matrix.full.teacher_student.reconstruction_mse",
+            "reconstruction_error",
+            "matrix full reconstruction MSE",
+            ["MSE", "MSE_std", "Gen_Error"],
+            "matrix",
+            "full",
+            "teacher-student",
+            "mean squared error",
+            "formal",
+            "not_order_parameter",
+            "low",
+            description="Dense reconstruction mean squared error.",
+        ),
+        MetricSemanticClass(
+            "factor.replica.student_student.gram_cosine",
+            "replica_overlap",
+            "factor replica Gram overlap",
+            ["Q_W_replica_mean", "Q_X_replica_mean", "Q_W_prime_replica_mean", "Q_X_prime_replica_mean"],
+            "factor",
+            "replica",
+            "student-student",
+            "Gram cosine",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            description="Student-student replica overlap diagnostic.",
+        ),
+        MetricSemanticClass(
+            "tensor.full.teacher_student.projection_overlap",
+            "physical_projection",
+            "tensor Y projection overlap",
+            ["physical_overlap_Y_mean"],
+            "tensor",
+            "full",
+            "teacher-student",
+            "projection",
+            "formal",
+            "candidate",
+            "high",
+            description="Tensor-space teacher/student projection; scale convention must be reviewed before comparing with matrix variants.",
+        ),
+        MetricSemanticClass(
+            "replica.heatmap.teacher_and_students.matrix",
+            "replica_heatmap",
+            "teacher plus replicas overlap matrix",
+            ["overlap_matrix", "overlap_matrix_metric"],
+            "matrix-valued",
+            "replica",
+            "teacher-student and student-student",
+            "selected heatmap metric",
+            "diagnostic",
+            "not_order_parameter",
+            "medium",
+            description="Matrix-valued heatmap payload for RSB/replica visualization.",
+        ),
+    ]
+    return {item.canonical_key: item for item in classes}
+
+
+def _attach_metric_semantic_metadata(specs: List[MetricSpec]) -> List[MetricSpec]:
+    mapping = {
+        "matrix.full.Q_Y": "matrix.full.teacher_student.output_cosine",
+        "matrix.observed.Q_Y": "matrix.observed.teacher_student.output_cosine",
+        "matrix.unobserved.Q_Y": "matrix.unobserved.teacher_student.output_cosine",
+        "spreading.observed.Q_Y": "spreading.observed.teacher_student.F_aware_output_cosine",
+        "spreading.unobserved.Q_Y": "spreading.unobserved.teacher_student.dense_output_cosine",
+        "tensor.full.Q_Y": "tensor.full.teacher_student.cp_tensor_cosine",
+        "tensor.serial_observed.Q_Y": "tensor.observed.teacher_student.serial_reconstruction_quality",
+        "tensor.observed.Q_Y": "tensor.observed.teacher_student.reconstruction_quality",
+        "matrix.factor.Q_W": "factor.W.teacher_student.gram_cosine",
+        "matrix.factor.Q_X": "factor.X.teacher_student.gram_cosine",
+        "matrix.physical_overlap": "matrix.full.teacher_student.projection_overlap",
+        "matrix.error.MSE": "matrix.full.teacher_student.reconstruction_mse",
+        "replica.factor": "factor.replica.student_student.gram_cosine",
+        "tensor.physical_overlap_Y": "tensor.full.teacher_student.projection_overlap",
+    }
+    classes = get_metric_semantic_classes()
+    enriched = []
+    for spec in specs:
+        canonical_key = mapping.get(spec.key, "")
+        semantic_class = classes.get(canonical_key)
+        if not semantic_class:
+            enriched.append(spec)
+            continue
+        enriched.append(replace(
+            spec,
+            canonical_key=semantic_class.canonical_key,
+            equivalence_class=semantic_class.equivalence_class,
+            legacy_aliases=list(semantic_class.legacy_aliases),
+            result_role=semantic_class.result_role,
+            order_parameter_status=semantic_class.order_parameter_status,
+            review_status=semantic_class.review_status,
+            risk_level=semantic_class.risk_level,
+        ))
+    return enriched
 
 
 def get_algorithm_metric_keys(algorithm_key: str) -> List[str]:
@@ -535,15 +827,75 @@ def get_algorithm_metric_semantics(algorithm_key: str) -> Dict[str, List[Dict[st
             continue
         payload = {
             "metric_spec": spec.key,
+            "canonical_key": spec.canonical_key,
+            "equivalence_class": spec.equivalence_class,
             "space": spec.space,
             "scope": spec.scope,
             "relation": spec.relation,
             "normalization": spec.normalization,
             "physical_meaning": spec.physical_meaning,
+            "result_role": spec.result_role,
+            "order_parameter_status": spec.order_parameter_status,
+            "review_status": spec.review_status,
+            "risk_level": spec.risk_level,
         }
         for flat_key in spec.produces:
             semantics.setdefault(flat_key, []).append(dict(payload))
     return semantics
+
+
+def get_metric_schema(algorithm_key: str, metric_keys: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Result-schema metadata for legacy flat metric keys under one algorithm."""
+    semantics = get_algorithm_metric_semantics(algorithm_key)
+    requested = set(metric_keys or semantics.keys())
+    flat_key_index = {
+        flat_key: payload
+        for flat_key, payload in semantics.items()
+        if flat_key in requested
+    }
+    canonical_keys = {
+        item.get("canonical_key")
+        for payloads in flat_key_index.values()
+        for item in payloads
+        if item.get("canonical_key")
+    }
+    classes = get_metric_semantic_classes()
+    semantic_classes = {
+        key: {
+            "canonical_key": classes[key].canonical_key,
+            "equivalence_class": classes[key].equivalence_class,
+            "display_name": classes[key].display_name,
+            "legacy_aliases": list(classes[key].legacy_aliases),
+            "space": classes[key].space,
+            "scope": classes[key].scope,
+            "relation": classes[key].relation,
+            "normalization": classes[key].normalization,
+            "result_role": classes[key].result_role,
+            "order_parameter_status": classes[key].order_parameter_status,
+            "risk_level": classes[key].risk_level,
+            "review_status": classes[key].review_status,
+            "description": classes[key].description,
+        }
+        for key in sorted(canonical_keys)
+        if key in classes
+    }
+    review_required = sorted(
+        key for key, item in semantic_classes.items()
+        if item["review_status"] != "approved"
+        or item["risk_level"] in {"medium", "high"}
+        or item["order_parameter_status"] == "review"
+    )
+    return {
+        "schema_version": 2,
+        "algorithm_key": algorithm_key,
+        "compatibility": {
+            "legacy_flat_keys_preserved": True,
+            "flat_keys_require_algorithm_context": True,
+        },
+        "semantic_classes": semantic_classes,
+        "flat_key_index": flat_key_index,
+        "review_required": review_required,
+    }
 
 
 def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:

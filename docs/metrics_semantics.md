@@ -1,164 +1,210 @@
-# Metrics 语义说明
+# Metrics 语义地图
 
-这份文档记录当前 metric 名称及其含义。它不修改任何代码或 result key。当前目标是避免把同一个名字误读成同一个物理量。
+这份文档描述当前程序实际使用的 metric 语义。它不修改任何公式，也不重命名旧结果 key。目标是把旧的 flat key 放进明确的 equivalent class，避免把同名字段误读成同一个物理量。
 
-## 命名原则
+机器可读版本在 `src/matrix_factorization/core/contracts.py`：
 
-理解每个 metric 时，至少要同时看四个属性：
+- `MetricSpec`：metric 的输入、输出、适用 algorithm。
+- `MetricSemanticClass`：metric 的 canonical 语义类。
+- `get_metric_schema()`：生成写入 `metrics.json` 的 result schema metadata。
 
-- `space`：factor、matrix、tensor，或 graph-observed space。
-- `scope`：full、observed、unobserved，或 replica。
-- `relation`：teacher-student，或 student-student。
-- `normalization`：cosine、baseline-corrected Gram overlap、projection、MSE，或 reconstruction-quality transform。
+## 读法
 
-为了兼容旧结果，flat key 暂时保留。未来 schema 应该显式携带这些属性。
-
-## Matrix Metrics
+每个 metric 至少由这些属性共同决定：
 
 ```text
-Q_W_mean / Q_W_std
-Q_X_mean / Q_X_std
+space: matrix / tensor / factor / graph / matrix-valued
+scope: full / observed / unobserved / replica
+relation: teacher-student / student-student
+normalization: cosine / masked cosine / F-aware cosine / projection / MSE / reconstruction quality
+result_role: formal / diagnostic / plotting_helper
+order_parameter_status: candidate / diagnostic / not_order_parameter / review
 ```
 
-Factor Gram cosine。它们不是 raw coordinate-wise factor cosine。它们对 latent permutation 和 sign flip 比较稳定，但不能覆盖所有非正交 gauge 或 scale redistribution。
+旧 key 继续保留，例如 `Q_Y_mean`。但解释旧 key 时必须同时看 algorithm context 和 `metric_schema.flat_key_index`。
+
+## Equivalent Classes
+
+### output_similarity.full
 
 ```text
-Q_W_prime_mean / Q_W_prime_std
-Q_X_prime_mean / Q_X_prime_std
+matrix.full.teacher_student.output_cosine
+  legacy aliases: Q_Y_mean, Q_Y_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: dense matrix full-output cosine
+  status: candidate order parameter
+  risk: medium
+
+tensor.full.teacher_student.cp_tensor_cosine
+  legacy aliases: Q_Y_mean, Q_Y_std
+  appears in: bigamp_tensor_parallel
+  meaning: full CP tensor cosine
+  status: candidate order parameter
+  risk: high
 ```
 
-Baseline-corrected Gram overlap。它们比 raw factor projection 更接近 factor-level order parameter，但仍然需要明确 gauge convention。
+注意：这两个 class 都使用 `Q_Y_mean`，但不是同一个语义。matrix 和 tensor 的 `Q_Y_mean` 必须依靠 `metric_schema` 区分。
+
+### output_similarity.observed
 
 ```text
-Q_Y_mean / Q_Y_std
+matrix.observed.teacher_student.output_cosine
+  legacy aliases: Q_Y_observed_mean, Q_Y_observed_std
+  appears in: agd, bigamp
+  meaning: dense matrix mask-observed cosine
+  status: diagnostic
+  risk: medium
+
+spreading.observed.teacher_student.F_aware_output_cosine
+  legacy aliases: Q_Y_observed_mean, Q_Y_observed_std
+  appears in: bigamp_spreading
+  meaning: observed graph metric using the same quenched F
+  status: candidate order parameter
+  risk: high
+
+tensor.observed.teacher_student.serial_reconstruction_quality
+  legacy aliases: Q_Y_mean, Q_Y_std
+  appears in: bigamp_tensor
+  meaning: serial tensor observed-edge reconstruction quality
+  status: diagnostic
+  risk: high
+
+tensor.observed.teacher_student.reconstruction_quality
+  legacy aliases: Q_Y_observed_mean, Q_Y_observed_std
+  appears in: bigamp_tensor_parallel, agd_tensor
+  meaning: tensor observed-edge reconstruction diagnostic
+  status: diagnostic
+  risk: high
 ```
 
-当由 standard runner 为 `agd` 或 `bigamp` 生成时，它表示 dense matrix 的 full-output cosine。
+注意：`observed` 在 matrix、spreading、tensor 中不是同一个观测空间。spreading observed 是 F-aware graph measurement；tensor observed 当前更接近 reconstruction-quality diagnostic。
+
+### output_similarity.unobserved
 
 ```text
-Q_Y_observed_mean / Q_Y_observed_std
-Q_Y_unobserved_mean / Q_Y_unobserved_std
+matrix.unobserved.teacher_student.output_cosine
+  legacy aliases: Q_Y_unobserved_mean, Q_Y_unobserved_std
+  appears in: agd, bigamp
+  meaning: dense matrix unobserved-entry cosine
+  status: candidate order parameter
+  risk: medium
+
+spreading.unobserved.teacher_student.dense_output_cosine
+  legacy aliases: Q_Y_unobserved_mean, Q_Y_unobserved_std
+  appears in: bigamp_spreading
+  meaning: dense-output diagnostic induced by spreading mask
+  status: diagnostic
+  risk: high
 ```
 
-按 dense mask 划分的 matrix cosine。它们是 scope-specific diagnostic，不应和 full `Q_Y_mean` 静默混用。
+### factor_overlap.teacher_student
 
 ```text
-MSE / MSE_std
-Gen_Error
-loss
+factor.W.teacher_student.gram_cosine
+  legacy aliases: Q_W_mean, Q_W_std, Q_W_prime_mean, Q_W_prime_std
+  appears in: agd, bigamp, bigamp_spreading, agd_spreading
+  meaning: W factor Gram overlap; prime variants are baseline-corrected
+  status: candidate / diagnostic boundary requires review
+  risk: medium
+
+factor.X.teacher_student.gram_cosine
+  legacy aliases: Q_X_mean, Q_X_std, Q_X_prime_mean, Q_X_prime_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: X factor Gram overlap; prime variants are baseline-corrected
+  status: candidate / diagnostic boundary requires review
+  risk: medium
 ```
 
-这些名称目前没有完全统一。主 runner 中的 `MSE` 是 full matrix reconstruction error。`Gen_Error` 出现在旧 metric helper 中。算法内部的 `loss` 通常是 training diagnostic 或 early-stop criterion，不是 canonical result metric。
+这些量比 coordinate-wise projection 更稳定，但仍需要明确 gauge、permutation、sign convention。
+
+### physical_projection
 
 ```text
-physical_overlap_W_mean
-physical_overlap_X_mean
-physical_overlap_Y_mean
+matrix.full.teacher_student.projection_overlap
+  legacy aliases:
+    physical_overlap_W_mean, physical_overlap_W_std
+    physical_overlap_X_mean, physical_overlap_X_std
+    physical_overlap_Y_mean, physical_overlap_Y_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: projection-style overlap diagnostics
+  status: review
+  risk: high
+
+tensor.full.teacher_student.projection_overlap
+  legacy aliases: physical_overlap_Y_mean
+  appears in: bigamp_tensor_parallel
+  meaning: tensor-space teacher/student projection
+  status: candidate, but scale convention must be reviewed
+  risk: high
 ```
 
-Projection-style diagnostic。Factor-level physical overlap 仍然对 permutation、sign 和 gauge 选择敏感。只有当 `physical_overlap_Y_mean` 是 output space 中的 global projection 时，才适合当作 physical order parameter。
+factor-level projection overlap is sign/gauge sensitive. `physical_overlap_Y_mean` is a better physical-order-parameter candidate only when output-space scale convention is explicit.
 
-## Spreading Metrics
-
-Matrix spreading 的观测是 F-aware graph measurement。因此 `Y` 至少有两个不同空间：
-
-- full dense matrix reconstruction space；
-- 使用同一份 quenched `F` 的 observed spreading graph space。
-
-当前 key：
+### reconstruction_error
 
 ```text
-Q_Y_mean
-Q_Y_observed_mean
-Q_Y_unobserved_mean
+matrix.full.teacher_student.reconstruction_mse
+  legacy aliases: MSE, MSE_std, Gen_Error
+  appears in: agd, bigamp, bigamp_spreading; Gen_Error appears in legacy helpers
+  meaning: dense full reconstruction mean squared error
+  status: formal metric, not an order parameter
+  risk: low
 ```
 
-在 parallel spreading metrics 路径中，`Q_Y_mean` 当前用于 full matrix cosine。`Q_Y_observed_mean` 是 F-aware observed graph metric。没有显式 scope label 时，不能把它们当作同一个量。
+`loss` is not included here by default. Algorithm loss is a training diagnostic or early-stop criterion unless explicitly registered as a formal metric.
 
-Spreading 的 physical overlap key 也需要同样谨慎。有些路径计算 global projection，有些路径计算 pointwise ratio 后再平均。除非明确具体实现，否则应先视作 diagnostic。
-
-## Tensor Metrics
+### replica_overlap
 
 ```text
-Q_Y_mean / Q_Y_std
+factor.replica.student_student.gram_cosine
+  legacy aliases:
+    Q_W_replica_mean
+    Q_X_replica_mean
+    Q_W_prime_replica_mean
+    Q_X_prime_replica_mean
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: student-student factor replica overlap
+  status: diagnostic
+  risk: medium
 ```
 
-对 `bigamp_tensor_parallel` 来说，这是 full CP tensor cosine。对 serial `bigamp_tensor` 路径来说，当前更接近 observed-edge reconstruction-quality diagnostic。两者不能直接互换。
+Replica overlap is not teacher-student recovery. It diagnoses solution multiplicity, initialization sensitivity, and possible RSB-like behavior.
 
-机器 contract 中这两者已经拆开：`bigamp_tensor_parallel` 的 `Q_Y_mean` 对应 `tensor.full.Q_Y`；serial `bigamp_tensor` 的 legacy `Q_Y_mean` 对应 `tensor.serial_observed.Q_Y`。
+### replica_heatmap
 
 ```text
-Q_Y_observed_mean / Q_Y_observed_std
+replica.heatmap.teacher_and_students.matrix
+  legacy aliases: overlap_matrix, overlap_matrix_metric
+  appears in: bigamp_tensor_parallel heatmap path
+  meaning: teacher plus student replicas matrix-valued visualization payload
+  status: diagnostic, not scalar order parameter
+  risk: medium
 ```
 
-Observation-only tensor diagnostic。在 tensor parallel 中，它来自 observed-edge reconstruction error 和 target variance，不是 full tensor cosine。
+Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如 `Q_Y` 或 `Q_W`。它不应被当成 scalar timeseries。
 
-```text
-physical_overlap_Y_mean
-```
+## 同名不同义风险
 
-Tensor-space projection。如果 teacher 和 student tensor 使用同一套 scale convention，它可以作为候选 physical order parameter。
+- `Q_Y_mean`：
+  - matrix full dense output cosine；
+  - tensor full CP tensor cosine；
+  - serial tensor observed reconstruction-quality diagnostic。
+- `Q_Y_observed_mean`：
+  - dense matrix masked observed cosine；
+  - spreading F-aware graph observed metric；
+  - tensor observed reconstruction-quality diagnostic。
+- `physical_overlap_Y_mean`：
+  - matrix output projection；
+  - tensor output projection。
 
-```text
-overlap_matrix
-overlap_matrix_metric
-```
+这些 key 在 `metrics.json` 中必须通过 `metric_schema.flat_key_index` 解释。
 
-Teacher 加 replicas 的 heatmap payload。这是 matrix-valued diagnostic，用于 replica/RSB 可视化，不是 scalar order parameter。
+## 同义不同名风险
 
-```text
-compute_factor_gram_overlap()
-```
+- `MSE` 和 legacy `Gen_Error` 都指向 reconstruction error class，但主链路正式 key 是 `MSE`。
+- `Q_W_prime / Q_X_prime` 是 factor Gram overlap 的 baseline-corrected variant，不应和 raw `Q_W / Q_X` 静默合并。
+- `overlap_matrix_metric=Q_Y` 指的是 heatmap cell 的选择，不等价于 scalar `Q_Y_mean`。
 
-Tensor helper 使用的 factor Gram overlap。它对 CP column permutation 和 sign 比较稳定，但不能覆盖所有跨 mode 的 CP scale redistribution。
+## 暂定命名
 
-## Replica Metrics
-
-Replica metrics 比较的是 student replicas 之间的 overlap，而不是 student 和 teacher。它们用于诊断 multiplicity、stability 和可能的 RSB-like behavior。
-
-常见名称：
-
-```text
-Q_W_replica_mean
-Q_X_replica_mean
-Q_W_prime_replica_mean
-Q_X_prime_replica_mean
-```
-
-未来 schema 应显式区分 teacher-student relation 和 student-student relation。
-
-## 未来建议的 Canonical 名称
-
-为了兼容旧结果，现有 flat key 不应直接删除或重命名。可以先增加 structured alias 或 metadata：
-
-```text
-metrics:
-  y:
-    full:
-      cosine_mean
-      mse_mean
-      physical_projection_mean
-    observed:
-      cosine_mean
-      reconstruction_quality_mean
-    unobserved:
-      cosine_mean
-  factors:
-    W:
-      gram_cosine_mean
-      gram_cosine_baseline_corrected_mean
-      projection_mean
-    X:
-      gram_cosine_mean
-      gram_cosine_baseline_corrected_mean
-      projection_mean
-  replica:
-    W:
-      gram_cosine_mean
-      gram_cosine_baseline_corrected_mean
-  heatmap:
-    matrix
-    metric
-```
-
-在兼容层存在之前，不直接改当前 key。
+当前 canonical 名称是机器语义名，不是最终论文图例名。需要用户最终选择显示名称的内容集中记录在 `docs/semantic_review_queue.md`。

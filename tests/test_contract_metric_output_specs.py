@@ -6,6 +6,8 @@ from matrix_factorization.core.contracts import (
     get_algorithm_specs,
     get_algorithm_metric_keys,
     get_algorithm_metric_semantics,
+    get_metric_schema,
+    get_metric_semantic_classes,
     get_metric_specs,
     get_output_specs,
 )
@@ -36,6 +38,20 @@ def test_metric_specs_have_semantic_metadata():
         assert spec.relation
         assert spec.normalization
         assert spec.physical_meaning
+        assert spec.canonical_key
+        assert spec.equivalence_class
+        assert spec.result_role
+        assert spec.order_parameter_status
+
+
+def test_metric_semantic_classes_cover_active_metric_specs():
+    classes = get_metric_semantic_classes()
+    specs = get_metric_specs()
+
+    for spec in specs.values():
+        assert spec.canonical_key in classes
+        assert spec.key in get_algorithm_specs()[spec.compatible_algorithms[0]].produced_metrics
+        assert set(spec.produces).intersection(classes[spec.canonical_key].legacy_aliases)
 
 
 def test_metric_specs_and_algorithm_specs_are_bidirectionally_consistent():
@@ -131,6 +147,23 @@ def test_flat_metric_semantics_keep_qy_algorithm_context():
     assert dense_semantics["space"] == "matrix"
     assert tensor_semantics["space"] == "tensor"
     assert dense_semantics["metric_spec"] != tensor_semantics["metric_spec"]
+    assert dense_semantics["canonical_key"] == "matrix.full.teacher_student.output_cosine"
+    assert tensor_semantics["canonical_key"] == "tensor.full.teacher_student.cp_tensor_cosine"
+
+
+def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
+    dense_schema = get_metric_schema("bigamp", metric_keys=["Q_Y_mean", "MSE"])
+    tensor_schema = get_metric_schema("bigamp_tensor_parallel", metric_keys=["Q_Y_mean"])
+
+    assert dense_schema["schema_version"] == 2
+    assert dense_schema["compatibility"]["legacy_flat_keys_preserved"] is True
+    assert dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "matrix.full.teacher_student.output_cosine"
+    assert dense_schema["flat_key_index"]["MSE"][0]["canonical_key"] == "matrix.full.teacher_student.reconstruction_mse"
+    assert tensor_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "tensor.full.teacher_student.cp_tensor_cosine"
+    assert (
+        dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"]
+        != tensor_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"]
+    )
 
 
 def test_metric_spec_adapter_validates_legacy_flat_payloads():

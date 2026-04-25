@@ -89,6 +89,11 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]
+    assert metrics["metric_schema"]["schema_version"] == 2
+    assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
+    assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "matrix.full.teacher_student.output_cosine"
+    assert metrics["metric_schema"]["flat_key_index"]["MSE"][0]["canonical_key"] == "matrix.full.teacher_student.reconstruction_mse"
+    assert "matrix.full.teacher_student.output_cosine" in metrics["metric_schema"]["semantic_classes"]
     assert metrics["metric_semantics"]["Q_Y_mean"][0]["space"] == "matrix"
     assert metrics["metric_contracts"]["0.5"]["source"] == "runner_matrix_metrics"
     assert "matrix.full.Q_Y" in metrics["metric_contracts"]["0.5"]["metric_specs"]
