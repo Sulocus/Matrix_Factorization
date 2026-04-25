@@ -2,6 +2,14 @@
 Test spreading with damping = 1.0 (fully accept new values) to see if convergence improves.
 """
 
+import pytest
+
+pytest.skip(
+    "legacy local-GPU debug script: imports removed config/parallel modules; "
+    "kept as historical damping diagnostic, not default pytest",
+    allow_module_level=True,
+)
+
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 

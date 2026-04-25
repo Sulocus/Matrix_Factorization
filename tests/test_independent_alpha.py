@@ -2,6 +2,14 @@
 Test training each alpha INDEPENDENTLY (not parallel) to rule out cross-alpha interference.
 """
 
+import pytest
+
+pytest.skip(
+    "legacy local-GPU debug script: imports removed spreading_parallel module; "
+    "kept as historical alpha-independence diagnostic, not default pytest",
+    allow_module_level=True,
+)
+
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 

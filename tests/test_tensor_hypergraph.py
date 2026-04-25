@@ -21,8 +21,8 @@ class TestGenerateTensorHypergraph:
         assert isinstance(hg, TensorHypergraph)
         assert hg.order == 3
         assert len(hg.indices) == 3
-        # C = alpha * N = 2 * 10 = 20
-        assert hg.C == 20
+        # Current tensor contract: C = alpha * DoF, DoF = sum(dims) * M.
+        assert hg.C == int(alpha * sum(dims) * M)
         # Indices should be in valid range
         for d in range(3):
             assert (hg.indices[d] >= 0).all()

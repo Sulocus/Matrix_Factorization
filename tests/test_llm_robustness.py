@@ -16,6 +16,14 @@ Each test validates:
 3. Layer 3: Boundary checking (did it generate warnings?)
 """
 
+import pytest
+
+pytest.skip(
+    "legacy ConfigAdvisor suite: matrix_factorization.core.llm_advisor is not "
+    "part of the active package",
+    allow_module_level=True,
+)
+
 import sys
 import os
 import time

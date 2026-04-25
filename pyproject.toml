@@ -30,6 +30,16 @@ dev = [
 [project.scripts]
 mf = "matrix_factorization.cli:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "docs",
+    "runs",
+    "results",
+    "artifacts",
+    "src/matrix_factorization/Replica_results",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/matrix_factorization"]
 

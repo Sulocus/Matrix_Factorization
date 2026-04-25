@@ -7,6 +7,14 @@ mathematically equivalent results to the serial version.
 Expected: Q_Y difference < 1e-5
 """
 
+import pytest
+
+pytest.skip(
+    "local-GPU tensor parity diagnostic: uses legacy src.* imports and long runs; "
+    "contract parity is covered by tests/test_tensor_parity_contract.py",
+    allow_module_level=True,
+)
+
 import sys
 import os
 

@@ -1,7 +1,13 @@
 
+import pytest
 import torch
 import logging
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import BiGAMPTensorSpreadingParallel
+
+pytest.skip(
+    "local-GPU tensor Onsager diagnostic: large direct algorithm run, not default pytest",
+    allow_module_level=True,
+)
 
 logging.basicConfig(level=logging.WARN)
 

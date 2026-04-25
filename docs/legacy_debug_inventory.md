@@ -70,6 +70,22 @@ tests/verification/
 - hard-coded 的旧 module name 或 registry key；
 - 运行时间长或依赖 GPU，不适合放入常规 test execution。
 
+## Legacy / Local-GPU pytest modules
+
+这些测试文件保留为历史诊断或本地 GPU 调查，但已经在模块级 `pytest.skip(..., allow_module_level=True)`，不属于默认 `python -m pytest`：
+
+- `tests/test_clamp.py`（旧 `spreading_parallel` variance clamp 调查）
+- `tests/test_damping.py`（旧 damping sweep 调查）
+- `tests/test_independent_alpha.py`（旧 independent alpha 调查）
+- `tests/test_llm_robustness.py`（已移除 ConfigAdvisor / `llm_advisor`）
+- `tests/test_scientific_pressure.py`（已移除 ConfigAdvisor / `llm_advisor`）
+- `tests/test_random_spreading.py`（legacy random_spreading verification，依赖旧 helper export）
+- `tests/test_supergraph.py`（旧 supergraph parallel suite，依赖已移除 `spreading_parallel`）
+- `tests/test_onsager_impact.py`（大尺寸 tensor Onsager 本地 GPU 诊断）
+- `tests/test_tensor_parallel_verification.py`（旧 serial/parallel parity 长跑诊断，使用 `src.*` 导入）
+
+默认 pytest 边界在 `pyproject.toml` 的 `[tool.pytest.ini_options]` 中声明：只收集 `tests/`，不收集 `docs/`、`runs/`、`results/`、`artifacts/`。
+
 机器可读清点表在 `src/matrix_factorization/core/contracts.py`：
 
 - `get_algorithm_source_inventory()` 覆盖 `modules/algorithms/`。

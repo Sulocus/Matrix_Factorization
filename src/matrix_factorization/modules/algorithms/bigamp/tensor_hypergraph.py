@@ -23,7 +23,7 @@ def generate_tensor_hypergraph(
     """
     Generate random n-uniform hypergraph.
     
-    The number of hyperedges C is determined by α (average degree):
+    The number of hyperedges C is determined by α as a DoF-scaled density:
     - C = α * (sum(N_i) * M)
     
     This ensures the number of observations scales linearly with the number of 
@@ -38,12 +38,6 @@ def generate_tensor_hypergraph(
         
     Returns:
         TensorHypergraph with random hyperedges
-        
-    Example:
-        >>> dims = (50, 50, 50)
-        >>> hg = generate_tensor_hypergraph(dims, alpha=2.0, M=20, seed=42, device='cpu')
-        >>> hg.C  # = 2.0 * 50 = 100 hyperedges
-        100
     """
     n = len(dims)
     

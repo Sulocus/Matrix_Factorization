@@ -14,6 +14,8 @@
 - Parallel memory docs：记录当前并行/显存 contract 和高风险 review queue。
 - Tensor execution metadata：tensor serial/parallel result metadata 记录 dtype/compile、internal alpha batch plan、probe 状态。
 - Tensor parallel metrics-only 主路径：`train_batch_result()` 不再分配 legacy placeholder `W_all/X_all`，旧 tuple API 仍保留。
+- Parallel memory contract tests：`tests/test_parallel_memory_contract.py` 强制检查 metadata-only、seed partition review、tensor batch metadata schema。
+- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `165 passed, 9 skipped`。
 
 ## 本轮继续推进
 
@@ -26,6 +28,7 @@
   - execution metadata 已接入 tensor result。
   - internal alpha batch plan 已接入 tensor result。
   - metrics-only tensor path 已避免无用 placeholder factor 分配。
+  - Resource/Batching 与 tensor parity 的显存约束已加入测试。
 
 ## 尚未完成
 

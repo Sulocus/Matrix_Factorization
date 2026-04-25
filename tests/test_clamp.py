@@ -2,6 +2,14 @@
 Test with inline variance monitoring to confirm clamp is applied.
 """
 
+import pytest
+
+pytest.skip(
+    "legacy local-GPU debug script: imports removed spreading_parallel module; "
+    "kept as historical diagnostic, not default pytest",
+    allow_module_level=True,
+)
+
 import sys
 sys.path.insert(0, '/home/sucia/Sparse-Matrix')
 

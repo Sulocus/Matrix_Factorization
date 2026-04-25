@@ -15,6 +15,14 @@ Key improvements over previous tests:
 4. Scientific validity for all edge cases
 """
 
+import pytest
+
+pytest.skip(
+    "legacy ConfigAdvisor suite: matrix_factorization.core.llm_advisor is not "
+    "part of the active package",
+    allow_module_level=True,
+)
+
 import sys
 import os
 import time
