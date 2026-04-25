@@ -300,6 +300,82 @@ output:
     assert any("algorithm_params.damping 在当前 algorithm/scan 路由下不会生效" in warning for warning in plan.warnings)
 
 
+def test_parameter_chain_marks_resource_params_inactive_when_algorithm_does_not_consume_them(tmp_path):
+    config_path = tmp_path / "inactive_resource_params.yaml"
+    config_path.write_text(
+        """
+tensor_order: 2
+algorithm: 1
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.0
+  step: 1.0
+algorithm_params:
+  damping: 0.5
+  use_compile: false
+  use_bf16: false
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+
+    assert config.algorithm_key == "bigamp"
+    assert chain["algorithm_params.use_compile"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.use_bf16"]["active_in_current_plan"] is False
+    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "inactive_current_route"
+    assert any("algorithm_params.use_bf16 在当前 algorithm/scan 路由下不会生效" in warning for warning in plan.warnings)
+
+
+def test_parameter_chain_marks_compile_inactive_for_agd(tmp_path):
+    config_path = tmp_path / "inactive_agd_compile.yaml"
+    config_path.write_text(
+        """
+tensor_order: 2
+algorithm: 3
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+  max_epochs: 3
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.0
+  step: 1.0
+algorithm_params:
+  learning_rate: 0.01
+  use_compile: false
+  use_bf16: false
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+
+    assert config.algorithm_key == "agd"
+    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.use_compile"]["active_in_current_plan"] is False
+    assert chain["algorithm_params.use_compile"]["consumption_status"] == "inactive_current_route"
+
+
 def test_strict_mode_rejects_inactive_current_route_parameters(tmp_path):
     config_path = tmp_path / "strict_inactive_algorithm_param.yaml"
     config_path.write_text(

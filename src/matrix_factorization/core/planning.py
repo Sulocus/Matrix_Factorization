@@ -683,6 +683,14 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     }:
         return algorithm_key in {"bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"}
     if path in {
+        "algorithm_params.use_compile",
+    }:
+        return algorithm_key in {"bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
+    if path in {
+        "algorithm_params.use_bf16",
+    }:
+        return algorithm_key in {"agd", "bigamp_spreading", "bigamp_tensor_parallel"}
+    if path in {
         "algorithm_params.compile_fallback_policy",
     }:
         return algorithm_key in {"bigamp_spreading", "bigamp_tensor_parallel"}
