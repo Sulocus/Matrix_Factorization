@@ -1,8 +1,10 @@
 
 import torch
 import sys
+import os
 
-path = "smf/Replica_results/alpha_scan/20251225_1848_bigamp_spreading_standard_200x200_M50/results.pt"
+base_dir = os.environ.get("MF_REPLICA_RESULTS", "src/matrix_factorization/Replica_results")
+path = f"{base_dir}/alpha_scan/20251225_1848_bigamp_spreading_standard_200x200_M50/results.pt"
 try:
     data = torch.load(path)
     print("Keys:", data.keys())

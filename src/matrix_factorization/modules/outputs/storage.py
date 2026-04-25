@@ -23,10 +23,12 @@ class ResultStorage(OutputBase):
     """
     Handles saving experiment results.
 
-    Saves:
-    - config.yaml: Complete configuration
-    - metrics.json: Computed metrics
-    - raw_data.npz: Raw numpy arrays (optional)
+    Saves the Codex-web run layout:
+    - manifest.json: artifact index and run status
+    - config.yaml/config.json: configuration
+    - metrics.json: JSON-first metrics
+    - events.jsonl: lightweight run event stream
+    - artifacts/raw_data.npz: optional raw arrays
     """
 
     def __init__(self, config: Config, output_dir: Path = None):
@@ -37,11 +39,15 @@ class ResultStorage(OutputBase):
             time_suffix = datetime.now().strftime("%m%d_%H%M")
             m = config.matrix
             dir_name = f"{config.algorithm_key}_{config.graph_key}_{m.N1}x{m.N2}_M{m.M}_{time_suffix}"
-            output_dir = Path("smf/results") / dir_name
+            output_dir = Path("runs") / dir_name
 
         super().__init__(config, output_dir)
         self.plots_dir = output_dir / "plots"
+        self.artifacts_dir = output_dir / "artifacts"
+        self.checkpoints_dir = output_dir / "checkpoints"
         self.plots_dir.mkdir(parents=True, exist_ok=True)
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     def save(
         self,
@@ -60,8 +66,16 @@ class ResultStorage(OutputBase):
         Returns:
             Path to output directory
         """
+        # ExperimentResult is the canonical producer; delegate to keep one schema.
+        if hasattr(results, 'save') and hasattr(results, 'to_metrics_dict'):
+            results.save(self.output_dir, save_tensors=metadata.get('save_tensors', True) if metadata else True)
+            return self.output_dir
+
         # Save config
-        self.config.to_yaml(self.output_dir / "config.yaml")
+        if hasattr(self.config, 'to_yaml'):
+            self.config.to_yaml(self.output_dir / "config.yaml")
+        if hasattr(self.config, 'save'):
+            self.config.save(self.output_dir / "config.json")
 
         # Prepare metrics for JSON
         # Handle ExperimentResult object
@@ -75,11 +89,15 @@ class ResultStorage(OutputBase):
             # Try to serialize whatever it is, or empty
             metrics_dict = {}
 
+        config_dict = self.config.to_dict() if hasattr(self.config, 'to_dict') else {}
+        timestamp = datetime.now().isoformat()
         metrics_data = {
-            "config": self.config.to_dict(),
+            "schema_version": 1,
+            "config": config_dict,
+            "metrics": metrics_dict,
             "results": metrics_dict,
             "metadata": metadata or {},
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timestamp,
         }
 
         # Save metrics JSON
@@ -89,8 +107,38 @@ class ResultStorage(OutputBase):
 
         # Save raw data if provided
         if raw_data:
-            npz_path = self.output_dir / "raw_data.npz"
+            npz_path = self.artifacts_dir / "raw_data.npz"
             np.savez_compressed(npz_path, **raw_data)
+
+        with open(self.output_dir / "events.jsonl", "a") as f:
+            f.write(json.dumps({
+                "type": "run_saved",
+                "timestamp": timestamp,
+                "status": "complete",
+            }) + "\n")
+
+        manifest = {
+            "schema_version": 1,
+            "run_id": self.output_dir.name,
+            "status": "complete",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "config_summary": {
+                "algorithm_key": config_dict.get("algorithm_key"),
+                "graph_key": config_dict.get("graph_key"),
+                "matrix": config_dict.get("matrix"),
+            },
+            "artifacts": [
+                {"path": "config.yaml", "kind": "yaml"},
+                {"path": "config.json", "kind": "json"},
+                {"path": "metrics.json", "kind": "json"},
+                {"path": "events.jsonl", "kind": "jsonl"},
+            ],
+        }
+        if raw_data:
+            manifest["artifacts"].append({"path": "artifacts/raw_data.npz", "kind": "npz"})
+        with open(self.output_dir / "manifest.json", "w") as f:
+            json.dump(manifest, f, indent=2, default=self._json_serializer)
 
         return self.output_dir
 
@@ -102,23 +150,23 @@ class ResultStorage(OutputBase):
     ) -> Path:
         """
         Save raw data for a specific alpha batch (incremental saving).
-        
+
         Optimizations:
         1. Auto-converts to float16 to save space.
         2. Compresses using npz.
         3. Saves to 'raw_data' subdirectory.
-        
+
         Args:
             alpha: Current alpha value
             raw_data: Dictionary of torch tensors (W_s, X_s, etc.)
             metadata: Optional metadata dict
-            
+
         Returns:
             Path to saved file
         """
-        raw_dir = self.output_dir / "raw_data"
+        raw_dir = self.artifacts_dir / "raw_data"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Prepare data for saving
         # Convert tensors to numpy float16
         save_dict = {}
@@ -130,14 +178,14 @@ class ResultStorage(OutputBase):
                 save_dict[k] = v.astype(np.float16)
             else:
                 save_dict[k] = v
-                
+
         if metadata:
             save_dict['metadata'] = metadata
-            
+
         # Format filename with fixed precision for sorting
         filename = f"alpha_{alpha:.6f}.npz"
         file_path = raw_dir / filename
-        
+
         np.savez_compressed(file_path, **save_dict)
         return file_path
 
@@ -181,7 +229,9 @@ class ResultStorage(OutputBase):
             data['timestamp'] = metrics_data.get('timestamp')
 
         # Load raw data if exists
-        npz_path = result_dir / "raw_data.npz"
+        npz_path = result_dir / "artifacts" / "raw_data.npz"
+        if not npz_path.exists():
+            npz_path = result_dir / "raw_data.npz"
         if npz_path.exists():
             data['raw_data'] = dict(np.load(npz_path))
 
@@ -197,7 +247,8 @@ def list_results(results_dir: Path = None) -> list[Dict[str, Any]]:
     List all saved results from multiple directories.
 
     Scans:
-    - smf/results/ (new framework)
+    - runs/ (Codex-web run schema)
+    - smf/results/ (legacy framework)
     - Result/ (legacy: standard baseline)
     - ResultNo4/ (legacy: loop-free experiments)
     - Result_compareNM/ (legacy: size scaling)
@@ -220,7 +271,8 @@ def list_results(results_dir: Path = None) -> list[Dict[str, Any]]:
         # Scan all known result directories
         base_path = Path(".")
         known_dirs = [
-            ("smf/results", None),           # New framework - infer from subdir name
+            ("runs", None),                  # Codex-web run schema
+            ("smf/results", None),           # Legacy framework - infer from subdir name
             ("Result", "overlap_metrics"),    # Legacy baseline
             ("ResultNo4", "loop_free"),       # Legacy loop-free
             ("Result_compareNM", "size_scaling"),  # Legacy size scaling
@@ -306,7 +358,7 @@ def list_results(results_dir: Path = None) -> list[Dict[str, Any]]:
                     exp_type = "init_scale"
 
                 # Determine source for display
-                source = "new" if "smf/results" in str(results_dir) else "legacy"
+                source = "new" if any(name in str(results_dir) for name in ["smf/results", "runs"]) else "legacy"
 
                 results.append({
                     'path': subdir,

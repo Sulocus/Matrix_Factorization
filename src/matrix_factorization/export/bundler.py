@@ -123,7 +123,7 @@ if DEVICE.type == 'cuda':
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-RESULT_DIR = Path(__file__).parent.parent / "results/standard" / f"{N1}_{N2}_{M}"
+RESULT_DIR = Path(__file__).parent.parent / "runs/standard" / f"{N1}_{N2}_{M}"
 
 
 # ============================================================
@@ -450,7 +450,7 @@ if DEVICE.type == 'cuda':
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-RESULT_DIR = Path(__file__).parent.parent / "results/standard" / f"{N1}_{N2}_{M}"
+RESULT_DIR = Path(__file__).parent.parent / "runs/standard" / f"{N1}_{N2}_{M}"
 
 
 # ============================================================

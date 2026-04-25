@@ -16,8 +16,24 @@ venv/
 
 # Experiment Results
 results/
+Replica_results/
+runs/
+artifacts/
+*.checkpoint.pt
 .checkpoint.pt
+smf/.checkpoint.pt
+smf/results/
+smf/test_output/
+src/matrix_factorization/Replica_results/
+
+# Large local artifacts
+*.pt
+!tests/fixtures/**/*.pt
+!configs/**/*.pt
+
+# Local debugging entrypoints
+debug_*.py
+verify_*.py
 
 # System
 .DS_Store
-src/matrix_factorization/Replica_results/

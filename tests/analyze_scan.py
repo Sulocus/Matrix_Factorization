@@ -68,7 +68,7 @@ def analyze(path):
         print(f"{alpha:<10.2f} {q_y:<10.4f} {q_std:<10.4f} {q_full:<10}")
 
 if __name__ == "__main__":
-    path = "results/alpha_scan/20260123_1119_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/results.pt"
+    path = "runs/_latest/artifacts/results.pt"
     if len(sys.argv) > 1:
         path = sys.argv[1]
     

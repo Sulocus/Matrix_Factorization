@@ -99,7 +99,7 @@ class PlanExecutor:
 
         # Create comparison output directory
         timestamp = datetime.now().strftime("%m%d_%H%M")
-        comparison_dir = Path("smf/results") / f"comparison_{timestamp}"
+        comparison_dir = Path("runs") / f"comparison_{timestamp}"
         comparison_dir.mkdir(parents=True, exist_ok=True)
 
         # Execute each step

@@ -27,7 +27,7 @@ class ResultComparison:
     """
 
     def __init__(self, output_dir: Path = None):
-        self.output_dir = output_dir or Path("smf/results/comparisons")
+        self.output_dir = output_dir or Path("runs/comparisons")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def plot_qy_comparison(

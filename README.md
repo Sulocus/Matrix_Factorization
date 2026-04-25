@@ -1,47 +1,55 @@
-# Matrix Factorization (MF)
+# Matrix Factorization
 
-A Teacher-Student masked matrix factorization framework with GPU acceleration.
+Teacher-student matrix and tensor factorization experiments with PyTorch
+implementations of AGD, BiG-AMP, matrix spreading, and tensor spreading variants.
 
-## Features
-
-- **BiG-AMP Spreading Algorithm**: Advanced message passing algorithm for matrix factorization
-- **GPU Acceleration**: Full CUDA support with PyTorch backend
-- **Parallel Execution**: Automatic batching and parallelization across alpha values
-- **Multiple Teacher Types**: Standard, Orthogonal, Scaled Variance, Random Spreading
-
-## Installation
+## Setup
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
+```
+
+## Fast Validation
+
+```bash
+python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/smoke/test_registry_imports.py
 ```
 
 ## Usage
 
 ```bash
-# Run with default config
-mf run
+# Small Codex/web-safe smoke config
+mf configs/smoke/matrix_spreading_smoke.yaml
 
-# Run with custom config
-mf run --config MF/config.yaml
-
-# Show available presets
-mf presets
+# Local GPU research preset
+mf configs/local_gpu/tensor_local_gpu.yaml --output-dir runs
 ```
+
+`mf` writes new runs to ignored `runs/{run_id}/` directories by default.
 
 ## Project Structure
 
-```
+```text
 Matrix_Factorization/
-├── MF/                     # Main package
-│   ├── core/               # Core execution engine
-│   ├── modules/            # Algorithms, teachers, metrics, outputs
-│   ├── presets/            # Configuration presets
-│   └── ui/                 # User interface components
-├── MF_docs/                # Documentation
-├── tests/                  # Test suite
-└── scripts/                # Utility scripts
+  src/matrix_factorization/   # Installable package and CLI
+  configs/                    # Tracked smoke and local-GPU configs
+  tests/                      # Unit, smoke, verification, and research tests
+  scripts/                    # Experiments, analysis, debug, verification
+  docs/                       # Theory, reports, figures, reference code
+  runs/                       # Ignored runtime output
+  artifacts/                  # Ignored optional large data
 ```
 
-## License
+## Artifact Policy
 
-MIT
+Large generated tensors, checkpoints, heatmap batches, and historical experiment
+directories are not source code. Keep them in ignored `runs/`, `results/`,
+`artifacts/`, or `src/matrix_factorization/Replica_results/`, and record
+externally stored data in `docs/artifacts_manifest.md` when needed.
+
+Codex web should be used for code review, lightweight tests, and versioned
+changes. High-memory scientific validation should run on the local GPU.
+
+## More
+
+See `docs/CODEX_WEB.md` for the Codex web workflow and run artifact schema.

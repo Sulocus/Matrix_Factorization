@@ -6,7 +6,7 @@ Uses torch.save to store:
 - Completed alphas list
 - Results (metrics only, no tensors for performance)
 
-Fixed path: smf/.checkpoint.pt
+Default path: runs/.checkpoint.pt
 """
 
 import torch
@@ -18,8 +18,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Fixed global checkpoint path
-CHECKPOINT_PATH = Path("smf/.checkpoint.pt")
+# Default fallback checkpoint path. CLI runs should pass a run-scoped path.
+CHECKPOINT_PATH = Path("runs/.checkpoint.pt")
 
 
 @dataclass
@@ -86,7 +86,7 @@ class CheckpointManager:
     """
     
     def __init__(self, path: Path = CHECKPOINT_PATH):
-        self.path = path
+        self.path = Path(path)
         self._data: Optional[CheckpointData] = None
         # Async IO Worker
         # Max workers = 1 ensures sequential writes (no race on file access)

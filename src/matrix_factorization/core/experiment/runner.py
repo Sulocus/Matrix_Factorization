@@ -356,8 +356,11 @@ class ExperimentRunner:
         # No override needed - use the default plan from ParallelCoordinator
 
         
-        # Initialize checkpoint manager (fixed global path: smf/.checkpoint.pt)
-        ckpt_mgr = CheckpointManager()
+        # Initialize checkpoint manager. CLI/web runs pass a run-scoped path.
+        checkpoint_path = None
+        if output_options:
+            checkpoint_path = output_options.get('checkpoint_path')
+        ckpt_mgr = CheckpointManager(Path(checkpoint_path)) if checkpoint_path else CheckpointManager()
         
         # Prepare config dict for checkpoint
         config_dict = config_to_dict(config)

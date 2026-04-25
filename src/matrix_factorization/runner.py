@@ -53,7 +53,7 @@ def run_experiment(
             if plots_config and getattr(plots_config, 'include_summary_plot', True):
                 try:
                     from matrix_factorization.modules.outputs.plotting import ResultPlotter
-                    plotter = ResultPlotter(config, result_path.parent)
+                    plotter = ResultPlotter(config, result_path)
                     # Convert result to dict format for plotting
                     results_dict = {}
                     if hasattr(result, 'results'):

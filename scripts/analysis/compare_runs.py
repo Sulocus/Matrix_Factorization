@@ -5,9 +5,14 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 
+REPLICA_RESULTS_DIR = os.environ.get(
+    "MF_REPLICA_RESULTS",
+    "src/matrix_factorization/Replica_results",
+)
+
 def compare(dir1, dir2):
-    p1 = f"smf/Replica_results/alpha_scan/{dir1}/results.pt"
-    p2 = f"smf/Replica_results/alpha_scan/{dir2}/results.pt"
+    p1 = f"{REPLICA_RESULTS_DIR}/alpha_scan/{dir1}/results.pt"
+    p2 = f"{REPLICA_RESULTS_DIR}/alpha_scan/{dir2}/results.pt"
     
     print(f"Loading Run 1: {dir1}")
     try:

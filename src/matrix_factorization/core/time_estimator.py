@@ -18,7 +18,7 @@ class TimeEstimator:
     DEFAULT_TIME_PER_STEP_PER_ELEMENT = 1e-9  # very rough estimate
 
     def __init__(self, results_dir: Path = None):
-        self.results_dir = results_dir or Path("smf/results")
+        self.results_dir = results_dir or Path("runs")
         self._history_cache: List[Dict] = None
 
     def _load_history(self) -> List[Dict]:

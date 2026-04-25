@@ -22,7 +22,7 @@ Usage:
     
     runner = ExperimentRunner()
     result = runner.run(config)
-    result.save('results/my_experiment/')
+    result.save('runs/my_experiment/')
 """
 
 from .config import (

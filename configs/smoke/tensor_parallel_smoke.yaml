@@ -1,0 +1,41 @@
+# Minimal tensor-mode smoke run. Keep this tiny for cloud validation.
+tensor_order: 3
+algorithm: bigamp_tensor
+teacher: standard
+scan_mode: alpha
+
+matrix:
+  N1: 8
+  N2: 8
+  M: 2
+
+alpha_scan:
+  start: 0.0
+  stop: 0.2
+  step: 0.2
+
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+  seed: 42
+
+algorithm_params:
+  damping: 0.2
+  noise_var: 1.0e-5
+  use_compile: false
+  use_bf16: false
+  init_mode: random
+
+spreading:
+  f_distribution: rademacher
+  onsager_correction: false
+  chunk_size: 1024
+
+teacher_config:
+  init_distribution: gaussian
+
+output:
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  plots: []
