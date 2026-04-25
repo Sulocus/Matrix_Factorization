@@ -15,7 +15,7 @@ Key features:
 
 import math
 import torch
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
@@ -247,6 +247,64 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Metrics stored for runner retrieval
         
         return W_all, X_all
+
+    def train_batch_result(
+        self,
+        *,
+        algorithm_key: str,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: Optional[torch.Tensor],
+        alpha_values: List[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int, Optional[Dict]], None]] = None,
+        **kwargs: Any,
+    ):
+        """Return tensor metrics through the formal AlgorithmResult contract.
+
+        The serial tensor path currently does not expose matrix-shaped W/X
+        factors that are meaningful to the matrix result schema. Its formal
+        result is therefore metrics-only; train_batch_alphas is still the
+        numerical implementation.
+        """
+        call_kwargs = self._filter_train_batch_kwargs({
+            "W_teacher": W_teacher,
+            "X_teacher": X_teacher,
+            "Y_teacher": Y_teacher,
+            "masks": masks,
+            "alpha_values": alpha_values,
+            "seed": seed,
+            "progress_callback": progress_callback,
+            "step_callback": step_callback,
+            **kwargs,
+        })
+        self.train_batch_alphas(**call_kwargs)
+        return self._metrics_only_algorithm_result(algorithm_key)
+
+    def _metrics_only_algorithm_result(self, algorithm_key: str):
+        from matrix_factorization.core.contracts import AlgorithmResult
+        from matrix_factorization.modules.registry import get_algorithm_spec
+
+        spec = get_algorithm_spec(algorithm_key)
+        metrics_by_alpha = {
+            float(alpha): dict(metrics)
+            for alpha, metrics in getattr(self, "_batch_metrics", {}).items()
+        }
+        artifacts = {}
+        if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
+            artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+        return AlgorithmResult.from_metrics_only(
+            metrics_by_alpha=metrics_by_alpha,
+            artifacts=artifacts,
+            metadata={
+                "algorithm_key": algorithm_key,
+                "result_contract": spec.result_contract,
+                "result_source": "tensor_algorithm_train_batch_result",
+                "matrix_factors_available": False,
+            },
+        )
     
     def supports_batch_training(self) -> bool:
         """Tensor spreading does support batch training across alphas."""

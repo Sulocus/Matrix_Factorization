@@ -25,8 +25,8 @@ class Checkpoint:
     2. Error recovery: resume from last good state
     """
     step: int
-    W_state: torch.Tensor  # (S, N1, M) or (A, S, N1, M)
-    X_state: torch.Tensor  # (S, M, N2) or (A, S, M, N2)
+    W_state: Optional[torch.Tensor]  # (S, N1, M) or (A, S, N1, M)
+    X_state: Optional[torch.Tensor]  # (S, M, N2) or (A, S, M, N2)
 
     # Optional variance states (BiGAMP)
     W_var: Optional[torch.Tensor] = None
@@ -93,6 +93,9 @@ class SingleRunResult:
     # Optional: convergence history
     history: Optional[List[Dict[str, float]]] = None
 
+    # MetricSpec coverage for this flat metric payload
+    metric_contract: Dict[str, Any] = field(default_factory=dict)
+
     # Timing
     duration_seconds: float = 0.0
 
@@ -105,6 +108,8 @@ class SingleRunResult:
         }
         if self.history:
             d['history'] = self.history
+        if self.metric_contract:
+            d['metric_contract'] = self.metric_contract
         if include_tensors and self.W_students is not None:
             d['has_tensors'] = True
         return d
@@ -135,6 +140,7 @@ class ExperimentMetadata:
     smf_version: str = "1.0.0"
     python_version: str = ""
     torch_version: str = ""
+    contract: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def create_now(cls) -> 'ExperimentMetadata':
@@ -269,6 +275,64 @@ class ExperimentResult:
             for scan_value, result in self._sorted_result_items()
         }
 
+    def metric_contracts(self) -> Dict[str, Dict[str, Any]]:
+        """MetricSpec coverage for each scan value."""
+        contracts = {}
+        algorithm_key = getattr(self.config, "algorithm_key", None)
+        for scan_value, result in self._sorted_result_items():
+            if result.metric_contract:
+                contracts[str(scan_value)] = result.metric_contract
+                continue
+            if not algorithm_key:
+                continue
+            try:
+                from matrix_factorization.modules.metrics.spec_adapter import MetricSpecAdapter
+                contracts[str(scan_value)] = MetricSpecAdapter.describe_payload(
+                    algorithm_key,
+                    result.metrics,
+                    source="result_schema_fallback",
+                )
+            except Exception:
+                continue
+        return contracts
+
+    def metric_semantics(self) -> Dict[str, List[Dict[str, str]]]:
+        """Semantic metadata for legacy flat metric keys in this result."""
+        try:
+            from matrix_factorization.core.contracts import get_algorithm_metric_semantics
+        except ImportError:
+            return {}
+        algorithm_key = getattr(self.config, "algorithm_key", None)
+        return get_algorithm_metric_semantics(algorithm_key) if algorithm_key else {}
+
+    def factor_payload_contract(self) -> Dict[str, Any]:
+        """Describe which factor payloads are real and serialized.
+
+        Tensor metrics-only algorithms can legitimately have no W/X payload.
+        This metadata keeps downstream tools from treating missing factors as
+        an accidental empty tensor.
+        """
+        has_w = any(result.W_students is not None for result in self.results.values())
+        has_x = any(result.X_students is not None for result in self.results.values())
+        missing = []
+        if not has_w:
+            missing.append("W_students")
+        if not has_x:
+            missing.append("X_students")
+        algorithm_key = getattr(self.config, "algorithm_key", None)
+        return {
+            "algorithm_key": algorithm_key,
+            "matrix_factors": {
+                "W_students": has_w,
+                "X_students": has_x,
+            },
+            "tensor_factors": {
+                "serialized": False,
+                "reason": "not_exposed_by_current_result_schema",
+            },
+            "unavailable_fields": missing,
+        }
+
     def to_artifact_manifest(self, run_dir: Path) -> Dict[str, Any]:
         """Build the web-friendly manifest for a saved run directory."""
         run_dir = Path(run_dir)
@@ -277,6 +341,7 @@ class ExperimentResult:
             "config.json",
             "metadata.json",
             "metrics.json",
+            "output_contract.json",
             "events.jsonl",
             "artifacts/results.pt",
             "artifacts/raw_data.npz",
@@ -377,8 +442,12 @@ class ExperimentResult:
             "schema_version": 1,
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
+            "contract": self.metadata.contract,
+            "factor_payload_contract": self.factor_payload_contract(),
             "scan_dimension": self.scan_dimension,
             "scan_values": [str(v) for v in self.scan_values],
+            "metric_semantics": self.metric_semantics(),
+            "metric_contracts": self.metric_contracts(),
             "metrics": metrics_dict,
             "results": self.to_results_dict(),
             "generated_at": datetime.now().isoformat(),
@@ -407,6 +476,7 @@ class ExperimentResult:
             results_data = {
                 'alpha_values': [float(v) for v in sorted_values],
                 'metrics': metrics_dict,
+                'factor_payload_contract': self.factor_payload_contract(),
             }
 
             if all_W:
@@ -442,17 +512,40 @@ class ExperimentResult:
 
         # Check if user has custom plots configured - if so, skip default plots
         has_custom_plots = output_options and output_options.get('plots')
+        output_contract_check = self._validate_output_contracts_before_plots(output_options or {}, path)
+        self._write_json(path / 'output_contract.json', output_contract_check.to_dict())
 
         if not has_custom_plots:
             # Extract metrics for plotting
             x_values = [float(v) for v in sorted_values]
-            q_w_means = [self.results[v].metrics.get('Q_W_mean', 0) for v in sorted_values]
-            q_y_means = [self.results[v].metrics.get('Q_Y_mean', 0) for v in sorted_values]
+            metric_keys = self._available_metric_keys()
+            q_y_key = self._first_available_metric(
+                metric_keys,
+                ["Q_Y_mean", "Q_Y_observed_mean", "physical_overlap_Y_mean"],
+            )
+            if q_y_key is None:
+                raise ValueError(
+                    "scalar_curves output requires one of "
+                    "['Q_Y_mean', 'Q_Y_observed_mean', 'physical_overlap_Y_mean']; "
+                    f"available metrics: {sorted(metric_keys)}"
+                )
+            q_w_key = self._first_available_metric(metric_keys, ["Q_W_mean", "Q_W_prime_mean"])
+            q_y_means = self._metric_series(sorted_values, q_y_key)
+            q_w_means = self._metric_series(sorted_values, q_w_key) if q_w_key else []
 
             # Plot Q_W and Q_Y evolution
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(x_values, q_w_means, 'r-', label='Q_W', linewidth=2, marker='o', markersize=3)
-            ax.plot(x_values, q_y_means, 'g-', label='Q_Y', linewidth=2, marker='s', markersize=3)
+            if q_w_key:
+                ax.plot(
+                    x_values, q_w_means, 'r-',
+                    label=self._plot_label_for_metric(q_w_key),
+                    linewidth=2, marker='o', markersize=3,
+                )
+            ax.plot(
+                x_values, q_y_means, 'g-',
+                label=self._plot_label_for_metric(q_y_key),
+                linewidth=2, marker='s', markersize=3,
+            )
             ax.set_xlabel(x_label)
             ax.set_ylabel('Overlap')
             ax.set_title(f'{self.experiment_id}')
@@ -462,42 +555,38 @@ class ExperimentResult:
             plt.savefig(plots_dir / 'qy_evolution.png', dpi=150, bbox_inches='tight')
             plt.close(fig)
 
-            # Plot Q_W only (convergence curve for steps scan)
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(x_values, q_w_means, 'r-', linewidth=2, marker='o', markersize=4)
-            ax.set_xlabel(x_label)
-            ax.set_ylabel('Q_W (Gram Overlap Normalized)')
-            ax.set_title(f'Q_W Evolution - {self.experiment_id}')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(-0.1, 1.1)
-            plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
-            plt.close(fig)
+            if q_w_key:
+                # Plot Q_W only (convergence curve for steps scan)
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.plot(x_values, q_w_means, 'r-', linewidth=2, marker='o', markersize=4)
+                ax.set_xlabel(x_label)
+                ax.set_ylabel(self._plot_label_for_metric(q_w_key))
+                ax.set_title(f'{self._plot_label_for_metric(q_w_key)} Evolution - {self.experiment_id}')
+                ax.grid(True, alpha=0.3)
+                ax.set_ylim(-0.1, 1.1)
+                plt.savefig(plots_dir / 'overlap_evolution.png', dpi=150, bbox_inches='tight')
+                plt.close(fig)
 
         # ===== 自定义曲线绘图 (来自 output_options['plots']) =====
         if output_options and output_options.get('plots'):
-            try:
-                from matrix_factorization.modules.outputs.plotting import plot_custom_curves
+            from matrix_factorization.modules.outputs.plotting import plot_custom_curves
 
-                # 构建 results 数据格式供 plot_custom_curves 使用
-                plot_results = {
-                    float(v): r.metrics for v, r in self.results.items()
-                }
+            # 构建 results 数据格式供 plot_custom_curves 使用
+            plot_results = {
+                float(v): r.metrics for v, r in self.results.items()
+            }
 
-                for i, plot_config in enumerate(output_options['plots']):
-                    curves = plot_config.get('curves', [])
-                    if curves:
-                        output_file = plots_dir / f'custom_plot_{i+1}.png'
-                        plot_custom_curves(
-                            plot_results,
-                            curves,
-                            output_file,
-                            title=f"{self.experiment_id} - Plot {i+1}",
-                        )
-                        print(f"Generated: {output_file}")
-            except Exception as e:
-                import traceback
-                print(f"Warning: Could not generate custom plots: {e}")
-                traceback.print_exc()
+            for i, plot_config in enumerate(output_options['plots']):
+                curves = plot_config.get('curves', [])
+                if curves:
+                    output_file = plots_dir / f'custom_plot_{i+1}.png'
+                    plot_custom_curves(
+                        plot_results,
+                        curves,
+                        output_file,
+                        title=f"{self.experiment_id} - Plot {i+1}",
+                    )
+                    print(f"Generated: {output_file}")
 
         # ===== Heatmap 和 GIF (由 enable_heatmap 控制) =====
         enable_heatmap = True  # 默认开启
@@ -571,11 +660,67 @@ class ExperimentResult:
                     if gif_path:
                         print(f"Generated GIF: {gif_path}")
             except Exception as e:
-                import traceback
-                print(f"Warning: Could not generate heatmaps/GIF: {e}")
-                traceback.print_exc()
+                raise RuntimeError(
+                    "Heatmap/GIF output failed after OutputSpec preflight passed. "
+                    "Treat this as an output integration error rather than a "
+                    "non-fatal plotting warning."
+                ) from e
 
         self._write_json(path / 'manifest.json', self.to_artifact_manifest(path))
+
+    def _validate_output_contracts_before_plots(
+        self,
+        output_options: Dict[str, Any],
+        run_dir: Optional[Path] = None,
+    ):
+        """Check output dependencies against concrete result payloads."""
+        from matrix_factorization.modules.outputs.spec_adapter import OutputSpecAdapter
+
+        return OutputSpecAdapter.validate_result(self, output_options, run_dir)
+
+    def _available_metric_keys(self) -> set[str]:
+        return {
+            key
+            for result in self.results.values()
+            for key in (result.metrics or {})
+        }
+
+    @staticmethod
+    def _first_available_metric(metric_keys: set[str], candidates: List[str]) -> Optional[str]:
+        for key in candidates:
+            if key in metric_keys:
+                return key
+        return None
+
+    def _metric_series(self, sorted_values: List[Any], metric_key: str) -> List[float]:
+        missing_values = [
+            value for value in sorted_values
+            if metric_key not in (self.results[value].metrics or {})
+        ]
+        if missing_values:
+            raise ValueError(
+                f"scalar_curves output requires metric '{metric_key}' for all scan values; "
+                f"missing values: {missing_values}"
+            )
+        return [float(self.results[value].metrics[metric_key]) for value in sorted_values]
+
+    @staticmethod
+    def _plot_label_for_metric(metric_key: str) -> str:
+        return {
+            "Q_Y_mean": "Q_Y",
+            "Q_Y_observed_mean": "Q_Y observed",
+            "physical_overlap_Y_mean": "physical overlap Y",
+            "Q_W_mean": "Q_W",
+            "Q_W_prime_mean": "Q_W prime",
+        }.get(metric_key, metric_key)
+
+    @staticmethod
+    def _curve_code_to_metric_key(curve_code: str) -> str:
+        from matrix_factorization.modules.outputs.plot_registry import parse_curve_code
+
+        spec = parse_curve_code(curve_code)
+        metric_name = f"{spec.metric_name}_replica" if spec.is_replica else spec.metric_name
+        return f"{metric_name}_mean"
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> 'ExperimentResult':
@@ -646,6 +791,7 @@ class ExperimentResult:
                 metrics=r_dict.get('metrics', {}),
                 duration_seconds=r_dict.get('duration_seconds', 0.0),
                 history=r_dict.get('history'),
+                metric_contract=r_dict.get('metric_contract', {}),
             )
 
             # Load tensors if they exist in the canonical artifact bundle.
@@ -809,6 +955,7 @@ class ExperimentResult:
                 X_students=r_dict.get('X_students'),
                 mask=r_dict.get('mask'),
                 observation_indices=r_dict.get('observation_indices'),
+                metric_contract=r_dict.get('metric_contract', {}),
             )
             result.results[v] = single_result
 

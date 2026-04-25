@@ -1,0 +1,4 @@
+trials:
+  - key: matrix_bigamp_quick
+    status: active
+    path: trials/active/matrix_bigamp_quick/trial.yaml

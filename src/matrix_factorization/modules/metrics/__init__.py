@@ -37,6 +37,12 @@ from .spreading import (
 )
 
 from .combined import CombinedMetrics
+from .spec_adapter import MetricPayloadCheck, MetricSpecAdapter
+from .contract_compute import (
+    compute_metric_payload,
+    compute_matrix_metric_payload,
+    compute_spreading_metric_payload,
+)
 
 # Replica overlap analysis (pairwise student-student overlap)
 from .replica import (
@@ -66,4 +72,9 @@ __all__ = [
     'compute_physical_overlap_spreading',
     'compute_qy_with_wrong_f',
     'CombinedMetrics',
+    'MetricPayloadCheck',
+    'MetricSpecAdapter',
+    'compute_metric_payload',
+    'compute_matrix_metric_payload',
+    'compute_spreading_metric_payload',
 ]

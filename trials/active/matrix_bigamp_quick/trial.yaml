@@ -1,0 +1,18 @@
+key: matrix_bigamp_quick
+status: active
+runtime_class: quick
+purpose: 验证 trial config -> runner -> result save 链路
+owner_area: framework
+config: trials/active/matrix_bigamp_quick/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/matrix_bigamp_quick
+artifact_roots:
+  - runs/trials/matrix_bigamp_quick
+  - artifacts/trials/matrix_bigamp_quick
+  - results/trials/matrix_bigamp_quick
+expected_metrics:
+  - Q_Y_mean
+  - MSE
+promotion_target:
+  - trial framework
+notes: 这是 Research Trial v1 的内置 quick trial，只验证小尺寸链路能真实运行。

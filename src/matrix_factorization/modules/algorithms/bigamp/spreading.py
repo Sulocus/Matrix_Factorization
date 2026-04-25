@@ -128,6 +128,7 @@ class BiGAMPSpreading(AlgorithmBase):
         self.damping = config.algorithm_params.damping
         self.noise_var = config.algorithm_params.noise_var
         self.max_steps = config.training.max_steps
+        self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
 
         # Spreading configuration
         spreading_cfg = config.spreading
@@ -759,8 +760,8 @@ class BiGAMPSpreading(AlgorithmBase):
 
         # Debug Recording
         damp_history = None
-        if batch_alpha_values is not None:
-             damp_history = torch.zeros(steps, B, dtype=torch.float32, device=self.device)
+        if self.debug_verbose and batch_alpha_values is not None:
+            damp_history = torch.zeros(steps, B, dtype=torch.float32, device=self.device)
 
         for step in range(steps):
             # CUDA Graph compatibility mark (like train_full_parallel L1345-1346)

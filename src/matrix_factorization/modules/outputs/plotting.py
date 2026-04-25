@@ -1215,13 +1215,28 @@ def plot_custom_curves(
         
         mean_key = f'{metric_key}_mean'
         std_key = f'{metric_key}_std'
+        missing_values = [
+            v for v in x_values
+            if mean_key not in results.get(v, {})
+        ]
+        if missing_values:
+            available = sorted({
+                key
+                for metrics in results.values()
+                for key in metrics
+            })
+            raise KeyError(
+                f"Custom curve '{spec.code}' requires metric '{mean_key}', "
+                f"but it is missing for scan values {missing_values}. "
+                f"Available metrics: {available}"
+            )
         
         # 提取数据
         means = []
         stds = []
         for v in x_values:
             metrics = results.get(v, {})
-            means.append(metrics.get(mean_key, 0))
+            means.append(metrics[mean_key])
             stds.append(metrics.get(std_key, 0))
         
         # 获取颜色和标签

@@ -1,4 +1,4 @@
-# Local GPU research preset. Do not use this as a Codex web smoke test.
+# Local GPU research preset. Do not use this for lightweight validation.
 tensor_order: 3
 algorithm: bigamp_tensor
 teacher: standard

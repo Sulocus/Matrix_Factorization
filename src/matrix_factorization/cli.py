@@ -17,8 +17,10 @@ MF Experiment CLI - 简洁版
 """
 
 import argparse
+import json
 import sys
 import os
+from dataclasses import fields
 from pathlib import Path
 from datetime import datetime
 import numpy as np
@@ -35,6 +37,7 @@ from matrix_factorization.core.experiment import (
     MatrixParams, TrainingParams, SeedConfig, ScanConfig,
     AlgorithmParams, SpreadingConfig, TeacherConfig
 )
+from matrix_factorization.core.planning import build_experiment_plan
 from matrix_factorization.core.progress import ProgressBridge
 from matrix_factorization.modules.outputs.latest import refresh_latest_results
 
@@ -80,12 +83,23 @@ def load_yaml_config(yaml_path: Path):
     t = cfg.get('training', {})
     training = TrainingParams(
         samples_per_alpha=t.get('samples_per_alpha', t.get('samples', 50)),
-        max_steps=t.get('max_steps', 2000)
+        max_steps=t.get('max_steps', 2000),
+        max_epochs=t.get('max_epochs', 20000),
+        num_workers=t.get('num_workers', 1),
     )
+    seeds_cfg = cfg.get('seeds', {})
+    base_seed = t.get('seed', seeds_cfg.get('base_seed', seeds_cfg.get('model', 42)))
+    teacher_seed = seeds_cfg.get('teacher_seed', seeds_cfg.get('data', 12345))
+    spreading_seed_from_seeds = seeds_cfg.get('spreading_seed', 99999)
+    student_seed = seeds_cfg.get('student_seed', 0)
 
     # 算法参数
     a = cfg.get('algorithm_params', {})
-    algo_params = AlgorithmParams(**a)
+    known_algorithm_param_fields = {field.name for field in fields(AlgorithmParams)}
+    algo_params = AlgorithmParams(**{
+        key: value for key, value in a.items()
+        if key in known_algorithm_param_fields
+    })
 
     # Spreading 配置
     spreading = None
@@ -94,9 +108,17 @@ def load_yaml_config(yaml_path: Path):
         f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
         onsager = s.get('onsager_correction', False)
         chunk_size = s.get('chunk_size', 131072)
+        spreading_seed = s.get('seed', spreading_seed_from_seeds)
         # allow_intra 由 tensor_order 自动决定，不再从配置读取
         # tensor_order 也传入 SpreadingConfig
-        spreading = SpreadingConfig(f_distribution=f_dist, onsager_correction=onsager, allow_intra_connection=allow_intra, chunk_size=chunk_size, tensor_order=tensor_order)
+        spreading = SpreadingConfig(
+            f_distribution=f_dist,
+            onsager_correction=onsager,
+            allow_intra_connection=allow_intra,
+            seed=spreading_seed,
+            chunk_size=chunk_size,
+            tensor_order=tensor_order,
+        )
 
     INIT_DIST_MAP = {1: 'gaussian', 2: 'rademacher', 'gaussian': 'gaussian', 'rademacher': 'rademacher'}
 
@@ -138,7 +160,12 @@ def load_yaml_config(yaml_path: Path):
             training=training,
             algorithm_key=algorithm_key,
             scan=scan,
-            seeds=SeedConfig(base_seed=t.get('seed', 42)),
+            seeds=SeedConfig(
+                base_seed=base_seed,
+                teacher_seed=teacher_seed,
+                spreading_seed=spreading_seed_from_seeds,
+                student_seed=student_seed,
+            ),
             algorithm_params=algo_params,
             spreading=spreading,
             experiment_name=name,
@@ -178,7 +205,12 @@ def load_yaml_config(yaml_path: Path):
             training=training,
             algorithm_key=algorithm_key,
             scan=scan,
-            seeds=SeedConfig(base_seed=t.get('seed', 42)),
+            seeds=SeedConfig(
+                base_seed=base_seed,
+                teacher_seed=teacher_seed,
+                spreading_seed=spreading_seed_from_seeds,
+                student_seed=student_seed,
+            ),
             algorithm_params=algo_params,
             spreading=spreading,
             experiment_name=name,
@@ -205,7 +237,12 @@ def load_yaml_config(yaml_path: Path):
             'algorithm_key': algorithm_key,
             'teacher_key': teacher_key,
             'teacher': teacher_config, # Pass parsed config
-            'seeds': SeedConfig(base_seed=t.get('seed', 42)),
+            'seeds': SeedConfig(
+                base_seed=base_seed,
+                teacher_seed=teacher_seed,
+                spreading_seed=spreading_seed_from_seeds,
+                student_seed=student_seed,
+            ),
             'algorithm_params': algo_params,
             'spreading': spreading,
         }, output_options, raw_yaml
@@ -232,7 +269,12 @@ def load_yaml_config(yaml_path: Path):
                 training=training,
                 algorithm_key=algorithm_key,
                 scan=ScanConfig(dimension='alpha', values=alpha_values), # Placeholder
-                seeds=SeedConfig(base_seed=t.get('seed', 42)),
+                seeds=SeedConfig(
+                    base_seed=base_seed,
+                    teacher_seed=teacher_seed,
+                    spreading_seed=spreading_seed_from_seeds,
+                    student_seed=student_seed,
+                ),
                 algorithm_params=algo_params,
                 spreading=spreading,
                 experiment_name='hysteresis_placeholder',
@@ -440,8 +482,165 @@ def _handle_config_mode():
         print(f"配置文件路径: {config_path}")
 
 
+def _config_for_plan(config):
+    """Return an ExperimentConfig-like object for validation/explanation."""
+    if isinstance(config, ExperimentConfig):
+        return config
+    if isinstance(config, dict) and config.get('mode') == 'hysteresis':
+        return config.get('base_config')
+    if isinstance(config, dict) and config.get('mode') == 'nested':
+        sizes = config.get('sizes') or [(200, 200, 50)]
+        n1, n2, m = sizes[0]
+        return ExperimentConfig(
+            matrix=MatrixParams(N1=n1, N2=n2, M=m),
+            training=config['training'],
+            algorithm_key=config['algorithm_key'],
+            scan=ScanConfig(dimension='alpha', values=config['alpha_values']),
+            seeds=config['seeds'],
+            algorithm_params=config['algorithm_params'],
+            spreading=config['spreading'],
+            experiment_name='nested_scaling_sweep',
+            teacher_key=config['teacher_key'],
+            teacher=config.get('teacher'),
+        )
+    return None
 
-def _handle_nested_mode(config, args, timestamp, bridge):
+
+def _parse_plan_args(argv):
+    strict = "--strict" in argv
+    json_output = "--json" in argv
+    config_args = [item for item in argv if not item.startswith("--")]
+    config_arg = config_args[0] if config_args else None
+    return config_arg, strict, json_output
+
+
+def _handle_plan_command(
+    command: str,
+    config_arg: str = None,
+    strict: bool = False,
+    json_output: bool = False,
+):
+    config_path = Path(config_arg) if config_arg else Path(__file__).parent / 'config.yaml'
+    if not config_path.exists():
+        print(f"❌ Error: Config file not found: {config_path}")
+        sys.exit(1)
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan_config = _config_for_plan(config)
+    if plan_config is None:
+        print("❌ Error: Could not build validation plan for this config mode")
+        sys.exit(1)
+
+    plan = build_experiment_plan(
+        plan_config,
+        output_options=output_options,
+        raw_yaml=raw_yaml,
+        config_path=config_path,
+        strict=strict,
+    )
+    if json_output:
+        print(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False))
+    elif command == 'explain-config':
+        print(plan.format_explain())
+    else:
+        print(plan.format_validation())
+    sys.exit(0 if plan.is_valid else 1)
+
+
+def _handle_trial_command(argv):
+    from matrix_factorization.core.trials import (
+        build_trial_plan,
+        list_trial_plans,
+        load_trial_spec,
+    )
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print("Usage: mf trial [list|explain|validate|run] <trial_key_or_manifest>")
+        sys.exit(0 if argv else 1)
+
+    command = argv[0]
+    trial_ref = argv[1] if len(argv) > 1 else None
+
+    if command == "list":
+        plans = list_trial_plans()
+        print("registered trials")
+        for plan in plans:
+            print(
+                f"  - {plan.spec.key}: status={plan.spec.status}, "
+                f"runtime_class={plan.spec.runtime_class}, "
+                f"config={plan.to_dict()['config_path']}"
+            )
+        sys.exit(0)
+
+    if command not in {"explain", "validate", "run"}:
+        print(f"❌ Unknown trial command: {command}")
+        sys.exit(1)
+    if not trial_ref:
+        print(f"❌ trial {command} requires a trial key or manifest path")
+        sys.exit(1)
+
+    if command == "run":
+        try:
+            spec, _, _ = load_trial_spec(trial_ref)
+        except Exception as exc:
+            print(f"❌ Could not load trial: {exc}")
+            sys.exit(1)
+        if spec.runtime_class != "quick":
+            print(
+                f"❌ trial '{spec.key}' runtime_class={spec.runtime_class}; "
+                "mf trial run v1 only runs quick trials."
+            )
+            sys.exit(1)
+
+    plan = build_trial_plan(trial_ref)
+    if command == "explain":
+        print(plan.format_explain())
+        sys.exit(0 if plan.is_valid else 1)
+    if command == "validate":
+        print(plan.format_validation())
+        sys.exit(0 if plan.is_valid else 1)
+
+    if not plan.is_valid:
+        print(plan.format_validation())
+        sys.exit(1)
+
+    config, output_options, raw_yaml = load_yaml_config(plan.config_path)
+    output_options = dict(output_options or {})
+    output_options["experiment_plan"] = plan.experiment_plan.to_dict()
+
+    runner = ExperimentRunner(verbose=False)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = plan.output_root / f"{timestamp}_{config.experiment_name}"
+    output_path.mkdir(parents=True, exist_ok=True)
+    output_options["checkpoint_path"] = str(output_path / "checkpoints" / "latest.pt")
+
+    result = runner.run(config, output_options=output_options, raw_yaml=raw_yaml)
+    result.metadata.contract["trial"] = plan.to_dict()
+    result.save(
+        output_path,
+        save_tensors=output_options.get("save_tensors", False),
+        rsb_ordering=output_options.get("rsb_ordering", False),
+        uniform_colormap=output_options.get("uniform_colormap", False),
+        output_options=output_options,
+    )
+
+    print("trial run complete")
+    print(f"  key: {plan.spec.key}")
+    print(f"  output: {output_path}")
+    sys.exit(0)
+
+
+def _print_plan_warnings(plan):
+    if not plan or not plan.warnings:
+        return
+    print("⚠️  Preflight warnings:")
+    for warning in plan.warnings:
+        print(f"  - {warning}")
+    print()
+
+
+
+def _handle_nested_mode(config, args, timestamp, bridge, output_options):
     print()
     print("=" * 60)
     print("🚀 Nested Scaling Sweep")
@@ -461,6 +660,7 @@ def _handle_nested_mode(config, args, timestamp, bridge):
         seeds=config['seeds'],
         algorithm_params=config['algorithm_params'],
         spreading=config['spreading'],
+        teacher=config.get('teacher'),
         experiment_name='nested_scaling_sweep',
         teacher_key=config['teacher_key'],
     )
@@ -475,6 +675,7 @@ def _handle_nested_mode(config, args, timestamp, bridge):
         matrix_sizes=config['sizes'],
         output_dir=output_path,
         observer=bridge.on_event,
+        output_options=output_options,
     )
 
     print()
@@ -715,6 +916,13 @@ def main():
         elif sys.argv[1] == 'conf':
             _handle_config_mode()
             return
+        elif sys.argv[1] in ('validate', 'explain-config'):
+            config_arg, strict, json_output = _parse_plan_args(sys.argv[2:])
+            _handle_plan_command(sys.argv[1], config_arg, strict=strict, json_output=json_output)
+            return
+        elif sys.argv[1] == 'trial':
+            _handle_trial_command(sys.argv[2:])
+            return
 
     # 2. 解析参数
     args = _parse_arguments()
@@ -743,12 +951,36 @@ def main():
     else:
         config = build_config(args)
 
+    # 5. Preflight contract validation
+    plan = None
+    plan_config = _config_for_plan(config)
+    if plan_config is not None:
+        plan = build_experiment_plan(
+            plan_config,
+            output_options=output_options,
+            raw_yaml=raw_yaml,
+            config_path=Path(args.config) if args.config else None,
+        )
+        if plan.errors:
+            print(plan.format_validation())
+            sys.exit(1)
+        output_options['experiment_plan'] = plan.to_dict()
+        _print_plan_warnings(plan)
+
     # 5. 初始化环境
     runner = ExperimentRunner(verbose=False)
     bridge = ProgressBridge(use_rich=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
 
     # 6. 分发执行
+    if isinstance(config, dict) and config.get('mode') == 'nested':
+        _handle_nested_mode(config, args, timestamp, bridge, output_options)
+        return
+
+    elif isinstance(config, dict) and config.get('mode') == 'hysteresis':
+        _handle_hysteresis_mode(config, args, timestamp, bridge, output_options)
+        return
+
     # Explicitly print configuration status to ensure visibility
     print("\n" + "="*60)
     print("📋 Experiment Configuration")
@@ -782,15 +1014,8 @@ def main():
 
     print("="*60 + "\n")
 
-    if isinstance(config, dict) and config.get('mode') == 'nested':
-        _handle_nested_mode(config, args, timestamp, bridge)
-
-    elif isinstance(config, dict) and config.get('mode') == 'hysteresis':
-         _handle_hysteresis_mode(config, args, timestamp, bridge, output_options)
-
-    else:
-        # 单次运行
-        _handle_single_run(config, args, timestamp, runner, bridge, output_options, raw_yaml)
+    # 单次运行
+    _handle_single_run(config, args, timestamp, runner, bridge, output_options, raw_yaml)
 
 
 if __name__ == '__main__':

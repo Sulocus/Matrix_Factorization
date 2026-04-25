@@ -13,7 +13,7 @@ Key improvements over serial version:
 import math
 import torch
 import logging
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.storage_dtype = torch.bfloat16
 
         # === Phase 1.5: torch.compile Support ===
-        self.use_compile = True  # Can be disabled via config if needed
+        self.use_compile = getattr(getattr(config, 'algorithm_params', None), 'use_compile', True)
         if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is None:
             try:
                 # Use 'default' mode for safety (no CUDA Graph issues)
@@ -299,6 +299,63 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 torch.cuda.empty_cache()
 
         return W_all, X_all
+
+    def train_batch_result(
+        self,
+        *,
+        algorithm_key: str,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: Optional[torch.Tensor],
+        alpha_values: List[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int, Optional[Dict]], None]] = None,
+        **kwargs: Any,
+    ):
+        """Return tensor metrics/artifacts through AlgorithmResult.
+
+        This keeps the existing tensor-parallel numerical implementation in
+        train_batch_alphas, but prevents the runner from treating placeholder
+        W/X tensors as real matrix factors.
+        """
+        call_kwargs = self._filter_train_batch_kwargs({
+            "W_teacher": W_teacher,
+            "X_teacher": X_teacher,
+            "Y_teacher": Y_teacher,
+            "masks": masks,
+            "alpha_values": alpha_values,
+            "seed": seed,
+            "progress_callback": progress_callback,
+            "step_callback": step_callback,
+            **kwargs,
+        })
+        self.train_batch_alphas(**call_kwargs)
+        return self._metrics_only_algorithm_result(algorithm_key)
+
+    def _metrics_only_algorithm_result(self, algorithm_key: str):
+        from matrix_factorization.core.contracts import AlgorithmResult
+        from matrix_factorization.modules.registry import get_algorithm_spec
+
+        spec = get_algorithm_spec(algorithm_key)
+        metrics_by_alpha = {
+            float(alpha): dict(metrics)
+            for alpha, metrics in getattr(self, "_batch_metrics", {}).items()
+        }
+        artifacts = {}
+        if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
+            artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+        return AlgorithmResult.from_metrics_only(
+            metrics_by_alpha=metrics_by_alpha,
+            artifacts=artifacts,
+            metadata={
+                "algorithm_key": algorithm_key,
+                "result_contract": spec.result_contract,
+                "result_source": "tensor_algorithm_train_batch_result",
+                "matrix_factors_available": False,
+            },
+        )
 
     def _compute_alpha_batches(self, alpha_values: List[float]) -> List[List[float]]:
         """
@@ -537,15 +594,16 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         step_fn = (BiGAMPTensorSpreadingParallel._compiled_step_super
                    if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step_super is not None
                    else tensor_step_super)
-                # ========== STEP 0 DIAGNOSTIC: Check if initialization is Random or Teacher ==========
-        with torch.no_grad():
-            Z_hat_init = forward_pass_tensor_super(factors, F_flat, offset_indices, S, N_dims)
-            mse_init = ((Y_flat - Z_hat_init)**2 * superdata.alpha_mask_exp.float()).sum() / superdata.alpha_mask_exp.sum()
-            print("=" * 70, flush=True)
-            print(f"STEP 0 DIAGNOSTIC: Initial MSE = {mse_init.item():.6f}", flush=True)
-            print(f"  If MSE >> 0 (e.g. 1.5+): Initialization is RANDOM (correct)", flush=True)
-            print(f"  If MSE ≈ 0: Initialization is TEACHER (BUG - data leakage!)", flush=True)
-            print("=" * 70, flush=True)
+        # Optional diagnostic: check whether initialization is random or teacher-like.
+        if self.debug_verbose:
+            with torch.no_grad():
+                Z_hat_init = forward_pass_tensor_super(factors, F_flat, offset_indices, S, N_dims)
+                mse_init = ((Y_flat - Z_hat_init)**2 * superdata.alpha_mask_exp.float()).sum() / superdata.alpha_mask_exp.sum()
+                print("=" * 70, flush=True)
+                print(f"STEP 0 DIAGNOSTIC: Initial MSE = {mse_init.item():.6f}", flush=True)
+                print(f"  If MSE >> 0 (e.g. 1.5+): Initialization is RANDOM (correct)", flush=True)
+                print(f"  If MSE ≈ 0: Initialization is TEACHER (BUG - data leakage!)", flush=True)
+                print("=" * 70, flush=True)
 
         # BiG-AMP iterations
         for step in range(self.max_steps):

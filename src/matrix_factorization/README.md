@@ -6,7 +6,6 @@ This package contains the installable experiment framework used by the root
 Current entry points:
 
 ```bash
-mf configs/smoke/matrix_spreading_smoke.yaml
 mf configs/local_gpu/tensor_local_gpu.yaml --output-dir runs
 ```
 

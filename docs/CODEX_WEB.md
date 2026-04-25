@@ -1,7 +1,7 @@
-# Codex Web Workflow
+# Development Workflow
 
-Use the `dev` branch as the Codex web baseline. The web workspace should contain
-source code, tests, docs, and small smoke configs only.
+Use the `dev` branch as the development baseline. The repository should contain
+source code, tests, docs, and shareable research configs only.
 
 ## Setup
 
@@ -12,7 +12,7 @@ pip install -e ".[dev]"
 ## Fast Checks
 
 ```bash
-python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/smoke/test_registry_imports.py
+python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/test_registry_imports.py
 ```
 
 ## Run Artifacts
@@ -41,5 +41,5 @@ runs/{run_id}/
 ```
 
 Keep large `.pt` tensors and historical experiments local, or store them in an
-external artifact store with a manifest. Codex web should run smoke tests and
-code review; local GPU runs remain the source of high-memory validation.
+external artifact store with a manifest. Local GPU runs remain the source of
+high-memory validation.

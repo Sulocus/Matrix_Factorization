@@ -21,6 +21,9 @@ results/*
 Replica_results/
 runs/
 artifacts/
+runs/trials/
+artifacts/trials/
+results/trials/
 *.checkpoint.pt
 .checkpoint.pt
 smf/.checkpoint.pt

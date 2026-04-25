@@ -24,6 +24,7 @@ import torch
 from .config import ExperimentConfig, MatrixParams
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
+from ..contracts import AlgorithmResult
 
 # Parallel execution support
 from ..parallel import (
@@ -120,6 +121,7 @@ class ExperimentRunner:
         
         self.data_factory = DataFactory(self.device)
         self._algorithm_cache = {}
+        self._warned_private_metric_channel = set()
         
         # Initialize parallel coordinator for intelligent batching
         ParallelCoordinator = get_parallel_coordinator()
@@ -233,6 +235,7 @@ class ExperimentRunner:
                 M=config.matrix.M,
                 teacher_key=getattr(config, 'teacher_key', 'standard'),
                 seed=config.seeds.teacher_seed,
+                init_distribution=getattr(getattr(config, 'teacher', None), 'init_distribution', 'gaussian'),
             )
             
             # Create result container with raw data
@@ -247,6 +250,24 @@ class ExperimentRunner:
                 X_teacher=X_teacher,
                 Y_teacher=Y_teacher,
             )
+            if output_options and output_options.get('experiment_plan'):
+                result.metadata.contract = output_options['experiment_plan']
+            runtime_extensions = self._build_runtime_extension_executor(
+                result.metadata.contract,
+                config.algorithm_key,
+            )
+            self._runtime_extensions = runtime_extensions
+            runtime_state = self._initial_runtime_state(
+                config=config,
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                Y_teacher=Y_teacher,
+            )
+            runtime_state = runtime_extensions.dispatch(
+                "before_initialize",
+                runtime_state,
+                self._runtime_context(config, "before_initialize"),
+            )
             
             # Get algorithm
             algorithm = self._get_algorithm(config)
@@ -257,6 +278,13 @@ class ExperimentRunner:
             else:
                 self._run_standard_scan(config, algorithm, result, observer, resume_results, output_options, raw_yaml)
             
+            runtime_extensions.dispatch(
+                "after_run",
+                runtime_state,
+                self._runtime_context(config, "after_run"),
+            )
+            runtime_extensions.run_analyzers(result)
+            result.metadata.contract["runtime_extension_report"] = runtime_extensions.report.to_dict()
             self._emit(observer, ProgressEventType.EXPERIMENT_END, {'result': result})
             return result
 
@@ -274,6 +302,7 @@ class ExperimentRunner:
         matrix_sizes: List[tuple],  # [(N1, N2, M), ...]
         output_dir: Optional[Path] = None,
         observer: Optional[Callable[[ProgressEvent], None]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[tuple, ExperimentResult]:
         """
         Run nested scan: outer loop over matrix sizes, inner loop over alpha/steps.
@@ -294,13 +323,14 @@ class ExperimentRunner:
                 seeds=base_config.seeds,
                 algorithm_params=base_config.algorithm_params,
                 spreading=base_config.spreading,
+                teacher=base_config.teacher,
                 experiment_name=f"{base_config.experiment_name}_N{N1}_M{M}",
                 teacher_key=base_config.teacher_key,
                 notes=f"Scaling sweep: N={N1}, M={M}",
             )
             
             # Run experiment
-            result = self.run(config, observer=observer)
+            result = self.run(config, observer=observer, output_options=output_options)
             results[(N1, N2, M)] = result
             
             # Save intermediate results
@@ -326,27 +356,7 @@ class ExperimentRunner:
         scan_values = config.scan.values
         total_points = len(scan_values)
         
-        # Create estimation params for batch planning
-        f_dist = 'rademacher'
-        if config.spreading:
-            f_dist = config.spreading.f_distribution
-        
-        # CRITICAL: Pass allow_intra_connection for correct General mode estimation
-        allow_intra = getattr(config.spreading, 'allow_intra_connection', False) if config.spreading else False
-        
-        params = EstimationParams(
-            N1=config.matrix.N1,
-            N2=config.matrix.N2,
-            M=config.matrix.M,
-            S=config.training.samples_per_alpha,
-            alpha_values=[float(v) for v in scan_values],
-            algorithm_key=config.algorithm_key,
-            use_compile=config.algorithm_params.use_compile,
-            use_bf16=True,  # BF16 is always enabled for spreading algorithm
-            f_distribution=f_dist,
-            adaptive_damping=config.algorithm_params.adaptive_damping,
-            allow_intra_connection=allow_intra,  # Enable General mode estimation
-        )
+        params = self._estimation_params_for_config(config, scan_values)
         
         # Get execution plan from ParallelCoordinator
         plan = self.parallel_coordinator.plan_execution(params)
@@ -461,12 +471,13 @@ class ExperimentRunner:
                 # Run algorithm for this batch
                 if output_options:
                     setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
-                W_students, X_students = self._run_algorithm(
+                batch_algorithm_result = self._run_algorithm_result(
                     algorithm=algorithm,
                     config=config,
                     data=data,
                     step_callback=internal_step_callback,
                 )
+                W_students, X_students = self._matrix_factors_from_result(batch_algorithm_result)
                 
                 # Process each alpha in the batch
                 for alpha_idx, alpha in enumerate(batch_alpha_values):
@@ -479,13 +490,8 @@ class ExperimentRunner:
                         'value': alpha
                     })
                     
-                    # Extract results (same as before)
-                    if W_students.dim() == 4:
-                        W_single = W_students[alpha_idx]
-                        X_single = X_students[alpha_idx]
-                    else:
-                        W_single = W_students
-                        X_single = X_students
+                    W_single = self._slice_alpha_factor(W_students, alpha_idx)
+                    X_single = self._slice_alpha_factor(X_students, alpha_idx)
                     
                     # Create single-alpha data for metrics
                     single_data = ExperimentData(
@@ -498,12 +504,20 @@ class ExperimentRunner:
                     )
                     
                     # Compute metrics
+                    W_metrics = W_single.unsqueeze(0) if W_single is not None and W_single.dim() == 3 else W_single
+                    X_metrics = X_single.unsqueeze(0) if X_single is not None and X_single.dim() == 3 else X_single
                     metrics = self._compute_metrics(
-                        W_students=W_single.unsqueeze(0) if W_single.dim() == 3 else W_single,
-                        X_students=X_single.unsqueeze(0) if X_single.dim() == 3 else X_single,
+                        W_students=W_metrics,
+                        X_students=X_metrics,
                         data=single_data,
                         algorithm=algorithm,
+                        algorithm_result=batch_algorithm_result,
                     )
+                    metric_contract = self._validate_metric_payload(
+                        config.algorithm_key,
+                        metrics,
+                        source=self._metric_source(single_data, batch_algorithm_result),
+                    ).to_dict()
                     
                     # Store result
                     single_result = SingleRunResult(
@@ -513,6 +527,7 @@ class ExperimentRunner:
                         X_students=X_single,
                         mask=None, # Optimization: Don't save masks to save space unless needed
                         duration_seconds=time.time() - start_time,
+                        metric_contract=metric_contract,
                     )
                     result.add_result(alpha, single_result)
                     
@@ -529,6 +544,13 @@ class ExperimentRunner:
                     'batch_idx': batch_idx, 
                     'duration': 0.0 # TODO: Track actual duration
                 })
+                self._dispatch_after_batch_runtime_extensions(
+                    config=config,
+                    batch_idx=batch_idx,
+                    alpha_values=batch_alpha_values,
+                    algorithm_result=batch_algorithm_result,
+                    result=result,
+                )
                 
                 # Save checkpoint after successful batch
                 for alpha in batch_alpha_values:
@@ -546,8 +568,7 @@ class ExperimentRunner:
                 
                 # Clean up batch data before next batch
                 del data
-                del W_students
-                del X_students
+                del batch_algorithm_result
                 
             except MemoryAbortException as e:
                 # OOM batch recovery: save checkpoint and exit gracefully
@@ -644,8 +665,8 @@ class ExperimentRunner:
                 'value': max_steps
             })
             
-            # Run algorithm
-            W_students, X_students, new_checkpoint = self._run_algorithm_with_checkpoint(
+            # Run algorithm through the formal result contract.
+            step_algorithm_result, new_checkpoint = self._run_algorithm_with_checkpoint_result(
                 algorithm=algorithm,
                 config=config,
                 data=data,
@@ -653,6 +674,7 @@ class ExperimentRunner:
                 checkpoint=checkpoint,
                 step_callback=internal_step_callback,
             )
+            W_students, X_students = self._matrix_factors_from_result(step_algorithm_result)
             
             checkpoint = new_checkpoint
             prev_steps = max_steps
@@ -661,7 +683,14 @@ class ExperimentRunner:
                 W_students=W_students,
                 X_students=X_students,
                 data=data,
+                algorithm=algorithm,
+                algorithm_result=step_algorithm_result,
             )
+            metric_contract = self._validate_metric_payload(
+                config.algorithm_key,
+                metrics,
+                source=self._metric_source(data, step_algorithm_result),
+            ).to_dict()
             
             single_result = SingleRunResult(
                 scan_value=max_steps,
@@ -669,6 +698,7 @@ class ExperimentRunner:
                 W_students=W_students,
                 X_students=X_students,
                 duration_seconds=time.time() - start_time,
+                metric_contract=metric_contract,
             )
             result.add_result(max_steps, single_result)
             
@@ -680,6 +710,13 @@ class ExperimentRunner:
             })
             
         self._emit(observer, ProgressEventType.BATCH_END, {'batch_idx': 0})
+        self._dispatch_after_batch_runtime_extensions(
+            config=config,
+            batch_idx=0,
+            alpha_values=[default_alpha],
+            algorithm_result=step_algorithm_result if step_values else None,
+            result=result,
+        )
 
     def _run_algorithm(
         self,
@@ -712,6 +749,189 @@ class ExperimentRunner:
                 progress_callback=step_callback,
             )
         return W_students, X_students
+
+    @staticmethod
+    def _estimation_params_for_config(
+        config: ExperimentConfig,
+        scan_values: List[Any],
+    ) -> EstimationParams:
+        """Build memory-estimation parameters from the effective config."""
+        f_dist = 'rademacher'
+        if config.spreading:
+            f_dist = config.spreading.f_distribution
+
+        allow_intra = getattr(config.spreading, 'allow_intra_connection', False) if config.spreading else False
+        return EstimationParams(
+            N1=config.matrix.N1,
+            N2=config.matrix.N2,
+            M=config.matrix.M,
+            S=config.training.samples_per_alpha,
+            alpha_values=[float(v) for v in scan_values],
+            algorithm_key=config.algorithm_key,
+            use_compile=config.algorithm_params.use_compile,
+            use_bf16=config.algorithm_params.use_bf16,
+            f_distribution=f_dist,
+            adaptive_damping=config.algorithm_params.adaptive_damping,
+            allow_intra_connection=allow_intra,
+        )
+
+    def _run_algorithm_result(
+        self,
+        algorithm: 'AlgorithmBase',
+        config: ExperimentConfig,
+        data: ExperimentData,
+        step_callback: Optional[Callable],
+    ) -> AlgorithmResult:
+        """Run algorithm through the formal AlgorithmResult interface."""
+        is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
+        masks = None if is_spreading_family else data.masks
+        if hasattr(algorithm, 'train_batch_result'):
+            return algorithm.train_batch_result(
+                algorithm_key=config.algorithm_key,
+                W_teacher=data.W_teacher,
+                X_teacher=data.X_teacher,
+                Y_teacher=data.Y_teacher,
+                masks=masks,
+                alpha_values=data.alpha_values,
+                seed=config.seeds.base_seed,
+                progress_callback=None if is_spreading_family else step_callback,
+                step_callback=step_callback if is_spreading_family else None,
+            )
+
+        W_students, X_students = self._run_algorithm(
+            algorithm=algorithm,
+            config=config,
+            data=data,
+            step_callback=step_callback,
+        )
+        return self._coerce_algorithm_result(
+            config=config,
+            algorithm=algorithm,
+            W_students=W_students,
+            X_students=X_students,
+        )
+
+    @staticmethod
+    def _matrix_factors_from_result(
+        algorithm_result: AlgorithmResult,
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if not algorithm_result.matrix_factors:
+            return None, None
+        return (
+            algorithm_result.matrix_factors.get("W_students"),
+            algorithm_result.matrix_factors.get("X_students"),
+        )
+
+    @staticmethod
+    def _slice_alpha_factor(
+        factor: Optional[torch.Tensor],
+        alpha_idx: int,
+    ) -> Optional[torch.Tensor]:
+        if factor is None:
+            return None
+        if factor.dim() == 4:
+            return factor[alpha_idx]
+        return factor
+
+    def _coerce_algorithm_result(
+        self,
+        config: ExperimentConfig,
+        algorithm: 'AlgorithmBase',
+        W_students: Optional[torch.Tensor],
+        X_students: Optional[torch.Tensor],
+    ) -> AlgorithmResult:
+        """Wrap legacy algorithm outputs in the formal AlgorithmResult contract."""
+        from ...modules.registry import get_algorithm_spec
+
+        spec = get_algorithm_spec(config.algorithm_key)
+        batch_metrics = getattr(algorithm, '_batch_metrics', None)
+        metrics_by_alpha = {}
+        if isinstance(batch_metrics, dict):
+            metrics_by_alpha = {
+                float(alpha): dict(metrics)
+                for alpha, metrics in batch_metrics.items()
+            }
+
+        metadata = {
+            "algorithm_key": config.algorithm_key,
+            "result_contract": spec.result_contract,
+        }
+        if spec.result_contract == "legacy_tensor_metrics_only":
+            artifacts = {}
+            if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
+                artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+            return AlgorithmResult.from_metrics_only(
+                metrics_by_alpha=metrics_by_alpha,
+                artifacts=artifacts,
+                metadata=metadata,
+            )
+
+        if W_students is None or X_students is None:
+            raise ValueError(
+                f"Algorithm '{config.algorithm_key}' uses result_contract={spec.result_contract} "
+                "and must return real W_students/X_students. Use a metrics-only "
+                "AlgorithmSpec result_contract for tensor/artifact-only outputs."
+            )
+
+        return AlgorithmResult(
+            metrics_by_alpha=metrics_by_alpha,
+            matrix_factors={"W_students": W_students, "X_students": X_students},
+            metadata=dict(metadata, result_kind="matrix_factors"),
+        )
+
+    def _run_algorithm_with_checkpoint_result(
+        self,
+        algorithm: 'AlgorithmBase',
+        config: ExperimentConfig,
+        data: ExperimentData,
+        additional_steps: int,
+        checkpoint: Optional[Checkpoint],
+        step_callback: Optional[Callable],
+    ) -> tuple[AlgorithmResult, Checkpoint]:
+        """Run a step-scan segment and wrap its output in AlgorithmResult."""
+        if checkpoint is not None:
+            total_steps = checkpoint.step + additional_steps
+        else:
+            total_steps = additional_steps
+
+        if hasattr(algorithm, 'train_batch_result'):
+            is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
+            masks = None if is_spreading_family else data.masks
+            algorithm_result = algorithm.train_batch_result(
+                algorithm_key=config.algorithm_key,
+                W_teacher=data.W_teacher,
+                X_teacher=data.X_teacher,
+                Y_teacher=data.Y_teacher,
+                masks=masks,
+                alpha_values=data.alpha_values,
+                seed=config.seeds.base_seed,
+                max_steps=total_steps,
+                progress_callback=None if is_spreading_family else step_callback,
+                step_callback=step_callback if is_spreading_family else None,
+            )
+            W_students, X_students = self._matrix_factors_from_result(algorithm_result)
+            new_checkpoint = Checkpoint(
+                step=total_steps,
+                W_state=W_students.clone() if W_students is not None else None,
+                X_state=X_students.clone() if X_students is not None else None,
+            )
+            return algorithm_result, new_checkpoint
+
+        W_students, X_students, new_checkpoint = self._run_algorithm_with_checkpoint(
+            algorithm=algorithm,
+            config=config,
+            data=data,
+            additional_steps=additional_steps,
+            checkpoint=checkpoint,
+            step_callback=step_callback,
+        )
+        algorithm_result = self._coerce_algorithm_result(
+            config=config,
+            algorithm=algorithm,
+            W_students=W_students,
+            X_students=X_students,
+        )
+        return algorithm_result, new_checkpoint
     
     def _run_algorithm_with_checkpoint(
         self,
@@ -770,12 +990,32 @@ class ExperimentRunner:
         X_students: torch.Tensor,
         data: ExperimentData,
         algorithm: Optional['AlgorithmBase'] = None,
+        algorithm_result: Optional[AlgorithmResult] = None,
     ) -> Dict[str, float]:
         """Compute evaluation metrics."""
+        if algorithm_result is not None:
+            current_alpha = data.alpha_values[0]
+            contract_metrics = self._metrics_for_alpha(algorithm_result.metrics_by_alpha, current_alpha)
+            if contract_metrics is not None:
+                return contract_metrics
+            if not algorithm_result.matrix_factors:
+                raise RuntimeError(
+                    f"AlgorithmResult for algorithm metrics-only path did not provide "
+                    f"metrics for alpha={current_alpha}. The active runner path must "
+                    "not recover missing metrics from private _batch_metrics."
+                )
+
         # === 优先使用算法内部计算的 Metrics (针对 Tensor 等复杂模式) ===
-        if algorithm is not None:
+        if algorithm_result is None and algorithm is not None:
             # Check for batch pre-computed metrics
             if hasattr(algorithm, '_batch_metrics') and algorithm._batch_metrics:
+                if type(algorithm) not in self._warned_private_metric_channel:
+                    logger.warning(
+                        "Algorithm %s exposed metrics through legacy _batch_metrics; "
+                        "runner wrapped it into AlgorithmResult for the active path.",
+                        type(algorithm).__name__,
+                    )
+                    self._warned_private_metric_channel.add(type(algorithm))
                 # data.alpha_values usually contains 1 alpha in this context
                 current_alpha = data.alpha_values[0]
                 # Try exact match first
@@ -798,204 +1038,66 @@ class ExperimentRunner:
                             metrics[f"{k}_std"] = 0.0
                     return metrics
 
-        """Compute evaluation metrics."""
         try:
-            # ===== Spreading 算法专用 metrics =====
-            if data.spreading_data is not None:
+            from ...modules.metrics.contract_compute import compute_metric_payload
 
-                from ...modules.metrics.spreading import compute_all_metrics_spreading_parallel
-                
-                # Reshape W, X for spreading metrics: (A, S, N, M) -> (S, A, N, M)
-                if W_students.dim() == 4:
-                    # Already (A, S, N1, M) or (S, A, N1, M)
-                    # compute_all_metrics_spreading_parallel expects (S, A, N1, M)
-                    if W_students.shape[0] != data.spreading_data.S:
-                        W_for_metrics = W_students.transpose(0, 1)
-                        X_for_metrics = X_students.transpose(0, 1)
-                    else:
-                        W_for_metrics = W_students
-                        X_for_metrics = X_students
-                else:
-                    W_for_metrics = W_students
-                    X_for_metrics = X_students
-                
-                # Check for single-alpha slice (when W has 1 alpha but spreading_data has many)
-                target_alpha_idx = None
-                S, A_in_W = W_for_metrics.shape[:2]
-                A_spreading = len(data.spreading_data.alpha_values)
-                
-                if A_in_W == 1 and A_spreading > 1 and data.alpha_values is not None and len(data.alpha_values) == 1:
-                    current_alpha = data.alpha_values[0]
-                    # Find closest match in spreading_data alpha values
-                    diffs = [abs(a - current_alpha) for a in data.spreading_data.alpha_values]
-                    best_idx = diffs.index(min(diffs))
-                    target_alpha_idx = int(best_idx)
-
-
-                metrics_tensor = compute_all_metrics_spreading_parallel(
-                    W_for_metrics, X_for_metrics, data.spreading_data,
-                    target_alpha_idx=target_alpha_idx
-                )
-                
-                # 返回第一个 alpha 的值（用于单点计算）
-                # 或者返回所有值的平均（用于汇总）
-                # If target_alpha_idx was used, results are already size (1,) or scalar-like
-                
-                result = {}
-                for key, val in metrics_tensor.items():
-                    if key == 'alpha_values':
-                        continue
-                        
-                    if isinstance(val, torch.Tensor):
-                        if val.numel() == 1:
-                            result[key] = float(val.item())
-                        elif val.dim() == 1 and len(val) > 0:
-                            # Return first element (should only be 1 if target_alpha_idx used)
-                            result[key] = float(val[0])
-                        else:
-                            # Fallback mean
-                            result[key] = float(val.mean().item())
-                    else:
-                        result[key] = float(val)
-                return result
-            
-            # ===== 标准算法 metrics =====
-            from ...modules.metrics.overlap import (
-                compute_cosine_similarity,
-                gram_overlap_normalized,
-                compute_qy,
-                _compute_qy_masked,
+            return compute_metric_payload(
+                W_students=W_students,
+                X_students=X_students,
+                data=data,
             )
-            
-            if W_students.dim() == 4:
-                W_for_metrics = W_students.mean(dim=0)
-                X_for_metrics = X_students.mean(dim=0)
-            else:
-                W_for_metrics = W_students
-                X_for_metrics = X_students
-            
-            S = W_for_metrics.shape[0]
-            
-            # A类: Cosine Similarity (Teacher-Student)
-            Q_W_list = []
-            Q_X_list = []
-            # B类: Normalized (Prime)
-            Q_W_prime_list = []
-            Q_X_prime_list = []
-            # D类: Physical Overlap
-            Physical_W_list = []
-            Physical_X_list = []
-            # Y metrics
-            Q_Y_list = []
-            MSE_list = []
-            Physical_Y_list = []
-            Q_Y_observed_list = []
-            Q_Y_unobserved_list = []
-            
-            # OPTIMIZATION: Reuse pre-computed Y_teacher from DataFactory
-            # data.Y_teacher is scaled by 1/sqrt(M), so we multiply back to match W@X convention
-            import math
-            Y_teacher = data.Y_teacher * math.sqrt(data.M)
-            
-            # OPTIMIZATION: Vectorized student Y computation via Batch Matrix Multiply
-            # (S, N1, M) @ (S, M, N2) -> (S, N1, N2)
-            Y_students = torch.bmm(W_for_metrics, X_for_metrics)
-            
-            for s in range(S):
-                # A类: Cosine Similarity
-                Q_W_list.append(compute_cosine_similarity(W_for_metrics[s], data.W_teacher, use_left=True))
-                Q_X_list.append(compute_cosine_similarity(X_for_metrics[s], data.X_teacher, use_left=False))
-                
-                # B类: Normalized (Prime)
-                Q_W_prime_list.append(gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True))
-                Q_X_prime_list.append(gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False))
-                
-                # D类: Physical Overlap (<A,B> / ||B||^2, with abs for sign ambiguity)
-                w_dot = (W_for_metrics[s] * data.W_teacher).sum()
-                w_norm_sq = (data.W_teacher ** 2).sum() + 1e-12
-                Physical_W_list.append(float(w_dot.abs() / w_norm_sq))
-                
-                x_dot = (X_for_metrics[s] * data.X_teacher).sum()
-                x_norm_sq = (data.X_teacher ** 2).sum() + 1e-12
-                Physical_X_list.append(float(x_dot.abs() / x_norm_sq))
-                
-                # Q_Y
-                Q_Y_list.append(compute_qy(Y_students[s], Y_teacher))
-                
-                # MSE
-                MSE_list.append(float((Y_students[s] - Y_teacher).pow(2).mean()))
-                
-                # D类: Physical Overlap Y
-                y_dot = (Y_students[s] * Y_teacher).sum()
-                y_norm_sq = (Y_teacher ** 2).sum() + 1e-12
-                Physical_Y_list.append(float(y_dot / y_norm_sq))
-                
-                # C类: Observed/Unobserved
-                if data.masks is not None:
-                    if data.masks.dim() == 3:
-                        mask = data.masks[0]
-                    else:
-                        mask = data.masks
-                    
-                    Q_Y_observed_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=True))
-                    Q_Y_unobserved_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=False))
-            
-            # Replica metrics (Student-Student)
-            Q_W_replica_list = []
-            Q_X_replica_list = []
-            Q_W_prime_replica_list = []
-            Q_X_prime_replica_list = []
-            
-            if S >= 2:
-                for i in range(S):
-                    for j in range(i+1, S):
-                        Q_W_replica_list.append(compute_cosine_similarity(W_for_metrics[i], W_for_metrics[j], use_left=True))
-                        Q_X_replica_list.append(compute_cosine_similarity(X_for_metrics[i], X_for_metrics[j], use_left=False))
-                        Q_W_prime_replica_list.append(gram_overlap_normalized(W_for_metrics[i], W_for_metrics[j], use_left=True))
-                        Q_X_prime_replica_list.append(gram_overlap_normalized(X_for_metrics[i], X_for_metrics[j], use_left=False))
-            
-            import numpy as np
-            result = {
-                # A类: Cosine
-                'Q_W_mean': float(np.mean(Q_W_list)),
-                'Q_W_std': float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
-                'Q_X_mean': float(np.mean(Q_X_list)),
-                'Q_X_std': float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
-                'Q_Y_mean': float(np.mean(Q_Y_list)),
-                'Q_Y_std': float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
-                'MSE': float(np.mean(MSE_list)),
-                'MSE_std': float(np.std(MSE_list, ddof=1)) if len(MSE_list) > 1 else 0.0,
-                # B类: Prime
-                'Q_W_prime_mean': float(np.mean(Q_W_prime_list)),
-                'Q_W_prime_std': float(np.std(Q_W_prime_list, ddof=1)) if len(Q_W_prime_list) > 1 else 0.0,
-                'Q_X_prime_mean': float(np.mean(Q_X_prime_list)),
-                'Q_X_prime_std': float(np.std(Q_X_prime_list, ddof=1)) if len(Q_X_prime_list) > 1 else 0.0,
-                # Replica
-                'Q_W_replica_mean': float(np.mean(Q_W_replica_list)) if Q_W_replica_list else 0.0,
-                'Q_X_replica_mean': float(np.mean(Q_X_replica_list)) if Q_X_replica_list else 0.0,
-                'Q_W_prime_replica_mean': float(np.mean(Q_W_prime_replica_list)) if Q_W_prime_replica_list else 0.0,
-                'Q_X_prime_replica_mean': float(np.mean(Q_X_prime_replica_list)) if Q_X_prime_replica_list else 0.0,
-                # D类: Physical
-                'physical_overlap_W_mean': float(np.mean(Physical_W_list)),
-                'physical_overlap_W_std': float(np.std(Physical_W_list, ddof=1)) if len(Physical_W_list) > 1 else 0.0,
-                'physical_overlap_X_mean': float(np.mean(Physical_X_list)),
-                'physical_overlap_X_std': float(np.std(Physical_X_list, ddof=1)) if len(Physical_X_list) > 1 else 0.0,
-                'physical_overlap_Y_mean': float(np.mean(Physical_Y_list)),
-                'physical_overlap_Y_std': float(np.std(Physical_Y_list, ddof=1)) if len(Physical_Y_list) > 1 else 0.0,
-            }
-            
-            # C类: Observed/Unobserved
-            if Q_Y_observed_list:
-                result['Q_Y_observed_mean'] = float(np.mean(Q_Y_observed_list))
-                result['Q_Y_observed_std'] = float(np.std(Q_Y_observed_list, ddof=1)) if len(Q_Y_observed_list) > 1 else 0.0
-            if Q_Y_unobserved_list:
-                result['Q_Y_unobserved_mean'] = float(np.mean(Q_Y_unobserved_list))
-                result['Q_Y_unobserved_std'] = float(np.std(Q_Y_unobserved_list, ddof=1)) if len(Q_Y_unobserved_list) > 1 else 0.0
-            
-            return result
         except ImportError as e:
-            print(f"Warning: metrics import failed: {e}")
-            return {'Q_W_mean': 0.0, 'Q_X_mean': 0.0, 'Q_Y_mean': 0.0}
+            raise RuntimeError(
+                "Metric computation adapter failed to load or execute. "
+                "Do not replace failed metric computation with zero-valued "
+                "placeholder metrics."
+            ) from e
+
+    @staticmethod
+    def _metrics_for_alpha(
+        metrics_by_alpha: Dict[float, Dict[str, Any]],
+        alpha: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not metrics_by_alpha:
+            return None
+        try:
+            current_alpha = float(alpha)
+        except (TypeError, ValueError):
+            current_alpha = alpha
+        if current_alpha in metrics_by_alpha:
+            return metrics_by_alpha[current_alpha]
+        for stored_alpha, metrics in metrics_by_alpha.items():
+            try:
+                if abs(float(stored_alpha) - float(current_alpha)) < 1e-6:
+                    return metrics
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _validate_metric_payload(
+        algorithm_key: str,
+        metrics: Dict[str, Any],
+        source: str = "unknown",
+    ):
+        """Fail if an algorithm emits undeclared metric keys on the main path."""
+        from matrix_factorization.modules.metrics.spec_adapter import MetricSpecAdapter
+
+        return MetricSpecAdapter.validate_payload(algorithm_key, metrics, source=source)
+
+    @staticmethod
+    def _metric_source(
+        data: ExperimentData,
+        algorithm_result: Optional[AlgorithmResult] = None,
+    ) -> str:
+        """Describe which legacy path produced this metric payload."""
+        if algorithm_result is not None:
+            current_alpha = data.alpha_values[0] if data.alpha_values else None
+            if ExperimentRunner._metrics_for_alpha(algorithm_result.metrics_by_alpha, current_alpha) is not None:
+                return "algorithm_result"
+        if data.spreading_data is not None:
+            return "runner_spreading_metrics"
+        return "runner_matrix_metrics"
 
     def _get_algorithm(self, config: ExperimentConfig) -> 'AlgorithmBase':
         """Get or create algorithm instance."""
@@ -1007,6 +1109,79 @@ class ExperimentRunner:
             algorithm = module_info.cls(algo_config, self.device)
             self._algorithm_cache[key] = algorithm
         return self._algorithm_cache[key]
+
+    @staticmethod
+    def _build_runtime_extension_executor(contract: Dict[str, Any], algorithm_key: str):
+        from matrix_factorization.modules.interventions import RuntimeExtensionExecutor
+
+        return RuntimeExtensionExecutor.from_contract(contract, algorithm_key=algorithm_key)
+
+    @staticmethod
+    def _initial_runtime_state(
+        config: ExperimentConfig,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+    ) -> 'AlgorithmStateView':
+        from matrix_factorization.core.contracts import AlgorithmStateView
+
+        return AlgorithmStateView(
+            teacher_factors={"W_teacher": W_teacher, "X_teacher": X_teacher},
+            teacher={"W_teacher": W_teacher, "X_teacher": X_teacher, "Y_teacher": Y_teacher},
+            metadata={"scan_dimension": config.scan.dimension},
+        )
+
+    @staticmethod
+    def _runtime_context(config: ExperimentConfig, hook: str, metadata: Optional[Dict[str, Any]] = None):
+        from matrix_factorization.modules.interventions import HookPoint, RuntimeHookContext
+
+        return RuntimeHookContext(
+            algorithm_key=config.algorithm_key,
+            hook=HookPoint(hook),
+            config=config,
+            metadata=dict(metadata or {}),
+        )
+
+    def _dispatch_after_batch_runtime_extensions(
+        self,
+        *,
+        config: ExperimentConfig,
+        batch_idx: int,
+        alpha_values: List[Any],
+        algorithm_result: Optional[AlgorithmResult],
+        result: ExperimentResult,
+    ) -> None:
+        runtime_extensions = getattr(self, "_runtime_extensions", None)
+        if runtime_extensions is None:
+            return
+        from matrix_factorization.core.contracts import AlgorithmStateView
+
+        metric_keys = sorted({
+            key
+            for alpha in alpha_values
+            if alpha in result.results
+            for key in (result.results[alpha].metrics or {})
+        })
+        state = AlgorithmStateView(
+            metadata={
+                "batch_idx": batch_idx,
+                "alpha_values": list(alpha_values),
+                "metric_keys": metric_keys,
+                "algorithm_result_outputs": (
+                    algorithm_result.available_outputs()
+                    if algorithm_result is not None else []
+                ),
+            }
+        )
+        runtime_extensions.dispatch(
+            "after_batch",
+            state,
+            self._runtime_context(
+                config,
+                "after_batch",
+                metadata={"batch_idx": batch_idx, "alpha_values": list(alpha_values)},
+            ),
+        )
     
     def _build_algorithm_config(self, config: ExperimentConfig) -> Any:
         # Create a mock config object that algorithms expect
@@ -1024,6 +1199,7 @@ class ExperimentRunner:
             noise_var: float = config.algorithm_params.noise_var
             learning_rate: float = config.algorithm_params.learning_rate
             use_compile: bool = config.algorithm_params.use_compile
+            use_bf16: bool = config.algorithm_params.use_bf16
             adaptive_damping: bool = config.algorithm_params.adaptive_damping
         
         @dc
@@ -1038,7 +1214,8 @@ class ExperimentRunner:
             f_distribution: str = config.spreading.f_distribution if config.spreading else "rademacher"
             onsager_correction: bool = config.spreading.onsager_correction if config.spreading else False
             allow_intra_connection: bool = config.spreading.allow_intra_connection if config.spreading else False
-            seed: int = config.seeds.spreading_seed
+            seed: int = getattr(config.spreading, "seed", config.seeds.spreading_seed) if config.spreading else config.seeds.spreading_seed
+            chunk_size: int = getattr(config.spreading, "chunk_size", 131072) if config.spreading else 131072
             tensor_order: int = getattr(config.spreading, 'tensor_order', 2) if config.spreading else 2
         
         @dc

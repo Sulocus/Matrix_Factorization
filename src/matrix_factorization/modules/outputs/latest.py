@@ -70,7 +70,8 @@ def _newest_run_dirs(source_dir: Path, count: int) -> List[Path]:
         if path.is_dir()
         and not path.name.startswith("_")
         and path.name != "latest"
-        and ((path / "config.json").exists() or (path / "metadata.json").exists())
+        and (path / "config.json").exists()
+        and (path / "metadata.json").exists()
     ]
     return sorted(candidates, key=_run_sort_key, reverse=True)[:count]
 
@@ -116,7 +117,7 @@ def _build_summary(
     scan_values = scan.get("values") or []
     matrix = config.get("matrix", {})
     training = config.get("training", {})
-    spreading = config.get("spreading", {})
+    spreading = config.get("spreading") or {}
     results_pt = run_dir / "results.pt"
 
     summary: Dict[str, Any] = {
