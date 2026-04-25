@@ -8,6 +8,8 @@ from matrix_factorization.core.contracts import (
     get_tensor_parity_report,
 )
 from matrix_factorization.core.planning import build_experiment_plan
+from matrix_factorization.core.parallel import EstimationParams
+from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
 from matrix_factorization.modules.algorithms.bigamp.tensor_contract import (
     build_tensor_alpha_batch_metadata,
     build_tensor_execution_metadata,
@@ -163,3 +165,31 @@ def test_tensor_parallel_experiment_plan_resource_summary_is_metadata_only(tmp_p
     assert plan.resource_plan["memory_model"]["probe_required"] is True
     assert plan.resource_plan["config_effective"]["use_bf16"] is False
     assert plan.resource_plan["config_effective"]["use_compile"] is False
+
+
+def test_tensor_memory_estimator_consumes_tensor_order_and_dims():
+    estimator = MemoryEstimator()
+    order3 = EstimationParams(
+        N1=4,
+        N2=5,
+        M=2,
+        S=1,
+        alpha_values=[0.2],
+        algorithm_key="bigamp_tensor_parallel",
+        use_bf16=False,
+        tensor_order=3,
+        tensor_dims=(4, 5, 4),
+    )
+    order4 = EstimationParams(
+        N1=4,
+        N2=5,
+        M=2,
+        S=1,
+        alpha_values=[0.2],
+        algorithm_key="bigamp_tensor_parallel",
+        use_bf16=False,
+        tensor_order=4,
+        tensor_dims=(4, 5, 4, 4),
+    )
+
+    assert estimator.estimate(order4).total_gb > estimator.estimate(order3).total_gb

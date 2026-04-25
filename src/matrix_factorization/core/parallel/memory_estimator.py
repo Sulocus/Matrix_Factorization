@@ -997,13 +997,13 @@ def estimate_tensor_spreading(params: EstimationParams) -> float:
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
     alpha_max = params.alpha_max
     
-    # Get tensor order from params if available
     tensor_order = getattr(params, 'tensor_order', 3)
+    tensor_dims = getattr(params, 'tensor_dims', None) or tuple([N1] * tensor_order)
     
     # Estimate hyperedges: C = ceil(alpha * sum(N_d) * M) (degrees of freedom scaling)
     import math
     # Use DOF scaling: C = alpha * sum(N_d) * M
-    dof = tensor_order * N1 * M  # Assume square dims
+    dof = sum(tensor_dims) * M
     C = max(1, int(math.ceil(alpha_max * dof)))
     
     # Storage dtype
@@ -1011,13 +1011,13 @@ def estimate_tensor_spreading(params: EstimationParams) -> float:
     f_bytes = 1 if params.f_distribution == 'rademacher' else 4
     
     # Factor tensors: n factors × (S, N, M) for parallel version
-    factor_memory = tensor_order * S * N1 * M * storage_bytes
+    factor_memory = S * sum(tensor_dims) * M * storage_bytes
     
     # F and Y: (S, C, M) and (S, C)
     fy_memory = S * C * M * f_bytes + S * C * storage_bytes
     
     # Intermediate: Var matrices × n factors
-    var_memory = tensor_order * S * N1 * M * storage_bytes
+    var_memory = S * sum(tensor_dims) * M * storage_bytes
     
     # Scatter/gather temporaries: (S, C, M)
     temp_memory = 3 * S * C * M * storage_bytes
@@ -1123,4 +1123,3 @@ def get_registered_algorithms() -> List[str]:
 def is_algorithm_registered(algo_key: str) -> bool:
     """Check if an algorithm is registered."""
     return algo_key in MemoryEstimator._estimators
-

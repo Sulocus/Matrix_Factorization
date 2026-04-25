@@ -772,6 +772,13 @@ class ExperimentRunner:
             f_dist = config.spreading.f_distribution
 
         allow_intra = getattr(config.spreading, 'allow_intra_connection', False) if config.spreading else False
+        tensor_order = getattr(config.spreading, 'tensor_order', 2) if config.spreading else 2
+        tensor_dims = None
+        if tensor_order >= 2:
+            tensor_dims_list = [config.matrix.N1, config.matrix.N2]
+            for _ in range(2, tensor_order):
+                tensor_dims_list.append(config.matrix.N1)
+            tensor_dims = tuple(tensor_dims_list)
         return EstimationParams(
             N1=config.matrix.N1,
             N2=config.matrix.N2,
@@ -784,6 +791,8 @@ class ExperimentRunner:
             f_distribution=f_dist,
             adaptive_damping=config.algorithm_params.adaptive_damping,
             allow_intra_connection=allow_intra,
+            tensor_order=tensor_order,
+            tensor_dims=tensor_dims,
         )
 
     def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:

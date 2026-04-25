@@ -45,6 +45,8 @@ class EstimationParams:
     f_distribution: str = 'rademacher'  # 'gaussian' or 'rademacher'
     adaptive_damping: bool = False  # Whether using adaptive damping (doubles memory for backtracking)
     allow_intra_connection: bool = False  # General Graph mode (W-W, X-X connections)
+    tensor_order: int = 2
+    tensor_dims: Optional[Tuple[int, ...]] = None
     
     @property
     def alpha_max(self) -> float:

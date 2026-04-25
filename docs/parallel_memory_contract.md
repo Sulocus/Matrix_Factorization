@@ -71,6 +71,7 @@ probe: A=1 tensor supergraph probe
 dtype: float32 / bf16 storage / tf32 matmul
 compile: torch.compile default optional
 seed sensitive: true
+estimation params: tensor_order and tensor_dims are passed explicitly to MemoryEstimator
 ```
 
 风险：algorithm 内部会排序 alpha，并使用 `seed + batch_idx`。改变 batch partition 会改变 graph/F/student random stream。当前所有 ResourceSpec/BatchingSpec 都是 metadata-only，不能直接用来自动调 batch。
