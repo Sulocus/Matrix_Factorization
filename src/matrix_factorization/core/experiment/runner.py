@@ -802,12 +802,9 @@ class ExperimentRunner:
 
     def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:
         """Serialize the actual runner-level execution plan as metadata only."""
-        from matrix_factorization.core.contracts import get_seed_policy_specs
-
         allocation = getattr(plan, "allocation_config", None)
         algorithm_params = getattr(config, "algorithm_params", None)
         spreading = getattr(config, "spreading", None)
-        seed_policy = get_seed_policy_specs().get(config.algorithm_key)
         return {
             "algorithm_key": config.algorithm_key,
             "device": str(self.device),
@@ -825,19 +822,15 @@ class ExperimentRunner:
             },
             "config_effective": {
                 "use_compile": getattr(algorithm_params, "use_compile", None),
+                "compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
                 "use_bf16": getattr(algorithm_params, "use_bf16", None),
+                "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
+                "use_tf32": getattr(algorithm_params, "use_tf32", None),
+                "seed_partition_policy": getattr(algorithm_params, "seed_partition_policy", None),
                 "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
                 "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
             },
-            "seed_policy": {
-                "policy_key": seed_policy.policy_key if seed_policy else "",
-                "seed_inputs": list(seed_policy.seed_inputs) if seed_policy else [],
-                "random_streams": list(seed_policy.random_streams) if seed_policy else [],
-                "partition_invariant": seed_policy.partition_invariant if seed_policy else False,
-                "batch_partition_sensitive": seed_policy.batch_partition_sensitive if seed_policy else True,
-                "automatic_rebatch_allowed": seed_policy.automatic_rebatch_allowed if seed_policy else False,
-                "notes": seed_policy.notes if seed_policy else "",
-            },
+            "seed_policy": self._effective_runtime_seed_policy(config),
             "batches": [
                 {
                     "batch_index": idx,
@@ -855,6 +848,35 @@ class ExperimentRunner:
             ],
             "metadata_only": True,
             "notes": "Runner-level resource metadata; it does not drive execution or change batching.",
+        }
+
+    @staticmethod
+    def _effective_runtime_seed_policy(config: ExperimentConfig) -> Dict[str, Any]:
+        from matrix_factorization.core.contracts import get_seed_policy_specs
+
+        seed_policy = get_seed_policy_specs().get(config.algorithm_key)
+        algorithm_params = getattr(config, "algorithm_params", None)
+        requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
+        if config.algorithm_key == "bigamp_tensor_parallel" and requested_policy == "partition_invariant":
+            return {
+                "policy_key": "tensor_parallel_partition_invariant_v1",
+                "seed_inputs": ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"],
+                "random_streams": ["student_initialization", "tensor_supergraph", "F_tensor"],
+                "partition_invariant": True,
+                "batch_partition_sensitive": False,
+                "automatic_rebatch_allowed": True,
+                "notes": "Opt-in tensor parallel seed policy; default legacy behavior is unchanged.",
+                "requested_policy": requested_policy,
+            }
+        return {
+            "policy_key": seed_policy.policy_key if seed_policy else "",
+            "seed_inputs": list(seed_policy.seed_inputs) if seed_policy else [],
+            "random_streams": list(seed_policy.random_streams) if seed_policy else [],
+            "partition_invariant": seed_policy.partition_invariant if seed_policy else False,
+            "batch_partition_sensitive": seed_policy.batch_partition_sensitive if seed_policy else True,
+            "automatic_rebatch_allowed": seed_policy.automatic_rebatch_allowed if seed_policy else False,
+            "notes": seed_policy.notes if seed_policy else "",
+            "requested_policy": requested_policy,
         }
 
     def _run_algorithm_result(

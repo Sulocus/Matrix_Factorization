@@ -261,6 +261,32 @@ def test_runner_resource_plan_report_is_metadata_only():
     assert report["seed_policy"]["automatic_rebatch_allowed"] is False
 
 
+def test_runtime_resource_plan_uses_effective_tensor_seed_policy():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=2),
+        algorithm_key="bigamp_tensor_parallel",
+        scan=ScanConfig(dimension="alpha", values=[0.0, 0.5]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=False,
+            seed_partition_policy="partition_invariant",
+        ),
+        spreading=SpreadingConfig(tensor_order=3),
+        teacher_key="standard",
+    )
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    params = runner._estimation_params_for_config(config, config.scan.values)
+    plan = runner.parallel_coordinator.plan_execution(params)
+    report = runner._runtime_resource_plan_report(config, plan)
+
+    assert report["config_effective"]["seed_partition_policy"] == "partition_invariant"
+    assert report["seed_policy"]["policy_key"] == "tensor_parallel_partition_invariant_v1"
+    assert report["seed_policy"]["partition_invariant"] is True
+    assert report["seed_policy"]["batch_partition_sensitive"] is False
+    assert report["seed_policy"]["automatic_rebatch_allowed"] is True
+
+
 def test_spreading_chunk_policy_is_preserved_in_algorithm_result_metadata():
     algorithm = object.__new__(BiGAMPSpreading)
     algorithm.chunk_size = 1024

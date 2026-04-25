@@ -102,6 +102,7 @@ tensor parallel 会启用 opt-in v1 seed policy：
 - student initialization 按 `(base_seed, alpha, sample, dimension, role)` 分流。
 - internal batch seed 不再使用 `seed + batch_idx`。
 - `resource_plan.seed_policy` 会标记 `partition_invariant=true`、`batch_partition_sensitive=false`、`automatic_rebatch_allowed=true`。
+- run metadata 的 `runtime_resource_plan.seed_policy` 也会记录同一套 effective policy。
 
 默认 `legacy` 不变；spreading、dense BigAMP 和 AGD 仍不允许自动重分批。
 
