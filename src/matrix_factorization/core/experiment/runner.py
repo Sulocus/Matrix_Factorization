@@ -1322,10 +1322,33 @@ class ExperimentRunner:
         if algorithm_result is not None:
             algorithm_metadata = dict(getattr(algorithm_result, "metadata", {}) or {})
             state_metadata["algorithm_result_metadata_keys"] = sorted(algorithm_metadata)
+            state_metadata["result_contract"] = algorithm_metadata.get("result_contract")
+            state_metadata["result_kind"] = algorithm_metadata.get("result_kind")
+            state_metadata["result_source"] = algorithm_metadata.get("result_source")
+            state_metadata["batching_source"] = algorithm_metadata.get("batching_source")
+            state_metadata["metrics_by_alpha_count"] = len(getattr(algorithm_result, "metrics_by_alpha", {}) or {})
+            state_metadata["metrics_by_alpha_keys"] = sorted({
+                key
+                for metrics in (getattr(algorithm_result, "metrics_by_alpha", {}) or {}).values()
+                for key in (metrics or {})
+            })
             if isinstance(algorithm_metadata.get("execution_metadata"), dict):
                 state_metadata["execution_metadata_keys"] = sorted(algorithm_metadata["execution_metadata"])
             if isinstance(algorithm_metadata.get("tensor_execution"), dict):
                 state_metadata["tensor_execution_keys"] = sorted(algorithm_metadata["tensor_execution"])
+            if isinstance(algorithm_metadata.get("internal_alpha_batch_plan"), dict):
+                internal_plan = algorithm_metadata["internal_alpha_batch_plan"]
+                alpha_batches = internal_plan.get("alpha_batches")
+                state_metadata["internal_alpha_batch_plan_keys"] = sorted(internal_plan)
+                state_metadata["internal_alpha_batch_plan_summary"] = {
+                    "planner": internal_plan.get("planner"),
+                    "num_batches": internal_plan.get("num_batches"),
+                    "alpha_batch_count": len(alpha_batches) if isinstance(alpha_batches, list) else None,
+                    "probe_enabled": internal_plan.get("probe_enabled"),
+                    "seed_partition_sensitive": internal_plan.get("seed_partition_sensitive"),
+                    "max_alphas_per_batch": internal_plan.get("max_alphas_per_batch"),
+                    "metadata_only": bool(internal_plan.get("metadata_only", True)),
+                }
 
         state = AlgorithmStateView(metadata=state_metadata)
         runtime_extensions.dispatch(

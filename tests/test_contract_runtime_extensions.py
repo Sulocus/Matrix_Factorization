@@ -337,8 +337,20 @@ probes:
         algorithm_result=AlgorithmResult.from_metrics_only(
             metrics_by_alpha={0.0: {"Q_Y_mean": 0.5}},
             metadata={
+                "result_contract": "legacy_tensor_metrics_only",
+                "result_source": "unit_fixture",
+                "batching_source": "algorithm_internal_probe_alpha_batches",
                 "tensor_execution": {"compile_status": "disabled_by_config"},
                 "execution_metadata": {"chunk_policy": "manual_config"},
+                "internal_alpha_batch_plan": {
+                    "planner": "tensor_parallel_probe_alpha_batching",
+                    "alpha_batches": [[0.0]],
+                    "num_batches": 1,
+                    "probe_enabled": False,
+                    "seed_partition_sensitive": True,
+                    "max_alphas_per_batch": 1,
+                    "metadata_only": True,
+                },
             },
         ),
         result=result,
@@ -359,13 +371,46 @@ probes:
         "metrics_by_alpha"
     ]
     assert "tensor_execution" in report["probe_reports"]["batch_summary"][0]["algorithm_result_metadata_keys"]
+    assert report["probe_reports"]["batch_summary"][0]["result_contract"] == "legacy_tensor_metrics_only"
+    assert report["probe_reports"]["batch_summary"][0]["result_kind"] == "metrics_only"
+    assert report["probe_reports"]["batch_summary"][0]["result_source"] == "unit_fixture"
+    assert report["probe_reports"]["batch_summary"][0]["batching_source"] == "algorithm_internal_probe_alpha_batches"
+    assert report["probe_reports"]["batch_summary"][0]["metrics_by_alpha_count"] == 1
+    assert report["probe_reports"]["batch_summary"][0]["metrics_by_alpha_keys"] == ["Q_Y_mean"]
     assert report["probe_reports"]["batch_summary"][0]["tensor_execution_keys"] == [
         "compile_status"
     ]
     assert report["probe_reports"]["batch_summary"][0]["execution_metadata_keys"] == [
         "chunk_policy"
     ]
+    assert report["probe_reports"]["batch_summary"][0]["internal_alpha_batch_plan_summary"] == {
+        "planner": "tensor_parallel_probe_alpha_batching",
+        "num_batches": 1,
+        "alpha_batch_count": 1,
+        "probe_enabled": False,
+        "seed_partition_sensitive": True,
+        "max_alphas_per_batch": 1,
+        "metadata_only": True,
+    }
     assert report["probe_reports"]["batch_summary"][0]["metadata_only"] is True
+
+
+def test_after_batch_probe_does_not_require_algorithm_step_state(tmp_path):
+    config_path = tmp_path / "with_batch_probe.yaml"
+    _write_config(
+        config_path,
+        """
+probes:
+  - key: batch_summary
+""",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert plan.is_valid
+    assert plan.probe_specs[0].key == "batch_summary"
+    assert plan.probe_specs[0].requires_state == []
+    assert plan.probe_specs[0].runtime_status == "runtime_active"
 
 
 def test_runner_records_runtime_extension_report_without_running_hooks_inside_algorithm(tmp_path, monkeypatch):

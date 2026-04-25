@@ -22,7 +22,7 @@
 - Legacy pytest inventory：`get_legacy_pytest_inventory()` 和 `tests/test_source_inventory.py` 强制这些 legacy/local-GPU 测试必须登记并模块级 skip。
 - Source inventory expansion：根目录表面文件、`experiments/`、`scripts/analysis|debug|experiments|maintenance|verification/`、`tests/debug|verification/`、`trials/`、config 入口、teacher/graph/metric/output/runtime-extension 源文件都已进入机器清点测试。
 - Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
-- Runtime probe metadata keys：`batch_summary` 还会记录 `AlgorithmResult.metadata`、`execution_metadata`、`tensor_execution` 的 key 列表，只暴露轻量索引，不复制 factor/tensor payload。
+- Runtime probe metadata keys：`batch_summary` 还会记录 `AlgorithmResult.metadata`、`execution_metadata`、`tensor_execution`、`internal_alpha_batch_plan` 的 key/summary，以及 result contract/kind/source、batching source 和 `metrics_by_alpha` 摘要；只暴露轻量索引，不复制 factor/tensor payload。
 - Metric schema coverage gate：active algorithm 声明的每个 legacy flat metric key 都必须被 `get_metric_schema()` 索引；新增 metric 如果没有 semantic class / flat-key 映射，contract 测试会失败。
 - Result-save metric gate：`ExperimentResult.save()` 现在会重新校验每个 scan point 的 metric payload；手工塞入未声明 metric/artifact 也会在落盘前失败。
 - Probe wiring hardening：未接入实际 runtime hook 的 `state_slice/tensor_state_slice/variance_slice` 标记为 `declared_only`，YAML 请求会 preflight error，而不是静默无产物。

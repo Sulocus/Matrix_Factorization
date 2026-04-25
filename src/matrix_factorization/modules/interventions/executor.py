@@ -146,8 +146,18 @@ class RuntimeExtensionExecutor:
                 "metric_keys": list(state.metadata.get("metric_keys", [])),
                 "algorithm_result_outputs": list(state.metadata.get("algorithm_result_outputs", [])),
                 "algorithm_result_metadata_keys": list(state.metadata.get("algorithm_result_metadata_keys", [])),
+                "result_contract": state.metadata.get("result_contract"),
+                "result_kind": state.metadata.get("result_kind"),
+                "result_source": state.metadata.get("result_source"),
+                "batching_source": state.metadata.get("batching_source"),
+                "metrics_by_alpha_count": state.metadata.get("metrics_by_alpha_count"),
+                "metrics_by_alpha_keys": list(state.metadata.get("metrics_by_alpha_keys", [])),
                 "execution_metadata_keys": list(state.metadata.get("execution_metadata_keys", [])),
                 "tensor_execution_keys": list(state.metadata.get("tensor_execution_keys", [])),
+                "internal_alpha_batch_plan_keys": list(state.metadata.get("internal_alpha_batch_plan_keys", [])),
+                "internal_alpha_batch_plan_summary": dict(
+                    state.metadata.get("internal_alpha_batch_plan_summary", {})
+                ),
                 "state_capabilities": state.available_capabilities(),
                 "metadata_only": True,
             }
