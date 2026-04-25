@@ -417,6 +417,7 @@ def build_experiment_plan(
     seed_policy_specs = get_seed_policy_specs()
 
     _validate_raw_paths(plan, parameter_specs)
+    _validate_parameter_values(plan, parameter_specs)
 
     algorithm_key = getattr(config, "algorithm_key", None)
     plan.effective_parameters.update(_effective_parameter_summary(config, output_options, raw_config))
@@ -762,6 +763,42 @@ def _validate_raw_paths(plan: ExperimentPlan, parameter_specs: Dict[str, Paramet
             plan.errors.append(f"未知 YAML 字段: {path}")
         else:
             plan.errors.append(f"未注册参数字段: {path}")
+
+
+def _validate_parameter_values(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
+    """Validate raw YAML values against ParameterSpec.type before runtime."""
+    for path, value in _flatten_config_paths(plan.raw_config):
+        spec = parameter_specs.get(path)
+        if not spec:
+            continue
+        message = _parameter_type_error(path, value, spec.value_type)
+        if message:
+            plan.errors.append(message)
+
+
+def _parameter_type_error(path: str, value: Any, type_spec: str) -> str:
+    if type_spec.startswith("enum[") and type_spec.endswith("]"):
+        allowed = [item.strip() for item in type_spec[5:-1].split(",") if item.strip()]
+        if value not in allowed:
+            return f"参数 {path} 取值无效: {value!r}；允许值: {allowed}"
+        return ""
+    if "|" in type_spec:
+        errors = [
+            _parameter_type_error(path, value, item.strip())
+            for item in type_spec.split("|")
+        ]
+        return "" if any(not error for error in errors) else errors[0]
+    if type_spec == "bool":
+        return "" if isinstance(value, bool) else f"参数 {path} 类型无效: expected bool, got {type(value).__name__}"
+    if type_spec == "int":
+        return "" if isinstance(value, int) and not isinstance(value, bool) else f"参数 {path} 类型无效: expected int, got {type(value).__name__}"
+    if type_spec == "float":
+        return "" if isinstance(value, (int, float)) and not isinstance(value, bool) else f"参数 {path} 类型无效: expected float, got {type(value).__name__}"
+    if type_spec == "str":
+        return "" if isinstance(value, str) else f"参数 {path} 类型无效: expected str, got {type(value).__name__}"
+    if type_spec.startswith("list"):
+        return "" if isinstance(value, list) else f"参数 {path} 类型无效: expected list, got {type(value).__name__}"
+    return ""
 
 
 def _effective_parameter_summary(
@@ -1203,6 +1240,8 @@ def _issue_code(message: str) -> str:
         return "UNKNOWN_YAML_FIELD"
     if "未注册参数字段" in message:
         return "UNREGISTERED_PARAMETER_FIELD"
+    if "取值无效" in message or "类型无效" in message:
+        return "INVALID_PARAMETER_VALUE"
     if "requires unknown ParameterSpec path" in message:
         return "REQUIRED_PARAMETER_UNKNOWN"
     if "requires" in message and "当前 plan 找不到 effective trace" in message:

@@ -109,6 +109,70 @@ algorithm_params:
     assert any("未注册参数字段: algorithm_params.made_up_parameter" in error for error in plan.errors)
 
 
+def test_invalid_enum_parameter_is_validation_error(tmp_path):
+    config_path = tmp_path / "bad_enum_param.yaml"
+    config_path.write_text(
+        """
+tensor_order: 3
+algorithm: 4
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.0
+  step: 1.0
+algorithm_params:
+  use_compile: false
+  seed_partition_policy: maybe
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert any("algorithm_params.seed_partition_policy" in error and "允许值" in error for error in plan.errors)
+    assert "INVALID_PARAMETER_VALUE" in plan.to_dict()["error_codes"]
+
+
+def test_invalid_bool_parameter_is_validation_error(tmp_path):
+    config_path = tmp_path / "bad_bool_param.yaml"
+    config_path.write_text(
+        """
+tensor_order: 2
+algorithm: 1
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.0
+  step: 1.0
+algorithm_params:
+  use_compile: "no"
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert any("algorithm_params.use_compile 类型无效" in error for error in plan.errors)
+
+
 def test_parsed_only_fields_are_warnings(tmp_path):
     config_path = tmp_path / "parsed_only.yaml"
     config_path.write_text(

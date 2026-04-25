@@ -68,6 +68,7 @@ deprecated
 ## 当前策略
 
 - 未注册 YAML 字段直接 error。
+- 已注册字段会按 `ParameterSpec.type` 做基础值检查；例如 `enum[...]` 写错或 bool 写成字符串，会在 `mf validate` 阶段报 `INVALID_PARAMETER_VALUE`。
 - `@register_teacher(...)` / `@register_graph(...)` 注册时必须能绑定同名 `TeacherSpec` / `GraphSpec`；新增 teacher 或 graph 生成器不能只注册代码而没有 contract。
 - active 参数如果在当前 algorithm/scan 路由下不生效，普通 `validate` 会 warning，`validate --strict` 会 error。
 - `AlgorithmSpec.required_config_paths` 和 `TeacherSpec.required_config_paths` 会被 preflight 实际检查；如果 spec 声明需要某个字段但当前 plan 找不到 effective trace，或该字段在当前路由下不生效，validate 会 error。

@@ -42,6 +42,7 @@
 - Resource parameter route narrowing：`algorithm_params.use_compile/use_bf16` 的 `ParameterSpec` 和 active-route 判断已收窄到真实消费它们的 algorithm；例如 dense `bigamp` 下写 `use_bf16` 会显示 inactive，AGD 下写 `use_compile` 会显示 inactive。
 - Tensor seed partition policy v1：新增 `algorithm_params.seed_partition_policy`，默认 `legacy` 保持 `seed + batch_idx`；`partition_invariant` 为 tensor parallel 启用按 alpha/sample/dimension/role 分流的稳定 seed，并在 resource plan 中标记 `automatic_rebatch_allowed=true`。
 - Runtime seed policy metadata：run metadata 的 `runtime_resource_plan.seed_policy` 现在使用 effective seed policy；显式 `partition_invariant` 不会出现 plan 与 run metadata 一个说 invariant、一个说 legacy 的断裂。
+- Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
 
 ## 本轮继续推进
 
