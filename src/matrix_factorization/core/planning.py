@@ -689,7 +689,7 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     if path in {
         "algorithm_params.dtype_fallback_policy",
     }:
-        return algorithm_key in {"bigamp_spreading", "bigamp_tensor_parallel"}
+        return algorithm_key in {"agd", "bigamp_spreading", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.adaptive_restart",
         "algorithm_params.restart_patience",

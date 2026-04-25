@@ -48,8 +48,35 @@ class AGDAlgorithm(AlgorithmBase):
         self.patience = getattr(config.algorithm, 'early_stop_patience', 5)
 
         # BF16 settings
-        self.use_bf16 = device.type == 'cuda'
+        self.requested_use_bf16 = getattr(config.algorithm, 'use_bf16', True)
+        self.dtype_fallback_policy = getattr(config.algorithm, 'dtype_fallback_policy', 'allow')
+        if self.dtype_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
+                f"got {self.dtype_fallback_policy!r}"
+            )
+        self.use_bf16 = bool(self.requested_use_bf16) and device.type == 'cuda'
+        if self.use_bf16:
+            self.dtype_status = "bf16_requested_and_effective_cuda_autocast"
+        elif self.requested_use_bf16:
+            self.dtype_status = "fallback_to_float32_non_cuda"
+            if self.dtype_fallback_policy == 'error':
+                raise RuntimeError(
+                    "BF16 was requested but AGD is running on a non-CUDA device and "
+                    "algorithm_params.dtype_fallback_policy='error'"
+                )
+        else:
+            self.dtype_status = "bf16_disabled_by_config"
         self.compute_dtype = torch.bfloat16 if self.use_bf16 else torch.float32
+        self._contract_execution_metadata = {
+            "path": "agd_matrix_autocast",
+            "requested_use_bf16": bool(self.requested_use_bf16),
+            "effective_use_bf16": bool(self.use_bf16),
+            "dtype_fallback_policy": self.dtype_fallback_policy,
+            "dtype_status": self.dtype_status,
+            "compute_dtype": str(self.compute_dtype).replace("torch.", ""),
+            "metadata_only": True,
+        }
 
     def train_single_alpha(
         self,

@@ -19,6 +19,8 @@ planner: runner.ParallelCoordinator
 alpha batching: runner alpha batches
 sample batching: samples inside algorithm tensor
 resource estimator: runner.MemoryEstimator
+dtype: float32 / cuda bf16 autocast, controlled by algorithm_params.use_bf16
+dtype fallback: algorithm_params.dtype_fallback_policy
 ```
 
 当前 contract 标记 `sample_range_honored=false`，因为 runner 的 sample-range plan 没有作为正式 algorithm 输入传入。
@@ -179,7 +181,7 @@ internal_alpha_batch_plan
 
 这个策略不处理 OOM retry，也不自动切换 BF16/TF32。
 
-`algorithm_params.dtype_fallback_policy` 只控制 BF16 请求不能满足时的行为，目前接入 `bigamp_spreading` 和 `bigamp_tensor_parallel`：
+`algorithm_params.dtype_fallback_policy` 只控制 BF16 请求不能满足时的行为，目前接入 `agd`、`bigamp_spreading` 和 `bigamp_tensor_parallel`：
 
 - `allow`：默认值，保持旧行为；BF16 不可用时使用 FP32，并在 `dtype_status` 里记录 fallback。
 - `error`：严格调试模式；如果用户请求 BF16 但设备不可用或不支持 BF16，初始化直接失败。

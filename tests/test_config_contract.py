@@ -19,6 +19,7 @@ from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel im
     BiGAMPTensorSpreadingParallel,
 )
 from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+from matrix_factorization.modules.algorithms.agd import AGDAlgorithm
 
 
 def _write_config(path: Path, tensor_order: int, algorithm):
@@ -108,6 +109,27 @@ def test_spreading_respects_use_bf16_false(monkeypatch, tmp_path):
     assert algorithm.storage_dtype == torch.float32
     assert algorithm.dtype_status == "bf16_disabled_by_config"
     assert algorithm._contract_execution_metadata["requested_use_bf16"] is False
+    assert algorithm._contract_execution_metadata["dtype_status"] == "bf16_disabled_by_config"
+
+
+def test_agd_respects_use_bf16_false_on_cuda_device():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
+        algorithm_key="agd",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_bf16=False,
+            dtype_fallback_policy="allow",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    algorithm = AGDAlgorithm(algo_config, device=torch.device("cuda"))
+
+    assert algorithm.requested_use_bf16 is False
+    assert algorithm.use_bf16 is False
+    assert algorithm.compute_dtype == torch.float32
     assert algorithm._contract_execution_metadata["dtype_status"] == "bf16_disabled_by_config"
 
 
@@ -354,6 +376,24 @@ def test_spreading_dtype_fallback_policy_error_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="dtype_fallback_policy='error'"):
         BiGAMPSpreading(config, device=torch.device("cpu"))
+
+
+def test_agd_dtype_fallback_policy_error_raises_on_cpu():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
+        algorithm_key="agd",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_bf16=True,
+            dtype_fallback_policy="error",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+
+    with pytest.raises(RuntimeError, match="dtype_fallback_policy='error'"):
+        AGDAlgorithm(algo_config, device=torch.device("cpu"))
 
 
 def test_scaling_sweep_propagates_teacher_and_contract_metadata(monkeypatch):
