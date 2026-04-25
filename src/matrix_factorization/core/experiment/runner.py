@@ -1344,6 +1344,7 @@ class ExperimentRunner:
             noise_var: float = config.algorithm_params.noise_var
             learning_rate: float = config.algorithm_params.learning_rate
             use_compile: bool = config.algorithm_params.use_compile
+            compile_fallback_policy: str = config.algorithm_params.compile_fallback_policy
             use_bf16: bool = config.algorithm_params.use_bf16
             dtype_fallback_policy: str = config.algorithm_params.dtype_fallback_policy
             adaptive_damping: bool = config.algorithm_params.adaptive_damping

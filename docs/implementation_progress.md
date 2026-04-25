@@ -36,7 +36,7 @@
 - Tensor parity report in plan：tensor serial/parallel gap report 已接入 `ExperimentPlan`、`mf explain-config` 和 `mf validate --json`，tensor 配置会直接显示 shared/missing metrics 与 result contract 差异。
 - Intervention contract detail：`ExperimentPlan.to_dict()` 现在输出 `intervention_contracts`，记录 trigger、requires_state、modifies_state 和 physical_sensitive；后续新增 intervention 不会只在名字层面接入。
 - Trial regression：`mf trial validate/run matrix_bigamp_quick` 已在 result-save hard gate 后重新验证，quick trial 输出仍隔离在 ignored `runs/trials/`，并写出 metric schema 与 batch memory breakdown。
-- Compile fallback policy：新增 `algorithm_params.compile_fallback_policy`，默认 `allow` 保持旧 eager fallback；设为 `error` 时 spreading/tensor parallel 的 `torch.compile` 失败会在初始化阶段报错。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
+- Compile fallback policy：新增 `algorithm_params.compile_fallback_policy`，默认 `allow` 保持旧 eager fallback；设为 `error` 时 dense BigAMP/spreading/tensor parallel 的 `torch.compile` 失败会在初始化阶段报错。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
 - DType fallback policy：新增 `algorithm_params.dtype_fallback_policy`，默认 `allow` 保持 BF16 不可用时回到 FP32 的旧行为；设为 `error` 时 AGD/spreading/tensor parallel 请求 BF16 但不可用会初始化失败。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
 - Resource parameter route narrowing：`algorithm_params.use_compile/use_bf16` 的 `ParameterSpec` 和 active-route 判断已收窄到真实消费它们的 algorithm；例如 dense `bigamp` 下写 `use_bf16` 会显示 inactive，AGD 下写 `use_compile` 会显示 inactive。
 
@@ -56,6 +56,7 @@
   - seed policy 已机器可读化；当前 partition-sensitive 算法禁止把自动重分批当成等价行为。
   - OOM 自动 replan 已 hard-gate；当前策略是 checkpoint/resume，不自动改变 batch partition。
   - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
+  - dense `bigamp` compile fallback 已进入 metadata；compile 失败时不再只靠 console print 暴露。
   - `bigamp_spreading` compile fallback 已进入 metadata；`requested_use_compile/effective_use_compile` 不再混用同一个字段。
   - spreading chunk_size 已进入 algorithm result metadata；当前仍是手动配置而不是自动调参。
   - `agd` 已消费 `algorithm_params.use_bf16=false`，不会再只根据 CUDA device 自动打开 autocast。

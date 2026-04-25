@@ -19,6 +19,7 @@ from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel im
     BiGAMPTensorSpreadingParallel,
 )
 from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+from matrix_factorization.modules.algorithms.bigamp.standard import BiGAMPAlgorithm
 from matrix_factorization.modules.algorithms.agd import AGDAlgorithm
 
 
@@ -186,6 +187,29 @@ def test_spreading_records_compile_fallback_policy(tmp_path):
     assert algorithm._contract_execution_metadata["compile_status"] == "disabled_by_config"
 
 
+def test_bigamp_records_compile_fallback_policy(tmp_path):
+    config_path = tmp_path / "matrix.yaml"
+    _write_config(config_path, tensor_order=2, algorithm=1)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "  use_compile: false",
+        "  use_compile: false\n  compile_fallback_policy: error",
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    from matrix_factorization.core.planning import build_experiment_plan
+
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    algorithm = BiGAMPAlgorithm(algo_config, device=torch.device("cpu"))
+
+    assert chain["algorithm_params.compile_fallback_policy"]["effective_value"] == "error"
+    assert plan.resource_plan["config_effective"]["compile_fallback_policy"] == "error"
+    assert algorithm.compile_fallback_policy == "error"
+    assert algorithm._contract_execution_metadata["compile_status"] == "disabled_by_config"
+
+
 def test_tensor_parallel_records_dtype_fallback_policy(tmp_path):
     config_path = tmp_path / "tensor.yaml"
     _write_config(config_path, tensor_order=3, algorithm=4)
@@ -314,6 +338,57 @@ def test_spreading_compile_fallback_policy_allow_preserves_legacy_fallback(monke
     assert algorithm.compile_attempts[0]["target"] == "bigamp_step_disjoint_union_flat"
     assert algorithm.compile_attempts[0]["success"] is False
     assert algorithm._contract_execution_metadata["compile_status"] == "fallback_to_eager_spreading_step"
+
+
+def test_bigamp_compile_fallback_policy_error_raises(monkeypatch):
+    monkeypatch.setattr(BiGAMPAlgorithm, "_compiled_step", None)
+
+    def fail_compile(*args, **kwargs):
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(torch, "compile", fail_compile)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=True,
+            compile_fallback_policy="error",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+
+    with pytest.raises(RuntimeError, match="compile_fallback_policy='error'"):
+        BiGAMPAlgorithm(algo_config, device=torch.device("cuda"))
+
+
+def test_bigamp_compile_fallback_policy_allow_preserves_legacy_fallback(monkeypatch):
+    monkeypatch.setattr(BiGAMPAlgorithm, "_compiled_step", None)
+
+    def fail_compile(*args, **kwargs):
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(torch, "compile", fail_compile)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=True,
+            compile_fallback_policy="allow",
+        ),
+        teacher_key="standard",
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    algorithm = BiGAMPAlgorithm(algo_config, device=torch.device("cuda"))
+
+    assert algorithm.use_compile is False
+    assert algorithm.compile_attempts[0]["target"] == "bigamp_step"
+    assert algorithm.compile_attempts[0]["success"] is False
+    assert algorithm._contract_execution_metadata["compile_status"] == "fallback_to_eager_bigamp_step"
 
 
 def test_tensor_parallel_dtype_fallback_policy_error_raises(monkeypatch):

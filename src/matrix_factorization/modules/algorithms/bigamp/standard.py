@@ -112,7 +112,15 @@ class BiGAMPAlgorithm(AlgorithmBase):
         self.noise_var = config.algorithm.noise_var
         self.max_steps = config.training.max_steps
         self.S = config.training.samples_per_alpha
-        self.use_compile = getattr(config.algorithm, 'use_compile', True)
+        self.requested_use_compile = getattr(config.algorithm, 'use_compile', True)
+        self.compile_fallback_policy = getattr(config.algorithm, 'compile_fallback_policy', 'allow')
+        if self.compile_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.compile_fallback_policy must be 'allow' or 'error', "
+                f"got {self.compile_fallback_policy!r}"
+            )
+        self.use_compile = bool(self.requested_use_compile)
+        self.compile_attempts = []
 
         # Initialize compiled step function if enabled
         if self.use_compile and device.type == 'cuda' and BiGAMPAlgorithm._compiled_step is None:
@@ -124,11 +132,51 @@ class BiGAMPAlgorithm(AlgorithmBase):
                     backend='inductor',
                     options={'triton.cudagraphs': False},
                 )
+                self._record_compile_attempt("bigamp_step", True, "")
             except Exception as e:
-                print(f"[BiG-AMP] torch.compile failed: {e}, using eager mode")
+                self.use_compile = False
+                self._record_compile_attempt("bigamp_step", False, type(e).__name__)
+                self._handle_compile_failure("bigamp_step", e)
                 BiGAMPAlgorithm._compiled_step = _bigamp_step
         elif BiGAMPAlgorithm._compiled_step is None:
             BiGAMPAlgorithm._compiled_step = _bigamp_step
+            if self.use_compile and device.type != 'cuda':
+                self.use_compile = False
+
+        self._contract_execution_metadata = {
+            "path": "bigamp_matrix",
+            "requested_use_compile": bool(self.requested_use_compile),
+            "effective_use_compile": bool(
+                self.use_compile and BiGAMPAlgorithm._compiled_step is not _bigamp_step
+            ),
+            "compile_fallback_policy": self.compile_fallback_policy,
+            "compile_status": self._compile_status(),
+            "compile_attempts": list(self.compile_attempts),
+            "metadata_only": True,
+        }
+
+    def _record_compile_attempt(self, target: str, success: bool, error: str) -> None:
+        self.compile_attempts.append({
+            "target": target,
+            "success": bool(success),
+            "error": error,
+        })
+
+    def _handle_compile_failure(self, target: str, exc: Exception) -> None:
+        if self.compile_fallback_policy == 'error':
+            raise RuntimeError(
+                f"torch.compile failed for {target} and "
+                "algorithm_params.compile_fallback_policy='error'"
+            ) from exc
+
+    def _compile_status(self) -> str:
+        if not bool(getattr(self, "requested_use_compile", True)):
+            return "disabled_by_config"
+        if getattr(self, "device", None) is not None and self.device.type != 'cuda':
+            return "fallback_to_eager_non_cuda"
+        if bool(getattr(self, "use_compile", False)) and BiGAMPAlgorithm._compiled_step is not _bigamp_step:
+            return "effective_for_bigamp_step"
+        return "fallback_to_eager_bigamp_step"
 
     def train_single_alpha(
         self,
@@ -297,5 +345,4 @@ class BiGAMPAlgorithm(AlgorithmBase):
     def supports_batch_training(self) -> bool:
         """BiG-AMP supports efficient batch training."""
         return True
-
 
