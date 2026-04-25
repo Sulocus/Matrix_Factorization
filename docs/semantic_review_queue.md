@@ -2,6 +2,8 @@
 
 这份文档记录需要用户之后确认的命名和物理解释问题。这里的项目不会阻塞低风险软件结构工作；它们只在涉及显示名、物理 order parameter、或者公式解释时需要人工确认。
 
+完整的逐项命名决策表见 `docs/metric_naming_decisions.md`。那份表按 `MetricSemanticClass.canonical_key` 覆盖所有当前 metric 等价类；新增 canonical metric 如果没有写进命名表，contract test 会失败。
+
 ## Metric 命名偏好
 
 - `matrix.full.teacher_student.output_cosine`

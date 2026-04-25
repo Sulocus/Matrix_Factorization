@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import matrix_factorization.modules.outputs  # noqa: F401
@@ -52,6 +54,16 @@ def test_metric_semantic_classes_cover_active_metric_specs():
         assert spec.canonical_key in classes
         assert spec.key in get_algorithm_specs()[spec.compatible_algorithms[0]].produced_metrics
         assert set(spec.produces).intersection(classes[spec.canonical_key].legacy_aliases)
+
+
+def test_metric_semantic_docs_cover_all_canonical_classes():
+    classes = get_metric_semantic_classes()
+    semantics_doc = Path("docs/metrics_semantics.md").read_text(encoding="utf-8")
+    naming_doc = Path("docs/metric_naming_decisions.md").read_text(encoding="utf-8")
+
+    for canonical_key in classes:
+        assert canonical_key in semantics_doc
+        assert canonical_key in naming_doc
 
 
 def test_metric_specs_and_algorithm_specs_are_bidirectionally_consistent():

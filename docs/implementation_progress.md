@@ -43,6 +43,7 @@
 - Seed partition policy v1：`algorithm_params.seed_partition_policy` 默认 `legacy` 保持旧随机流；`partition_invariant` 已覆盖 tensor parallel、spreading、AGD 和 dense BigAMP。tensor parallel 按 alpha/sample/dimension/role 分流 graph/F/student initialization；spreading 按 alpha/sample/role 分流 student initialization，并去掉 opt-in 路径中的 internal `batch_idx` seed 偏移；AGD/dense BigAMP 按 alpha/sample/role 分流 student initialization。resource plan 与 runtime metadata 会标记 `automatic_rebatch_allowed=true`。
 - Runtime seed policy metadata：run metadata 的 `runtime_resource_plan.seed_policy` 现在使用 effective seed policy；显式 `partition_invariant` 不会出现 plan 与 run metadata 一个说 invariant、一个说 legacy 的断裂。
 - Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
+- Metric naming decisions：新增 `docs/metric_naming_decisions.md`，把所有 `MetricSemanticClass.canonical_key` 按 equivalent class 列成命名决策表。contract test 会检查 `metrics_semantics.md` 和命名表覆盖所有 canonical metric class，避免后续新增 metric 只改代码不改语义文档。
 
 ## 本轮继续推进
 
