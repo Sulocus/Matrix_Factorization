@@ -582,11 +582,16 @@ class ExperimentRunner:
                 del data
                 del batch_algorithm_result
                 
-            except MemoryAbortException as e:
+            except (MemoryAbortException, torch.cuda.OutOfMemoryError) as e:
                 # OOM batch recovery: save checkpoint and exit gracefully
                 # This is the SAFEST approach - clean process restart via 'mf resume'
                 # ensures all torch.compile caches are properly cleared
-                logger.warning(f"Batch {batch_idx} aborted due to OOM: {e}")
+                abort_kind = (
+                    "CUDA OOM"
+                    if isinstance(e, torch.cuda.OutOfMemoryError)
+                    else "memory guard abort"
+                )
+                logger.warning(f"Batch {batch_idx} aborted due to {abort_kind}: {e}")
                 
                 if self.verbose:
                     print(f"\n  ⚠️ OOM detected in batch {batch_idx+1}")

@@ -232,6 +232,40 @@ def test_memory_abort_flushes_checkpoint_before_exit(tmp_path):
     assert loaded.raw_yaml == raw_yaml
 
 
+def test_cuda_oom_flushes_checkpoint_before_exit(tmp_path, monkeypatch):
+    config_path = tmp_path / "matrix_config.yaml"
+    checkpoint_path = tmp_path / "cuda_oom_checkpoint.pt"
+    _write_matrix_config(config_path, algorithm=1)
+    config, _, raw_yaml = load_yaml_config(config_path)
+    result = ExperimentResult(
+        experiment_id="cuda_oom_checkpoint_contract",
+        config=config,
+        scan_dimension=config.scan.dimension,
+        scan_values=config.scan.values,
+    )
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+
+    def raise_cuda_oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("forced cuda oom")
+
+    monkeypatch.setattr(runner.data_factory, "create", raise_cuda_oom)
+
+    with pytest.raises(SystemExit) as exc:
+        runner._run_standard_scan(
+            config,
+            algorithm=object(),
+            result=result,
+            observer=None,
+            output_options={"checkpoint_path": str(checkpoint_path), "save_tensors": False},
+            raw_yaml=raw_yaml,
+        )
+
+    assert exc.value.code == 0
+    loaded = CheckpointManager(checkpoint_path).load()
+    assert loaded is not None
+    assert loaded.completed_alphas == []
+
+
 def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     resource = get_resource_specs()["bigamp_tensor_parallel"]
     batching = get_batching_specs()["bigamp_tensor_parallel"]
