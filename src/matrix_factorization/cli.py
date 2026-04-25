@@ -36,6 +36,7 @@ from matrix_factorization.core.experiment import (
     AlgorithmParams, SpreadingConfig, TeacherConfig
 )
 from matrix_factorization.core.progress import ProgressBridge
+from matrix_factorization.modules.outputs.latest import refresh_latest_results
 
 
 def load_yaml_config(yaml_path: Path):
@@ -693,10 +694,13 @@ def _handle_single_run(config, args, timestamp, runner, bridge, output_options, 
     except OSError:
         pass  # Symlink creation may fail on some filesystems
 
+    latest_summaries = refresh_latest_results(scan_dir, count=3)
+
     print()
     print("=" * 60)
     print(f"✅ Done! Saved to: {output_path}")
     print(f"   _latest -> {output_path.name}")
+    print(f"   latest display runs: {len(latest_summaries)}")
     print("=" * 60)
 
 

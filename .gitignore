@@ -15,7 +15,9 @@ venv/
 .idea/
 
 # Experiment Results
-results/
+results/*
+!results/latest/
+!results/latest/**
 Replica_results/
 runs/
 artifacts/
