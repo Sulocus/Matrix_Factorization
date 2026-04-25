@@ -45,6 +45,8 @@
 - Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
 - Metric naming decisions：新增 `docs/metric_naming_decisions.md`，把所有 `MetricSemanticClass.canonical_key` 按 equivalent class 列成命名决策表。contract test 会检查 `metrics_semantics.md` 和命名表覆盖所有 canonical metric class，避免后续新增 metric 只改代码不改语义文档。
 - Result schema map：`docs/result_schema_contract.md` 新增 run directory/result/latest 的层级地图，明确 `config.json`、`metadata.json`、`metrics.json`、`output_contract.json`、`events.jsonl`、`manifest.json`、`artifacts/results.pt`、`plots/` 和 `results/latest` 的角色。测试会检查文档覆盖 canonical result files。
+- Algorithm integration map：新增 `docs/algorithm_integration_contract.md`，把 `agd/bigamp/bigamp_spreading/bigamp_tensor/bigamp_tensor_parallel/agd_tensor/agd_spreading/combined` 的主链路状态、result contract 和去重策略列成硬文档。测试会检查所有 `AlgorithmSpec.key` 都被文档覆盖。
+- Tensor parity seed status：tensor parity contract 现在区分 parallel 默认 legacy batch-sensitive seed 与 opt-in `partition_invariant`，避免把“parallel 内部分批稳定”误读成“serial/parallel 物理 parity 已完成”。
 
 ## 本轮继续推进
 

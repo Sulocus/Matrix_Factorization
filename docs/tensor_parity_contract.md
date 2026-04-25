@@ -51,7 +51,7 @@ batching semantics
 - 两者 alpha edge count 约定不完全一致。
 - 两者当前都通过正式 `AlgorithmResult` 返回 metrics-only payload，但底层数值实现仍保留 legacy `_batch_metrics` 缓冲；后续 parity 阶段应继续把 tensor factors/artifacts 原生暴露出来。
 - `Q_Y_mean` 在两条路径中的语义不应默认视为相同。
-- `seed` 路径对 batch partition 敏感：parallel 内部分批和 alpha 排序可能改变 graph/F/student 随机流。
+- `seed` 路径默认仍对 batch partition 敏感：parallel legacy 路径内部分批和 alpha 排序可能改变 graph/F/student 随机流。`algorithm_params.seed_partition_policy=partition_invariant` 已提供 opt-in v1，但这只解决 parallel 内部分批稳定性，不证明 serial/parallel 数值 parity。
 - serial 与 parallel damping 更新式存在方向一致性风险，必须单独审查。
 - teacher factor scale、alpha edge count、graph sharing scope、initialization mode 都需要进入 parity checklist。
 
@@ -86,4 +86,5 @@ batching semantics
 - serial 缺少 `tensor.full.Q_Y` 和 `tensor.physical_overlap_Y`。
 - parallel 使用 `tensor_supergraph`，serial 使用 `tensor_hypergraph`。
 - 两者虽然都已经返回正式 metrics-only `AlgorithmResult`，但 result contract 仍标记为 `legacy_tensor_metrics_only`，表示它们还没有统一暴露 tensor factors、variance state 和完整 artifact schema。
+- parallel 默认 seed policy 仍是 legacy batch-sensitive；`partition_invariant` 是 opt-in 执行策略，不代表 serial/parallel 随机流已经统一。
 - `tensor_contract.py` 只抽取 shared dims/result metadata/metric payload packing；它不改变 serial 或 parallel 的训练 loop。

@@ -43,6 +43,13 @@ def test_active_algorithm_specs_cover_primary_algorithms():
         assert spec.state_capabilities
 
 
+def test_algorithm_integration_doc_covers_all_algorithm_specs():
+    text = Path("docs/algorithm_integration_contract.md").read_text(encoding="utf-8")
+
+    for key in get_algorithm_specs():
+        assert key in text
+
+
 def test_non_main_algorithms_are_not_active():
     specs = get_algorithm_specs()
 

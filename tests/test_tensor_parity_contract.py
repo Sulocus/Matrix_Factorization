@@ -15,6 +15,8 @@ def test_tensor_parity_contract_doc_exists():
     assert "teacher scale" in text
     assert "alpha normalization" in text
     assert "Q_Y / Q_Y_observed semantics" in text
+    for key in get_tensor_parity_specs():
+        assert key in text
 
 
 def test_tensor_serial_and_parallel_have_specs():

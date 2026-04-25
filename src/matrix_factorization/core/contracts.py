@@ -1311,9 +1311,9 @@ def get_tensor_parity_specs() -> Dict[str, TensorParitySpec]:
             "seed_partition",
             area="randomness",
             serial_status="seed + s*1000 + int(alpha*100)",
-            parallel_status="seed + batch_idx with sorted internal alpha batches",
+            parallel_status="legacy seed + batch_idx; opt-in partition_invariant available",
             risk="high",
-            notes="Changing batch partition can change graph/F/student random streams.",
+            notes="Default legacy path is still batch-partition sensitive; opt-in partition_invariant reduces this risk but does not prove numeric parity with serial.",
         ),
         TensorParitySpec(
             "dtype_compile_semantics",
