@@ -34,8 +34,16 @@
   - 候选 order parameter。
   - 待确认：必须先确认 teacher/student tensor scale convention。
 
-- `matrix.full.teacher_student.projection_overlap`
+- `matrix.full.teacher_student.output_projection`
   - 当前标为 review。
+  - 风险：是否能作为 physical order parameter 取决于 output-space scale convention。
+
+- `factor.W.teacher_student.coordinate_projection_abs`
+  - 当前标为 diagnostic。
+  - 风险：factor-level projection 对 sign、permutation、gauge 敏感。
+
+- `factor.X.teacher_student.coordinate_projection_abs`
+  - 当前标为 diagnostic。
   - 风险：factor-level projection 对 sign、permutation、gauge 敏感。
 
 - `tensor.full.teacher_student.projection_overlap`

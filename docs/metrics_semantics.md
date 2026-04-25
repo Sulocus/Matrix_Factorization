@@ -101,16 +101,30 @@ spreading.unobserved.teacher_student.dense_output_cosine
 
 ```text
 factor.W.teacher_student.gram_cosine
-  legacy aliases: Q_W_mean, Q_W_std, Q_W_prime_mean, Q_W_prime_std
+  legacy aliases: Q_W_mean, Q_W_std
   appears in: agd, bigamp, bigamp_spreading, agd_spreading
-  meaning: W factor Gram overlap; prime variants are baseline-corrected
+  meaning: W factor Gram cosine overlap
+  status: candidate / diagnostic boundary requires review
+  risk: medium
+
+factor.W.teacher_student.baseline_corrected_gram_cosine
+  legacy aliases: Q_W_prime_mean, Q_W_prime_std
+  appears in: agd, bigamp, bigamp_spreading, agd_spreading
+  meaning: W factor baseline-corrected Gram cosine overlap
   status: candidate / diagnostic boundary requires review
   risk: medium
 
 factor.X.teacher_student.gram_cosine
-  legacy aliases: Q_X_mean, Q_X_std, Q_X_prime_mean, Q_X_prime_std
+  legacy aliases: Q_X_mean, Q_X_std
   appears in: agd, bigamp, bigamp_spreading
-  meaning: X factor Gram overlap; prime variants are baseline-corrected
+  meaning: X factor Gram cosine overlap
+  status: candidate / diagnostic boundary requires review
+  risk: medium
+
+factor.X.teacher_student.baseline_corrected_gram_cosine
+  legacy aliases: Q_X_prime_mean, Q_X_prime_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: X factor baseline-corrected Gram cosine overlap
   status: candidate / diagnostic boundary requires review
   risk: medium
 ```
@@ -120,13 +134,24 @@ factor.X.teacher_student.gram_cosine
 ### physical_projection
 
 ```text
-matrix.full.teacher_student.projection_overlap
-  legacy aliases:
-    physical_overlap_W_mean, physical_overlap_W_std
-    physical_overlap_X_mean, physical_overlap_X_std
-    physical_overlap_Y_mean, physical_overlap_Y_std
+factor.W.teacher_student.coordinate_projection_abs
+  legacy aliases: physical_overlap_W_mean, physical_overlap_W_std
   appears in: agd, bigamp, bigamp_spreading
-  meaning: projection-style overlap diagnostics
+  meaning: absolute coordinate projection of W onto teacher W
+  status: diagnostic
+  risk: high
+
+factor.X.teacher_student.coordinate_projection_abs
+  legacy aliases: physical_overlap_X_mean, physical_overlap_X_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: absolute coordinate projection of X onto teacher X
+  status: diagnostic
+  risk: high
+
+matrix.full.teacher_student.output_projection
+  legacy aliases: physical_overlap_Y_mean, physical_overlap_Y_std
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: global output-space projection
   status: review
   risk: high
 
@@ -156,14 +181,31 @@ matrix.full.teacher_student.reconstruction_mse
 ### replica_overlap
 
 ```text
-factor.replica.student_student.gram_cosine
-  legacy aliases:
-    Q_W_replica_mean
-    Q_X_replica_mean
-    Q_W_prime_replica_mean
-    Q_X_prime_replica_mean
+factor.W.replica.student_student.gram_cosine
+  legacy aliases: Q_W_replica_mean
   appears in: agd, bigamp, bigamp_spreading
-  meaning: student-student factor replica overlap
+  meaning: student-student W replica Gram cosine
+  status: diagnostic
+  risk: medium
+
+factor.X.replica.student_student.gram_cosine
+  legacy aliases: Q_X_replica_mean
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: student-student X replica Gram cosine
+  status: diagnostic
+  risk: medium
+
+factor.W.replica.student_student.baseline_corrected_gram_cosine
+  legacy aliases: Q_W_prime_replica_mean
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: student-student W replica baseline-corrected Gram cosine
+  status: diagnostic
+  risk: medium
+
+factor.X.replica.student_student.baseline_corrected_gram_cosine
+  legacy aliases: Q_X_prime_replica_mean
+  appears in: agd, bigamp, bigamp_spreading
+  meaning: student-student X replica baseline-corrected Gram cosine
   status: diagnostic
   risk: medium
 ```

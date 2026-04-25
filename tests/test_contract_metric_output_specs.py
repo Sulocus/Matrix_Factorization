@@ -383,6 +383,20 @@ output:
     assert plan.output_plan.metric_semantics["Q_W_mean"][0]["canonical_key"] == "factor.W.teacher_student.gram_cosine"
 
 
+def test_flat_key_metric_semantics_split_prime_projection_and_replica_variants():
+    semantics = get_algorithm_metric_semantics("bigamp")
+
+    assert semantics["Q_W_mean"][0]["canonical_key"] == "factor.W.teacher_student.gram_cosine"
+    assert semantics["Q_W_prime_mean"][0]["canonical_key"] == "factor.W.teacher_student.baseline_corrected_gram_cosine"
+    assert semantics["Q_X_mean"][0]["canonical_key"] == "factor.X.teacher_student.gram_cosine"
+    assert semantics["Q_X_prime_mean"][0]["canonical_key"] == "factor.X.teacher_student.baseline_corrected_gram_cosine"
+    assert semantics["physical_overlap_W_mean"][0]["canonical_key"] == "factor.W.teacher_student.coordinate_projection_abs"
+    assert semantics["physical_overlap_X_mean"][0]["canonical_key"] == "factor.X.teacher_student.coordinate_projection_abs"
+    assert semantics["physical_overlap_Y_mean"][0]["canonical_key"] == "matrix.full.teacher_student.output_projection"
+    assert semantics["Q_W_replica_mean"][0]["canonical_key"] == "factor.W.replica.student_student.gram_cosine"
+    assert semantics["Q_W_prime_replica_mean"][0]["canonical_key"] == "factor.W.replica.student_student.baseline_corrected_gram_cosine"
+
+
 def test_tensor_heatmap_output_plan_records_diagnostic_artifact_semantics(tmp_path):
     config_path = tmp_path / "tensor_heatmap_plan.yaml"
     config_path.write_text(
