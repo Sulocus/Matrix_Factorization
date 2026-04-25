@@ -459,6 +459,8 @@ class ExperimentRunner:
                     })
 
                 # Run algorithm for this batch
+                if output_options:
+                    setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
                 W_students, X_students = self._run_algorithm(
                     algorithm=algorithm,
                     config=config,

@@ -1,7 +1,10 @@
 
 import torch
 import unittest
-from matrix_factorization.modules.metrics.tensor_metrics import compute_tensor_cosine
+from matrix_factorization.modules.metrics.tensor_metrics import (
+    compute_factor_gram_overlap,
+    compute_tensor_cosine,
+)
 
 class TestTensorMetrics(unittest.TestCase):
     def test_tensor_cosine_correctness(self):
@@ -39,6 +42,31 @@ class TestTensorMetrics(unittest.TestCase):
         print(f"Brute Force: {brute_force_sim:.6f}")
         
         self.assertAlmostEqual(optimized_sim, brute_force_sim.item(), places=5)
+
+    def test_factor_gram_overlap_is_cp_permutation_invariant(self):
+        """
+        CP factors are equivalent under shared latent-column permutations.
+        Factor diagnostics used for heatmaps must respect that gauge symmetry.
+        """
+        N = 10
+        M = 3
+        order = 3
+
+        torch.manual_seed(123)
+        factors = [torch.randn(N, M) for _ in range(order)]
+        permutation = torch.tensor([2, 0, 1])
+        permuted = [factor[:, permutation] for factor in factors]
+
+        self.assertAlmostEqual(
+            compute_tensor_cosine(factors, permuted),
+            1.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            compute_factor_gram_overlap(factors, permuted),
+            1.0,
+            places=5,
+        )
 
     def _reconstruct_tensor(self, factors):
         # Brute force Einsum reconstruction for Order 3

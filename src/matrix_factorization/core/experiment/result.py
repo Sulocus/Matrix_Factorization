@@ -508,12 +508,40 @@ class ExperimentResult:
             try:
                 from matrix_factorization.modules.outputs.plotting import plot_replica_heatmap, create_gif
                 from matrix_factorization.modules.metrics.overlap import build_interaction_matrix, gram_overlap_normalized
+                import numpy as np
 
                 heatmap_paths = []
+                heatmap_metric_codes = []
                 W_teacher = self.W_teacher
 
                 for v in sorted_values:
                     r = self.results[v]
+                    matrix = r.metrics.get('overlap_matrix') if r.metrics else None
+                    if matrix is not None:
+                        metric_code = r.metrics.get(
+                            'overlap_matrix_metric',
+                            output_options.get('heatmap_metric', 'Q_Y') if output_options else 'Q_Y',
+                        )
+                        metric_code = str(metric_code).upper()
+                        if metric_code == "Q_W":
+                            metric_name = "Factor Gram Overlap ($Q_W$)"
+                            filename_prefix = "heatmap_W"
+                        else:
+                            metric_code = "Q_Y"
+                            metric_name = "Tensor Overlap ($Q_Y$)"
+                            filename_prefix = "heatmap_Y"
+
+                        heatmap_path = plot_replica_heatmap(
+                            np.asarray(matrix, dtype=float), float(v), plots_dir,
+                            metric_name=metric_name, filename_prefix=filename_prefix,
+                            rsb_ordering=rsb_ordering,
+                            enhance_high_values=not uniform_colormap,
+                        )
+                        if heatmap_path:
+                            heatmap_paths.append(heatmap_path)
+                            heatmap_metric_codes.append(metric_code)
+                        continue
+
                     if r.W_students is not None and W_teacher is not None:
                         # Handle shape: W_students might be (1, S, N1, M) or (S, N1, M)
                         W_s = r.W_students
@@ -534,10 +562,12 @@ class ExperimentResult:
                         )
                         if heatmap_path:
                             heatmap_paths.append(heatmap_path)
+                            heatmap_metric_codes.append("Q_W")
 
                 # Create GIF from heatmaps
                 if heatmap_paths:
-                    gif_path = create_gif(heatmap_paths, plots_dir / "animation_W.gif", duration=0.2)
+                    gif_suffix = heatmap_metric_codes[-1][-1] if heatmap_metric_codes else "W"
+                    gif_path = create_gif(heatmap_paths, plots_dir / f"animation_{gif_suffix}.gif", duration=0.2)
                     if gif_path:
                         print(f"Generated GIF: {gif_path}")
             except Exception as e:

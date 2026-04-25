@@ -13,7 +13,7 @@
 #   1 = 一般图（General Graph）：自动启用 allow_intra_connection
 #   2 = 二分图/矩阵分解（Bipartite）：标准模式（默认）
 #   3+ = N维张量分解：使用 bigamp_tensor 算法
-tensor_order: 4
+tensor_order: 3
 
 # =============================================================================
 # 算法选择（仅在 tensor_order=1,2 时生效）
@@ -99,8 +99,8 @@ hysteresis_scan:
 # 训练参数
 # =============================================================================
 training:
-  samples_per_alpha: 2   # 每个 alpha 值的样本数
-  max_steps: 50000        # BiG-AMP 最大迭代步数
+  samples_per_alpha: 20   # 每个 alpha 值的样本数
+  max_steps: 2000        # BiG-AMP 最大迭代步数
 
 # =============================================================================
 # 随机种子（用于复现）
@@ -113,7 +113,7 @@ seeds:
 # 算法参数
 # =============================================================================
 algorithm_params:
-  damping: 0.1           # 阻尼系数（重要修正：0.01 以匹配增量更新）
+  damping: 0.2           # 阻尼系数（重要修正：0.01 以匹配增量更新）
   noise_var: 1.0e-5       # 观测噪声方差
   learning_rate: 0.01     # AGD 学习率
   use_compile: true       # 启用 torch.compile 加速
@@ -173,8 +173,9 @@ output:
   storage_mode: lightweight
   
   # Heatmap 设置
-  enable_heatmap: false
-  rsb_ordering: true      # 热力图 RSB 排序（层次聚类）
+  enable_heatmap: true     # 是否生成 Heatmap (Replica Overlap)
+  rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
+  heatmap_metric: "Q_Y"     # 绘制指标: "Q_Y" (Tensor Overlap) 或 "Q_W" (Factor Gram Overlap)
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
   
   # =============================================================================
@@ -192,5 +193,5 @@ output:
   # 示例: curves: [A.y, A.w, A.y:R] → Q_Y, Q_W, Q_Y(replica) 画同一张图
   
   plots:
-    - curves: [A.y, B.w]  # Q_Y + 归一化 overlap
+    - curves: [A.y]  # Q_Y + 归一化 overlap
   #  - curves: [D.y]       # Physical overlap Y

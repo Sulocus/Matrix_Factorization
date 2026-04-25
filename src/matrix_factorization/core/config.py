@@ -92,6 +92,11 @@ class ExecutionConfig:
     # Matrix metric for replica analysis ("gram_overlap_normalized" | "physical_overlap" | "cosine_similarity")
     matrix_metric: str = "gram_overlap_normalized"
 
+    # Heatmap configuration
+    enable_heatmap: bool = False
+    rsb_ordering: bool = False
+    heatmap_metric: str = "Q_Y" # "Q_W" (Factor Gram) or "Q_Y" (Tensor)
+
 
 @dataclass
 class Config:
@@ -140,6 +145,9 @@ class Config:
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),
             matrix_metric=exec_data.get('matrix_metric', 'gram_overlap_normalized'),
+            enable_heatmap=exec_data.get('enable_heatmap', False),
+            rsb_ordering=exec_data.get('rsb_ordering', False),
+            heatmap_metric=exec_data.get('heatmap_metric', "Q_Y"),
         )
 
         # Handle spreading config (only for bigamp_spreading algorithms)

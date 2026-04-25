@@ -113,6 +113,7 @@ def load_yaml_config(yaml_path: Path):
         'uniform_colormap': output_cfg.get('uniform_colormap', False),
         'storage_mode': output_cfg.get('storage_mode', 'full'),
         'enable_heatmap': output_cfg.get('enable_heatmap', True),  # Heatmap + GIF 开关
+        'heatmap_metric': output_cfg.get('heatmap_metric', 'Q_Y'),
         'plots': output_cfg.get('plots', []),  # 新格式: [{curves: [A.y, B.w]}, ...]
     }
 
@@ -319,6 +320,7 @@ def handle_resume(output_dir=None):
             'uniform_colormap': output_cfg.get('uniform_colormap', False),
             'storage_mode': output_cfg.get('storage_mode', 'full'),
             'enable_heatmap': output_cfg.get('enable_heatmap', True),
+            'heatmap_metric': output_cfg.get('heatmap_metric', 'Q_Y'),
             'plots': output_cfg.get('plots', []),
         }
         print("   配置来源: 原始 YAML (完整)")
@@ -728,7 +730,7 @@ def main():
              return
 
     # 4. 加载/构建配置
-    output_options = {'rsb_ordering': False, 'save_tensors': True}
+    output_options = {'rsb_ordering': False, 'save_tensors': True, 'heatmap_metric': 'Q_Y'}
     raw_yaml = ""
     if args.config:
         config_path = Path(args.config)
