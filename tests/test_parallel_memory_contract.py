@@ -766,8 +766,16 @@ def test_parallel_coordinator_records_effective_replan_policy():
     assert plan.replan_provenance["metadata_only"] is True
 
     coordinator.current_plan = plan
-    with pytest.raises(NotImplementedError, match="Automatic replan is not implemented"):
-        coordinator.replan_with_safety()
+    replanned = coordinator.replan_with_safety(factor=0.5, failed_batch_idx=0)
+
+    assert replanned.parent_plan_id == plan.plan_id
+    assert replanned.replan_attempt == 1
+    assert replanned.replan_implemented is True
+    assert replanned.replan_provenance["source"] == "oom_replan"
+    assert replanned.replan_provenance["failed_batch_idx"] == 0
+    assert replanned.replan_provenance["replan_factor"] == 0.5
+    assert coordinator.current_plan is replanned
+    assert coordinator.stats["replans_created"] == 1
 
 
 def test_runtime_resource_plan_reports_replan_provenance():

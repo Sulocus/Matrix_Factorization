@@ -88,6 +88,27 @@ class EstimationParams:
             "seed_partition_policy": self.seed_partition_policy,
         }
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "EstimationParams":
+        """Reconstruct estimation inputs from a provenance snapshot."""
+        tensor_dims = payload.get("tensor_dims")
+        return cls(
+            N1=int(payload["N1"]),
+            N2=int(payload["N2"]),
+            M=int(payload["M"]),
+            S=int(payload["S"]),
+            alpha_values=[float(alpha) for alpha in payload.get("alpha_values", [])],
+            algorithm_key=str(payload["algorithm_key"]),
+            use_compile=bool(payload.get("use_compile", True)),
+            use_bf16=bool(payload.get("use_bf16", False)),
+            f_distribution=str(payload.get("f_distribution", "rademacher")),
+            adaptive_damping=bool(payload.get("adaptive_damping", False)),
+            allow_intra_connection=bool(payload.get("allow_intra_connection", False)),
+            tensor_order=int(payload.get("tensor_order", 2)),
+            tensor_dims=tuple(int(dim) for dim in tensor_dims) if tensor_dims else None,
+            seed_partition_policy=str(payload.get("seed_partition_policy", "legacy")),
+        )
+
 
 @dataclass
 class MemoryEstimate:

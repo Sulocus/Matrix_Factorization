@@ -29,7 +29,7 @@
 - Algorithm config trace：runner algorithm cache 已按 effective config signature 分区，run metadata 写入 `algorithm_config_trace`，防止同 key 不同参数复用旧 algorithm 实例。
 - Tensor parallel dead-path cleanup：删除 `bigamp_tensor_parallel` 中 `_compute_alpha_batches()` 返回后的不可达 legacy memory-estimate 残片；当前显存估计入口以 `MemoryModelSpec`、runner estimator 和 tensor probe metadata 为准。
 - Runtime batch timing metadata：runner 的 `BATCH_END` 事件记录真实 elapsed duration，不再写固定 `0.0` 占位值。
-- OOM replan gate：`ParallelCoordinator.replan_with_safety()` 不再返回当前 plan 伪装成缩 batch，而是根据 `SeedPolicySpec` 明确拒绝未实现/不安全的自动重分批；`MemoryGuard` 文案改为 abort/checkpoint handoff。
+- OOM replan gate：`ParallelCoordinator.replan_with_safety()` 不再返回当前 plan 伪装成缩 batch；legacy/batch-sensitive seed policy 会明确拒绝，partition-invariant 且带 provenance 的 plan 可以生成更保守的新 `ExecutionPlan`。runner OOM 路径仍是 abort/checkpoint handoff。
 - Compile status metadata：tensor parallel 的 `tensor_execution` 区分 `requested_use_compile` 和实际 super-step compile 是否生效，并记录 `compile_status/compile_attempts`。
 - Spreading chunk metadata：`bigamp_spreading` 的 `AlgorithmResult.metadata.execution_metadata` 记录 `chunk_size/chunk_policy/dynamic_batches`，说明当前是手动 chunk 配置，不做 auto tuning。
 - Memory breakdown reporting：`MemoryEstimator.estimate()` 现在会返回按组件拆分的 `breakdown`，覆盖 AGD、dense BiGAMP、spreading BiGAMP 和 tensor spreading；每个 runner batch 的 `runtime_resource_plan.batches[*].memory_breakdown` 会保存这份 metadata。这只暴露已有估计公式，不改变训练或 batching 行为。
@@ -47,7 +47,7 @@
 - Result schema map：`docs/result_schema_contract.md` 新增 run directory/result/latest 的层级地图，明确 `config.json`、`metadata.json`、`metrics.json`、`output_contract.json`、`events.jsonl`、`manifest.json`、`artifacts/results.pt`、`plots/` 和 `results/latest` 的角色。测试会检查文档覆盖 canonical result files。
 - Algorithm integration map：新增 `docs/algorithm_integration_contract.md`，把 `agd/bigamp/bigamp_spreading/bigamp_tensor/bigamp_tensor_parallel/agd_tensor/agd_spreading/combined` 的主链路状态、result contract 和去重策略列成硬文档。测试会检查所有 `AlgorithmSpec.key` 都被文档覆盖。
 - Tensor parity seed status：tensor parity contract 现在区分 parallel 默认 legacy batch-sensitive seed 与 opt-in `partition_invariant`，避免把“parallel 内部分批稳定”误读成“serial/parallel 物理 parity 已完成”。
-- Replan safety metadata：effective seed policy 现在集中由 `get_effective_seed_policy_summary()` 生成，并进入 `ExperimentPlan.resource_plan`、runtime `runtime_resource_plan` 和 `ExecutionPlan`；`automatic_rebatch_allowed=true` 只表示随机流 contract 允许未来安全 rebatch，当前 `replan_implemented=false`，自动重规划仍会明确报 `NotImplementedError`。
+- Replan safety metadata：effective seed policy 现在集中由 `get_effective_seed_policy_summary()` 生成，并进入 `ExperimentPlan.resource_plan`、runtime `runtime_resource_plan` 和 `ExecutionPlan`；初始 plan 仍标记 `replan_implemented=false`，通过 `replan_with_safety()` 生成的新 plan 会记录 `replan_implemented=true`、`parent_plan_id` 和 replan provenance。
 - Checkpoint flush contract：`CheckpointManager.save()` 保持异步，但新增 `flush()` 暴露后台写入失败；OOM abort 退出前和成功清理 checkpoint 前都会等待 flush，避免把“save 已排队”误认为“checkpoint 已落盘”。
 - ExecutionPlan provenance：parallel planner 现在给每个 `ExecutionPlan` 写入 `plan_id`、原始 `EstimationParams` 快照和轻量 `replan_provenance.batch_summary`；runtime metadata 会带上这些字段，为未来真实 OOM rebatch 提供可追踪输入。
 - CUDA OOM contract：runner 现在把 cooperative `MemoryAbortException` 和直接 `torch.cuda.OutOfMemoryError` 统一到 checkpoint/flush/exit 路径，避免真实 allocation OOM 绕过 checkpoint。
@@ -70,7 +70,7 @@
   - tensor parallel 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 tensor supergraph index 前缀和 student init 随机流不依赖 internal alpha batch 的 C_max。
   - AGD 与 dense BigAMP 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后同一个 alpha/sample 的 student initialization 不依赖 alpha batch 分组。
   - spreading 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 graph/F 使用稳定 base seed，cold/warm start 初始化按 alpha/sample/role 分流，adaptive restart noise 按 alpha/sample/step/role 分流。
-  - OOM 自动 replan 已 hard-gate；当前策略是 checkpoint/resume，不自动改变 batch partition。
+  - planner 层 OOM replan 已 hard-gate：只有 partition-invariant 且带原始 estimation snapshot 的 plan 能生成更保守的新 plan；runner 当前策略仍是 checkpoint/resume，不自动同进程 retry。
   - replan safety 已进入静态 plan、runtime metadata 和 `ExecutionPlan`；`partition_invariant` policy 会打开 `automatic_rebatch_allowed`，但 `replan_implemented=false` 会阻止程序把未来功能误报为已实现。
   - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
   - dense `bigamp` compile fallback 已进入 metadata；compile 失败时不再只靠 console print 暴露。
@@ -83,7 +83,7 @@
 
 ## 尚未完成
 
-- OOM retry 自动缩 batch 的真实实现（当前已 hard-gate，不会伪装成已实现）。
+- runner OOM 后同进程自动 retry（planner 已能为安全 seed policy 重建更保守 plan，但 runner 仍 checkpoint/exit）。
 - TF32 OOM fallback 的用户策略选择（`use_tf32` 已可显式控制，但 OOM 后不自动切换）。
 - spreading chunk size auto tuning 的真实实现（当前已记录执行 metadata，但不自动调参）。
 - tensor serial/parallel 训练 loop 合并。

@@ -106,7 +106,7 @@ tensor parallel 会启用 opt-in v1 seed policy：
 
 spreading、AGD 与 dense BigAMP 也可以显式设置同一个字段。AGD/dense BigAMP 的 opt-in v1 只覆盖 student initialization：同一个 `(base_seed, alpha, sample, role)` 会得到同一个初始 factor，不依赖当前 alpha batch 怎么分组。spreading 的 opt-in v2 会保留 graph/F 的 base seed，不再混入 internal `batch_idx`，让 cold/warm start 初始化按 alpha/sample/role 分流，并让 adaptive restart noise 按 alpha/sample/step/role 分流。默认 `legacy` 不变。
 
-`ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint、等待 checkpoint flush 完成并退出，用户再用 clean process resume。
+`ParallelCoordinator.replan_with_safety()` 当前只在 effective seed policy 允许 rebatch 且 `ExecutionPlan` 带有原始 `EstimationParams` 快照时，生成一个更保守的新 plan；否则明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 仍只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint、等待 checkpoint flush 完成并退出，用户再用 clean process resume。
 
 effective seed policy 现在是 replan safety 的唯一来源：
 
@@ -132,12 +132,12 @@ estimation_params
 replan_provenance
 ```
 
-这几个字段只说明“如果未来实现自动 rebatch，当前随机流 contract 是否允许这么做”。当前真实行为仍然是：
+这几个字段说明当前随机流 contract 和 planner 是否允许 rebatch。当前真实行为是：
 
 - `automatic_rebatch_allowed=false`：`replan_with_safety()` 抛 `RuntimeError`，说明当前 seed policy 不允许静默重分批。
-- `automatic_rebatch_allowed=true`：`replan_with_safety()` 抛 `NotImplementedError`，说明随机流 contract 已允许重分批，但自动重规划逻辑还没有实现。
+- `automatic_rebatch_allowed=true` 且 plan 有 `estimation_params`：`replan_with_safety()` 可生成新的更保守 `ExecutionPlan`，并写入 `parent_plan_id`、`replan_attempt` 和 `replan_provenance`。
 
-也就是说，`partition_invariant` 现在打开的是“未来可安全实现自动 rebatch 的前置条件”，不是已经实现 OOM 后自动缩 batch。
+也就是说，`partition_invariant` 现在打开的是 planner 层安全 rebatch；runner 的 OOM 路径仍然 checkpoint/exit，不会在同一进程里自动 retry。
 
 checkpoint 语义：
 
@@ -248,7 +248,7 @@ internal_alpha_batch_plan
   metadata_only
 ```
 
-这两块 metadata 只记录实际执行选择和内部分批；不做自动 retry，不自动改变 batch partition。
+这两块 metadata 只记录实际执行选择和内部分批；runner OOM 路径不做自动 retry，不在同一进程里自动改变 batch partition。
 
 `algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为，目前接入 `bigamp`、`bigamp_spreading` 和 `bigamp_tensor_parallel`：
 

@@ -33,7 +33,7 @@
 需要确认：
 
 - OOM retry 是否只允许在 seed partition invariant 完成后启用。
-- retry metadata 是否必须记录原 batch plan、失败原因和新 batch plan。
+- retry metadata 是否必须记录原 batch plan、失败原因和新 batch plan。planner 层已经记录 `plan_id`、原始 `EstimationParams` 和 replan provenance；runner 仍未在同一进程自动 retry。
 
 ## Compile / DType Fallback
 

@@ -78,6 +78,7 @@ class ParallelCoordinator:
             "plans_created": 0,
             "batches_executed": 0,
             "oom_recoveries": 0,
+            "replans_created": 0,
         }
     
     def plan_execution(self, params: EstimationParams) -> ExecutionPlan:
@@ -272,13 +273,13 @@ class ParallelCoordinator:
         self._abort_flag = True
         logger.warning("Abort signal received")
     
-    def replan_with_safety(self, factor: float = 0.7) -> ExecutionPlan:
+    def replan_with_safety(self, factor: float = 0.7, failed_batch_idx: Optional[int] = None) -> ExecutionPlan:
         """
         Create a more conservative plan after OOM.
 
-        Automatic replan is deliberately disabled until the active algorithm's
-        seed policy is partition-invariant. Returning the old plan here would
-        make a failed retry look like a real smaller-batch plan.
+        Automatic replan is allowed only when the active effective seed policy
+        is partition-invariant and the current plan carries the original
+        EstimationParams snapshot needed to reconstruct a new plan.
         
         Args:
             factor: Multiplier for allocation ratio (< 1.0)
@@ -291,11 +292,37 @@ class ParallelCoordinator:
 
         algorithm_key = self.current_plan.algorithm_key
         if self.current_plan.automatic_rebatch_allowed:
-            raise NotImplementedError(
-                f"Automatic replan is not implemented for algorithm '{algorithm_key}' "
-                "even though its effective seed policy allows rebatching. Implement a real "
-                "plan reconstruction using the original EstimationParams before enabling it."
+            if not (0.0 < factor < 1.0):
+                raise ValueError("replan factor must be between 0 and 1.")
+            if not self.current_plan.estimation_params:
+                raise NotImplementedError(
+                    f"Automatic replan requires original EstimationParams for algorithm '{algorithm_key}'."
+                )
+
+            params = EstimationParams.from_dict(self.current_plan.estimation_params)
+            parent_plan = self.current_plan
+            replan_config = replace(
+                self.config,
+                max_allocation_gb=parent_plan.available_memory_gb * factor,
             )
+            replanner = ParallelCoordinator(estimator=self.estimator, config=replan_config)
+            new_plan = replanner.plan_execution(params)
+            new_plan.parent_plan_id = parent_plan.plan_id
+            new_plan.replan_attempt = parent_plan.replan_attempt + 1
+            new_plan.replan_implemented = True
+            new_plan.replan_provenance.update({
+                "source": "oom_replan",
+                "parent_plan_id": parent_plan.plan_id,
+                "failed_batch_idx": self.current_batch_idx if failed_batch_idx is None else int(failed_batch_idx),
+                "replan_factor": float(factor),
+                "previous_mode": parent_plan.mode.name,
+                "previous_num_batches": parent_plan.num_batches,
+                "previous_total_estimated_memory_gb": float(parent_plan.total_estimated_memory_gb),
+                "metadata_only": True,
+            })
+            self.current_plan = new_plan
+            self.stats["replans_created"] += 1
+            return new_plan
 
         policy_key = self.current_plan.replan_policy_key or "<missing effective seed policy>"
         raise RuntimeError(
