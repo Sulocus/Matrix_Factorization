@@ -62,6 +62,31 @@ class GraphSpec:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class ResourceSpec:
+    algorithm_key: str
+    estimator_key: str = "none"
+    device_support: List[str] = field(default_factory=list)
+    dtype_modes: List[str] = field(default_factory=list)
+    compile_support: str = "none"
+    probe_support: str = "none"
+    empty_cache_policy: str = "none"
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class BatchingSpec:
+    algorithm_key: str
+    planner_layers: List[str] = field(default_factory=list)
+    alpha_batching: str = "none"
+    sample_batching: str = "none"
+    chunking: str = "none"
+    seed_partition_sensitive: bool = False
+    sample_range_honored: bool = True
+    metadata_only: bool = True
+    notes: str = ""
+
+
 @dataclass
 class AlgorithmStateView:
     """Capability-based state exposed to probes/interventions/analyzers.
@@ -512,6 +537,34 @@ def get_graph_specs() -> Dict[str, GraphSpec]:
         GraphSpec("supergraph_general", "active_path", ["spreading.seed", "spreading.f_distribution"], ["spreading_graph", "F_super"], ["bigamp_spreading"], "General spreading supergraph used by tensor_order=1 route."),
     ]
     return {spec.key: spec for spec in specs}
+
+
+def get_resource_specs() -> Dict[str, ResourceSpec]:
+    specs = [
+        ResourceSpec("agd", "runner.MemoryEstimator", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Matrix AGD path; no algorithm-local memory probe."),
+        ResourceSpec("bigamp", "runner.MemoryEstimator", ["cpu", "cuda"], ["float32"], "torch.compile optional", "none", "none", "Dense matrix BiG-AMP uses batched alpha tensors."),
+        ResourceSpec("bigamp_spreading", "runner.MemoryEstimator + spreading chunk_size", ["cpu", "cuda"], ["float32", "bf16 storage"], "torch.compile optional", "none", "between_batches", "Spreading path has chunked edge streaming and per-batch graph creation."),
+        ResourceSpec("bigamp_tensor", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Serial tensor/reference path; alpha/sample loops are serial."),
+        ResourceSpec("bigamp_tensor_parallel", "runner.MemoryEstimator + tensor_memory.probe_tensor_super_memory", ["cpu", "cuda"], ["float32", "bf16 storage", "tf32 matmul"], "torch.compile default optional", "A=1 tensor supergraph probe", "between_batches", "TensorSuperGraph path uses algorithm-internal probe-based alpha batching."),
+        ResourceSpec("agd_tensor", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Experimental tensor AGD path."),
+        ResourceSpec("agd_spreading", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Legacy broken spreading AGD path."),
+        ResourceSpec("combined", "none", [], [], "none", "none", "none", "Non-trainable helper."),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
+
+
+def get_batching_specs() -> Dict[str, BatchingSpec]:
+    specs = [
+        BatchingSpec("agd", ["runner.ParallelCoordinator"], "runner alpha batches", "samples inside algorithm tensor", "none", False, False, notes="Runner plans batches; sample_range is not a formal algorithm input."),
+        BatchingSpec("bigamp", ["runner.ParallelCoordinator"], "runner alpha batches", "samples parallel in W/X tensors", "none", False, False),
+        BatchingSpec("bigamp_spreading", ["runner.ParallelCoordinator", "algorithm per-batch supergraph"], "runner alpha batches", "disjoint-union sample parallel", "spreading.chunk_size edge streaming", True, False, notes="Batch seed offsets and per-batch graph creation must be treated as random-path sensitive."),
+        BatchingSpec("bigamp_tensor", ["algorithm loop"], "serial alpha loop", "serial sample loop", "none", True, True, notes="sample_seed depends on sample index and alpha value."),
+        BatchingSpec("bigamp_tensor_parallel", ["runner.ParallelCoordinator", "algorithm internal probe batches"], "probe-based internal alpha batches", "TensorSuperGraph sample parallel", "none", True, False, notes="Algorithm sorts alphas internally and uses seed + batch_idx."),
+        BatchingSpec("agd_tensor", ["algorithm private"], "experimental", "experimental", "none", True, True),
+        BatchingSpec("agd_spreading", ["legacy private"], "legacy", "legacy", "none", True, True),
+        BatchingSpec("combined", [], "none", "none", "none", False, True),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
 
 
 def get_metric_specs() -> Dict[str, MetricSpec]:

@@ -12,19 +12,23 @@ from .contracts import (
     AlgorithmSpec,
     InterventionSpec,
     AnalyzerSpec,
+    BatchingSpec,
     MetricSpec,
     OutputSpec,
     ParameterSpec,
     ProbeSpec,
+    ResourceSpec,
     TeacherSpec,
     get_algorithm_specs,
     get_algorithm_metric_keys,
     get_analyzer_specs,
+    get_batching_specs,
     get_intervention_specs,
     get_metric_specs,
     get_output_specs,
     get_parameter_specs,
     get_probe_specs,
+    get_resource_specs,
     get_teacher_specs,
 )
 
@@ -60,6 +64,9 @@ class ExperimentPlan:
     strict: bool = False
     algorithm_spec: Optional[AlgorithmSpec] = None
     teacher_spec: Optional[TeacherSpec] = None
+    resource_spec: Optional[ResourceSpec] = None
+    batching_spec: Optional[BatchingSpec] = None
+    resource_plan: Dict[str, Any] = field(default_factory=dict)
     metric_specs: List[MetricSpec] = field(default_factory=list)
     output_specs: List[OutputSpec] = field(default_factory=list)
     output_plan: OutputPlan = field(default_factory=OutputPlan)
@@ -96,6 +103,26 @@ class ExperimentPlan:
                 "produced_artifacts": list(self.teacher_spec.produced_artifacts),
                 "scale_convention": self.teacher_spec.scale_convention,
             } if self.teacher_spec else None,
+            "resource_spec": {
+                "algorithm_key": self.resource_spec.algorithm_key,
+                "estimator_key": self.resource_spec.estimator_key,
+                "device_support": list(self.resource_spec.device_support),
+                "dtype_modes": list(self.resource_spec.dtype_modes),
+                "compile_support": self.resource_spec.compile_support,
+                "probe_support": self.resource_spec.probe_support,
+                "empty_cache_policy": self.resource_spec.empty_cache_policy,
+            } if self.resource_spec else None,
+            "batching_spec": {
+                "algorithm_key": self.batching_spec.algorithm_key,
+                "planner_layers": list(self.batching_spec.planner_layers),
+                "alpha_batching": self.batching_spec.alpha_batching,
+                "sample_batching": self.batching_spec.sample_batching,
+                "chunking": self.batching_spec.chunking,
+                "seed_partition_sensitive": self.batching_spec.seed_partition_sensitive,
+                "sample_range_honored": self.batching_spec.sample_range_honored,
+                "metadata_only": self.batching_spec.metadata_only,
+            } if self.batching_spec else None,
+            "resource_plan": dict(self.resource_plan),
             "metrics": [spec.key for spec in self.metric_specs],
             "available_metric_keys": _available_metric_keys(self),
             "outputs": [spec.key for spec in self.output_specs],
@@ -151,6 +178,15 @@ class ExperimentPlan:
             lines.append(f"teacher status: {self.teacher_spec.status}")
             if self.teacher_spec.scale_convention:
                 lines.append(f"teacher scale: {self.teacher_spec.scale_convention}")
+        if self.resource_plan:
+            lines.append("")
+            lines.append("resource / batching contract:")
+            lines.append(f"  estimator: {self.resource_plan.get('estimator_key')}")
+            lines.append(f"  planner_layers: {', '.join(self.resource_plan.get('planner_layers') or []) or 'none'}")
+            lines.append(f"  alpha_batching: {self.resource_plan.get('alpha_batching')}")
+            lines.append(f"  sample_batching: {self.resource_plan.get('sample_batching')}")
+            lines.append(f"  seed_partition_sensitive: {self.resource_plan.get('seed_partition_sensitive')}")
+            lines.append(f"  metadata_only: {self.resource_plan.get('metadata_only')}")
         lines.append("")
         lines.append("有效参数摘要:")
         for key in sorted(self.effective_parameters):
@@ -292,6 +328,8 @@ def build_experiment_plan(
     probe_specs = get_probe_specs()
     analyzer_specs = get_analyzer_specs()
     teacher_specs = get_teacher_specs()
+    resource_specs = get_resource_specs()
+    batching_specs = get_batching_specs()
 
     _validate_raw_paths(plan, parameter_specs)
 
@@ -302,12 +340,19 @@ def build_experiment_plan(
     else:
         plan.errors.append(f"algorithm_key 未注册 AlgorithmSpec: {algorithm_key}")
         return plan
+    plan.resource_spec = resource_specs.get(algorithm_key)
+    plan.batching_spec = batching_specs.get(algorithm_key)
+    _build_resource_plan(plan)
 
     teacher_key = getattr(config, "teacher_key", None)
     if teacher_key in teacher_specs:
         plan.teacher_spec = teacher_specs[teacher_key]
     else:
         plan.errors.append(f"teacher_key 未注册 TeacherSpec: {teacher_key}")
+    if not plan.resource_spec:
+        plan.errors.append(f"algorithm_key 未注册 ResourceSpec: {algorithm_key}")
+    if not plan.batching_spec:
+        plan.errors.append(f"algorithm_key 未注册 BatchingSpec: {algorithm_key}")
 
     _validate_required_config_paths(plan, parameter_specs)
 
@@ -641,6 +686,45 @@ def _effective_parameter_summary(
         "output.custom_plots": bool(output_options.get("plots")),
         "probes.count": len(_as_list(raw_config.get("probes"))),
         "analyzers.count": len(_as_list(raw_config.get("analyzers"))),
+    }
+
+
+def _build_resource_plan(plan: ExperimentPlan) -> None:
+    if not plan.resource_spec or not plan.batching_spec:
+        plan.resource_plan = {}
+        return
+    algorithm_params = getattr(plan.config, "algorithm_params", None)
+    spreading = getattr(plan.config, "spreading", None)
+    training = getattr(plan.config, "training", None)
+    scan = getattr(plan.config, "scan", None)
+    plan.resource_plan = {
+        "algorithm_key": plan.resource_spec.algorithm_key,
+        "estimator_key": plan.resource_spec.estimator_key,
+        "device_support": list(plan.resource_spec.device_support),
+        "dtype_modes": list(plan.resource_spec.dtype_modes),
+        "compile_support": plan.resource_spec.compile_support,
+        "probe_support": plan.resource_spec.probe_support,
+        "empty_cache_policy": plan.resource_spec.empty_cache_policy,
+        "planner_layers": list(plan.batching_spec.planner_layers),
+        "alpha_batching": plan.batching_spec.alpha_batching,
+        "sample_batching": plan.batching_spec.sample_batching,
+        "chunking": plan.batching_spec.chunking,
+        "seed_partition_sensitive": plan.batching_spec.seed_partition_sensitive,
+        "sample_range_honored": plan.batching_spec.sample_range_honored,
+        "metadata_only": plan.batching_spec.metadata_only,
+        "config_effective": {
+            "scan_num_points": len(getattr(scan, "values", []) or []),
+            "samples_per_alpha": getattr(training, "samples_per_alpha", None),
+            "max_steps": getattr(training, "max_steps", None),
+            "use_compile": getattr(algorithm_params, "use_compile", None),
+            "use_bf16": getattr(algorithm_params, "use_bf16", None),
+            "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
+            "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
+        },
+        "notes": {
+            "resource": plan.resource_spec.notes,
+            "batching": plan.batching_spec.notes,
+        },
     }
 
 

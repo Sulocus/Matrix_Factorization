@@ -6,9 +6,11 @@ from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
     get_algorithm_source_inventory,
     get_algorithm_specs,
+    get_batching_specs,
     get_metric_specs,
     get_output_specs,
     get_parameter_specs,
+    get_resource_specs,
 )
 from matrix_factorization.core.planning import build_experiment_plan
 import matrix_factorization.core.planning as planning_module
@@ -113,6 +115,18 @@ def test_algorithm_specs_reference_existing_contracts():
             assert metric_key in metric_specs, f"{algorithm_key} produces unknown metric {metric_key}"
         for output_key in spec.compatible_outputs:
             assert output_key in output_specs, f"{algorithm_key} references unknown output {output_key}"
+
+
+def test_active_algorithms_have_resource_and_batching_specs():
+    resource_specs = get_resource_specs()
+    batching_specs = get_batching_specs()
+
+    for algorithm_key, spec in get_algorithm_specs().items():
+        assert algorithm_key in resource_specs
+        assert algorithm_key in batching_specs
+        if spec.status == "active":
+            assert resource_specs[algorithm_key].estimator_key
+            assert batching_specs[algorithm_key].planner_layers
 
 
 def test_algorithm_required_config_paths_are_preflight_checked(tmp_path, monkeypatch):

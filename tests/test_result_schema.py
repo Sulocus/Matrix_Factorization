@@ -240,6 +240,21 @@ def test_algorithm_state_view_exposes_only_declared_capability_names():
     ]
 
 
+def test_runner_resource_plan_report_is_metadata_only():
+    config = _tiny_config()
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    params = runner._estimation_params_for_config(config, config.scan.values)
+    plan = runner.parallel_coordinator.plan_execution(params)
+    report = runner._runtime_resource_plan_report(config, plan)
+
+    assert report["algorithm_key"] == "bigamp"
+    assert report["metadata_only"] is True
+    assert report["mode"]
+    assert report["num_batches"] >= 1
+    assert report["batches"][0]["sample_range_honored_by_runner"] is False
+    assert "allocation_ratio" in report["allocation"]
+
+
 def test_runner_wraps_tensor_legacy_metrics_without_dummy_matrix_factors():
     class DummyTensorAlgorithm:
         _batch_metrics = {

@@ -360,6 +360,10 @@ class ExperimentRunner:
         
         # Get execution plan from ParallelCoordinator
         plan = self.parallel_coordinator.plan_execution(params)
+        result.metadata.contract["runtime_resource_plan"] = self._runtime_resource_plan_report(
+            config,
+            plan,
+        )
         
         # Phase 3 Tensor Parallel: Let all alphas be processed in single batch
         # The tensor_spreading_parallel._train_full_parallel() handles true Alpha+Sample parallelism
@@ -774,6 +778,47 @@ class ExperimentRunner:
             adaptive_damping=config.algorithm_params.adaptive_damping,
             allow_intra_connection=allow_intra,
         )
+
+    def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:
+        """Serialize the actual runner-level execution plan as metadata only."""
+        allocation = getattr(plan, "allocation_config", None)
+        algorithm_params = getattr(config, "algorithm_params", None)
+        spreading = getattr(config, "spreading", None)
+        return {
+            "algorithm_key": config.algorithm_key,
+            "device": str(self.device),
+            "gpu_model": getattr(plan, "gpu_model", ""),
+            "available_memory_gb": float(getattr(plan, "available_memory_gb", 0.0) or 0.0),
+            "total_estimated_memory_gb": float(getattr(plan, "total_estimated_memory_gb", 0.0) or 0.0),
+            "mode": getattr(getattr(plan, "mode", None), "name", str(getattr(plan, "mode", ""))),
+            "num_batches": int(getattr(plan, "num_batches", 0) or 0),
+            "allocation": {
+                "allocation_ratio": getattr(allocation, "allocation_ratio", None),
+                "max_allocation_gb": getattr(allocation, "max_allocation_gb", None),
+                "warning_threshold": getattr(allocation, "warning_threshold", None),
+                "critical_threshold": getattr(allocation, "critical_threshold", None),
+                "safety_margin": getattr(allocation, "safety_margin", None),
+            },
+            "config_effective": {
+                "use_compile": getattr(algorithm_params, "use_compile", None),
+                "use_bf16": getattr(algorithm_params, "use_bf16", None),
+                "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
+                "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
+            },
+            "batches": [
+                {
+                    "batch_index": idx,
+                    "sample_range": list(batch.sample_range),
+                    "sample_range_honored_by_runner": False,
+                    "alpha_range": list(batch.alpha_range),
+                    "alpha_values": [float(value) for value in batch.alpha_values],
+                    "estimated_memory_gb": float(batch.estimated_memory_gb),
+                }
+                for idx, batch in enumerate(getattr(plan, "batches", []) or [])
+            ],
+            "metadata_only": True,
+            "notes": "Runner-level resource metadata; it does not drive execution or change batching.",
+        }
 
     def _run_algorithm_result(
         self,
