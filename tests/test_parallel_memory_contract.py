@@ -5,6 +5,7 @@ import torch
 
 from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
+    AlgorithmResult,
     get_effective_seed_policy_summary,
     get_batching_specs,
     get_memory_model_specs,
@@ -264,6 +265,60 @@ def test_cuda_oom_flushes_checkpoint_before_exit(tmp_path, monkeypatch):
     loaded = CheckpointManager(checkpoint_path).load()
     assert loaded is not None
     assert loaded.completed_alphas == []
+
+
+def test_resume_partial_batch_runs_only_remaining_alphas(tmp_path, monkeypatch):
+    config_path = tmp_path / "matrix_config.yaml"
+    checkpoint_path = tmp_path / "partial_resume_checkpoint.pt"
+    _write_matrix_config(config_path, algorithm=1)
+    config, _, raw_yaml = load_yaml_config(config_path)
+    result = ExperimentResult(
+        experiment_id="partial_resume_contract",
+        config=config,
+        scan_dimension=config.scan.dimension,
+        scan_values=config.scan.values,
+    )
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    observed_batches = []
+
+    def fake_run_algorithm_result(*, algorithm, config, data, step_callback):
+        observed_batches.append([float(alpha) for alpha in data.alpha_values])
+        batch_size = len(data.alpha_values)
+        W = torch.zeros(batch_size, 1, config.matrix.N1, config.matrix.M)
+        X = torch.zeros(batch_size, 1, config.matrix.M, config.matrix.N2)
+        return AlgorithmResult.from_matrix_factors(
+            alpha=float(data.alpha_values[0]),
+            metrics={},
+            W_students=W,
+            X_students=X,
+            metadata={"algorithm_key": config.algorithm_key, "result_contract": "legacy_matrix_result"},
+        )
+
+    monkeypatch.setattr(runner, "_run_algorithm_result", fake_run_algorithm_result)
+    monkeypatch.setattr(
+        runner,
+        "_compute_metrics",
+        lambda **kwargs: {"Q_Y_mean": 0.5, "MSE": 0.5},
+    )
+
+    first_alpha = float(config.scan.values[0])
+    remaining = [float(alpha) for alpha in config.scan.values[1:]]
+    class DummyAlgorithm:
+        pass
+
+    runner._run_standard_scan(
+        config,
+        algorithm=DummyAlgorithm(),
+        result=result,
+        observer=None,
+        resume_results={first_alpha: {"metrics": {"Q_Y_mean": 0.1}}},
+        output_options={"checkpoint_path": str(checkpoint_path), "save_tensors": False},
+        raw_yaml=raw_yaml,
+    )
+
+    assert observed_batches == [remaining]
+    assert sorted(float(alpha) for alpha in result.results) == remaining
+    assert not checkpoint_path.exists()
 
 
 def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():

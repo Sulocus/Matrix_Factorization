@@ -432,16 +432,20 @@ class ExperimentRunner:
         
         for batch_idx, batch in enumerate(plan.batches):
             batch_start_time = time.time()
-            batch_alpha_values = batch.alpha_values
+            planned_batch_alpha_values = batch.alpha_values
             
             # Skip if all alphas in this batch are already completed (resume mode)
-            remaining_alphas = [a for a in batch_alpha_values if a not in completed_alphas]
+            remaining_alphas = [a for a in planned_batch_alpha_values if a not in completed_alphas]
             if not remaining_alphas:
                 if self.verbose and not skipped_msg_printed:
                     print("  ⏭️ Skipping completed batch(es)...")
                     skipped_msg_printed = True
-                global_point_idx += len(batch_alpha_values)
+                global_point_idx += len(planned_batch_alpha_values)
                 continue
+            skipped_alphas_in_batch = len(planned_batch_alpha_values) - len(remaining_alphas)
+            if skipped_alphas_in_batch:
+                global_point_idx += skipped_alphas_in_batch
+            batch_alpha_values = remaining_alphas
             
             # Reset skip flag when we encounter a batch to run
             skipped_msg_printed = False
@@ -628,7 +632,7 @@ class ExperimentRunner:
             torch.cuda.empty_cache()
         
         # Cleanup checkpoints on successful completion
-        if global_point_idx == total_points:
+        if len(completed_alphas) == total_points:
             ckpt_mgr.flush()
             ckpt_mgr.delete()
     

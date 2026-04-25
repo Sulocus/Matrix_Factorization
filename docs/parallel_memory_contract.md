@@ -145,6 +145,7 @@ checkpoint 语义：
 - `CheckpointManager.flush()` 会等待所有已排队写入，并把后台写入异常重新抛到主线程。
 - OOM abort 退出前 runner 会调用 `flush()`；成功完成并删除 checkpoint 前也会先 `flush()`，避免后台 save 覆盖 cleanup。
 - cooperative `MemoryAbortException` 和直接抛出的 `torch.cuda.OutOfMemoryError` 都走同一条 checkpoint/flush/exit 路径。
+- resume 时如果一个 planned batch 里只有部分 alpha 已完成，runner 只会把未完成的 alpha 交给 algorithm；checkpoint 清理以 `completed_alphas` 是否覆盖全 scan 为准。
 
 ## Metadata 写入位置
 

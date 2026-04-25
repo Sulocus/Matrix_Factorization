@@ -51,6 +51,7 @@
 - Checkpoint flush contract：`CheckpointManager.save()` 保持异步，但新增 `flush()` 暴露后台写入失败；OOM abort 退出前和成功清理 checkpoint 前都会等待 flush，避免把“save 已排队”误认为“checkpoint 已落盘”。
 - ExecutionPlan provenance：parallel planner 现在给每个 `ExecutionPlan` 写入 `plan_id`、原始 `EstimationParams` 快照和轻量 `replan_provenance.batch_summary`；runtime metadata 会带上这些字段，为未来真实 OOM rebatch 提供可追踪输入。
 - CUDA OOM contract：runner 现在把 cooperative `MemoryAbortException` 和直接 `torch.cuda.OutOfMemoryError` 统一到 checkpoint/flush/exit 路径，避免真实 allocation OOM 绕过 checkpoint。
+- Partial resume contract：runner 现在在一个 planned batch 只有部分 alpha 已完成时只运行剩余 alpha，并用 `completed_alphas` 覆盖全 scan 作为 checkpoint cleanup 条件，为未来 batch retry/replan 打基础。
 
 ## 本轮继续推进
 
