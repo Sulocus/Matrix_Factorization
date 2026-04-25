@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import subprocess
 import sys
 
@@ -45,6 +46,12 @@ def test_trial_run_command_generates_run_directory():
     assert "runs/trials/matrix_bigamp_quick" in str(output_path)
     for filename in ["config.json", "metadata.json", "metrics.json", "manifest.json"]:
         assert (output_path / filename).exists()
+    metadata = json.loads((output_path / "metadata.json").read_text(encoding="utf-8"))
+    runtime_plan = metadata["contract"]["runtime_resource_plan"]
+    assert runtime_plan["algorithm_key"] == "bigamp"
+    assert runtime_plan["metadata_only"] is True
+    assert runtime_plan["num_batches"] >= 1
+    assert runtime_plan["batches"][0]["sample_range_honored_by_runner"] is False
 
 
 def test_trial_run_rejects_medium_or_gpu_heavy(tmp_path):
