@@ -253,6 +253,9 @@ class AlgorithmBase(ABC):
             "algorithm_key": algorithm_key,
             "result_contract": spec.result_contract,
         }
+        execution_metadata = getattr(self, "_contract_execution_metadata", None)
+        if isinstance(execution_metadata, dict):
+            metadata["execution_metadata"] = dict(execution_metadata)
         if spec.result_contract == "legacy_tensor_metrics_only":
             artifacts = {}
             if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):

@@ -15,7 +15,7 @@ Physical model:
 where F is quenched random disorder that breaks loop correlations.
 """
 
-from typing import Tuple, Callable, Dict, Optional, List
+from typing import Any, Tuple, Callable, Dict, Optional, List
 import math
 from pathlib import Path
 import datetime
@@ -209,6 +209,36 @@ class BiGAMPSpreading(AlgorithmBase):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
+
+        self._contract_execution_metadata = self._build_spreading_execution_metadata([])
+
+    def _build_spreading_execution_metadata(
+        self,
+        alpha_values: List[float],
+        dynamic_batches: Optional[List[Tuple[int, int, float]]] = None,
+    ) -> Dict[str, Any]:
+        chunk_size = int(getattr(self, "chunk_size", 0) or 0)
+        return {
+            "path": "bigamp_spreading_general",
+            "chunk_size": chunk_size,
+            "chunking_enabled": chunk_size > 0,
+            "chunk_policy": "manual_config" if chunk_size > 0 else "disabled_legacy_unchunked",
+            "requested_use_compile": bool(getattr(self, "use_compile", False)),
+            "effective_use_bf16": bool(getattr(self, "use_bf16", False)),
+            "storage_dtype": str(getattr(self, "storage_dtype", torch.float32)).replace("torch.", ""),
+            "alpha_values": [float(alpha) for alpha in alpha_values],
+            "dynamic_batches": [
+                {
+                    "alpha_start": int(start),
+                    "alpha_end": int(end),
+                    "alpha_max": float(alpha_max),
+                }
+                for start, end, alpha_max in (dynamic_batches or [])
+            ],
+            "seed_partition": "seed + batch_idx",
+            "metadata_only": True,
+            "notes": "Spreading execution metadata only; chunk_size is manual config and no auto tuning is applied.",
+        }
 
     @staticmethod
     def _initialize_near_teacher(
@@ -995,6 +1025,10 @@ class BiGAMPSpreading(AlgorithmBase):
 
         num_batches = 1
         dynamic_batches = [(0, A, alpha_max)]
+        self._contract_execution_metadata = self._build_spreading_execution_metadata(
+            alpha_values,
+            dynamic_batches,
+        )
 
         # ===== Global SuperGraph Removed =====
         # Refactored to per-batch creation to prevent OOM on large problems.

@@ -44,6 +44,7 @@ alpha batching: runner alpha batches
 sample batching: disjoint-union sample parallel
 chunking: spreading.chunk_size edge streaming
 seed sensitive: true
+chunk policy: manual_config if spreading.chunk_size > 0, disabled_legacy_unchunked if 0
 ```
 
 风险：per-batch graph creation、batch seed offset、chunking 都可能和随机路径或执行路径绑定，因此自动优化 batch size 前必须先做 seed partition 审查。
@@ -164,6 +165,24 @@ internal_alpha_batch_plan
 ```
 
 这两块 metadata 只记录实际执行选择和内部分批；不做自动 retry，不自动改变 batch partition。
+
+`bigamp_spreading` 的 matrix-factor `AlgorithmResult.metadata.execution_metadata` 还会记录：
+
+```text
+path
+chunk_size
+chunking_enabled
+chunk_policy
+requested_use_compile
+effective_use_bf16
+storage_dtype
+alpha_values
+dynamic_batches
+seed_partition
+metadata_only
+```
+
+这块 metadata 只记录 `spreading.chunk_size` 是否实际打开 chunked path；v1 不做 chunk size auto tuning。
 
 ## Metrics-only tensor path
 

@@ -16,6 +16,7 @@ from matrix_factorization.core.experiment.data_factory import ExperimentData
 from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
 from matrix_factorization.core.experiment.runner import ExperimentRunner, ProgressEventType
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading import BiGAMPTensorSpreading
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import BiGAMPTensorSpreadingParallel
 from matrix_factorization.modules.outputs.latest import refresh_latest_results
@@ -256,6 +257,31 @@ def test_runner_resource_plan_report_is_metadata_only():
     assert "allocation_ratio" in report["allocation"]
     assert report["seed_policy"]["policy_key"] == "legacy_vectorized_batch_manual_seed"
     assert report["seed_policy"]["automatic_rebatch_allowed"] is False
+
+
+def test_spreading_chunk_policy_is_preserved_in_algorithm_result_metadata():
+    algorithm = object.__new__(BiGAMPSpreading)
+    algorithm.chunk_size = 1024
+    algorithm.use_compile = True
+    algorithm.use_bf16 = False
+    algorithm.storage_dtype = torch.float32
+    algorithm._contract_execution_metadata = algorithm._build_spreading_execution_metadata(
+        [0.1],
+        [(0, 1, 0.1)],
+    )
+
+    result = algorithm.coerce_legacy_batch_result(
+        algorithm_key="bigamp_spreading",
+        W_students=torch.zeros(1, 1, 2, 1),
+        X_students=torch.zeros(1, 1, 1, 2),
+    )
+    metadata = result.metadata["execution_metadata"]
+
+    assert metadata["chunk_size"] == 1024
+    assert metadata["chunking_enabled"] is True
+    assert metadata["chunk_policy"] == "manual_config"
+    assert metadata["dynamic_batches"][0]["alpha_max"] == 0.1
+    assert metadata["metadata_only"] is True
 
 
 def test_runner_batch_end_event_records_elapsed_duration():
