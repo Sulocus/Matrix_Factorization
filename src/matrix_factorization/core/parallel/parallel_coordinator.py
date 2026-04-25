@@ -112,6 +112,7 @@ class ParallelCoordinator:
         
         # Strategy 1: Try full parallel
         full_estimate = self.estimator.estimate(params)
+        replan_metadata = self._replan_metadata(params)
         
         if full_estimate.total_gb <= target_gb:
             plan = ExecutionPlan(
@@ -128,6 +129,7 @@ class ParallelCoordinator:
                 algorithm_key=params.algorithm_key,
                 gpu_model=self.estimator.gpu_model,
                 available_memory_gb=available_gb,
+                **replan_metadata,
             )
             logger.info(f"Selected FULL_PARALLEL mode: {full_estimate.total_gb:.1f}GB")
             self.stats["plans_created"] += 1
@@ -146,6 +148,7 @@ class ParallelCoordinator:
                 algorithm_key=params.algorithm_key,
                 gpu_model=self.estimator.gpu_model,
                 available_memory_gb=available_gb,
+                **replan_metadata,
             )
             logger.info(
                 f"Selected HYBRID mode: {len(batches)} batches, "
@@ -171,6 +174,7 @@ class ParallelCoordinator:
                     algorithm_key=params.algorithm_key,
                     gpu_model=self.estimator.gpu_model,
                     available_memory_gb=available_gb,
+                    **replan_metadata,
                 )
                 self.stats["plans_created"] += 1
                 return plan
@@ -283,18 +287,15 @@ class ParallelCoordinator:
         if self.current_plan is None:
             raise RuntimeError("No current plan to replan from")
 
-        from matrix_factorization.core.contracts import get_seed_policy_specs
-
         algorithm_key = self.current_plan.algorithm_key
-        seed_policy = get_seed_policy_specs().get(algorithm_key)
-        if seed_policy and seed_policy.automatic_rebatch_allowed:
+        if self.current_plan.automatic_rebatch_allowed:
             raise NotImplementedError(
                 f"Automatic replan is not implemented for algorithm '{algorithm_key}' "
-                "even though its SeedPolicySpec allows rebatching. Implement a real "
+                "even though its effective seed policy allows rebatching. Implement a real "
                 "plan reconstruction using the original EstimationParams before enabling it."
             )
 
-        policy_key = seed_policy.policy_key if seed_policy else "<missing SeedPolicySpec>"
+        policy_key = self.current_plan.replan_policy_key or "<missing effective seed policy>"
         raise RuntimeError(
             f"Automatic OOM replan is disabled for algorithm '{algorithm_key}' "
             f"(seed_policy={policy_key}). The current seed policy is not guaranteed "
@@ -303,6 +304,21 @@ class ParallelCoordinator:
             "before enabling automatic rebatch."
         )
     
+    @staticmethod
+    def _replan_metadata(params: EstimationParams) -> Dict[str, Any]:
+        from matrix_factorization.core.contracts import get_effective_seed_policy_summary
+
+        seed_policy = get_effective_seed_policy_summary(
+            params.algorithm_key,
+            getattr(params, "seed_partition_policy", "legacy"),
+        )
+        return {
+            "seed_partition_policy": seed_policy["requested_policy"],
+            "replan_policy_key": seed_policy["policy_key"],
+            "automatic_rebatch_allowed": bool(seed_policy["automatic_rebatch_allowed"]),
+            "replan_implemented": False,
+        }
+
     def set_memory_guard(self, guard) -> None:
         """Set the memory guard for runtime monitoring."""
         self._memory_guard = guard
@@ -372,6 +388,7 @@ class ParallelCoordinator:
         available_gb: float
     ) -> ExecutionPlan:
         """Create fully sequential execution plan."""
+        replan_metadata = self._replan_metadata(params)
         batches = []
         
         for i, alpha in enumerate(params.alpha_values):
@@ -396,6 +413,7 @@ class ParallelCoordinator:
             algorithm_key=params.algorithm_key,
             gpu_model=self.estimator.gpu_model,
             available_memory_gb=available_gb,
+            **replan_metadata,
         )
     
     def _execute_batch(

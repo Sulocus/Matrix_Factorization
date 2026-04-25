@@ -798,6 +798,7 @@ class ExperimentRunner:
             allow_intra_connection=allow_intra,
             tensor_order=tensor_order,
             tensor_dims=tensor_dims,
+            seed_partition_policy=config.algorithm_params.seed_partition_policy,
         )
 
     def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:
@@ -831,6 +832,12 @@ class ExperimentRunner:
                 "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
             },
             "seed_policy": self._effective_runtime_seed_policy(config),
+            "replan_safety": {
+                "seed_partition_policy": getattr(plan, "seed_partition_policy", "legacy"),
+                "replan_policy_key": getattr(plan, "replan_policy_key", ""),
+                "automatic_rebatch_allowed": bool(getattr(plan, "automatic_rebatch_allowed", False)),
+                "replan_implemented": bool(getattr(plan, "replan_implemented", False)),
+            },
             "batches": [
                 {
                     "batch_index": idx,
@@ -852,44 +859,11 @@ class ExperimentRunner:
 
     @staticmethod
     def _effective_runtime_seed_policy(config: ExperimentConfig) -> Dict[str, Any]:
-        from matrix_factorization.core.contracts import get_seed_policy_specs
+        from matrix_factorization.core.contracts import get_effective_seed_policy_summary
 
-        seed_policy = get_seed_policy_specs().get(config.algorithm_key)
         algorithm_params = getattr(config, "algorithm_params", None)
         requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
-        if config.algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"} and requested_policy == "partition_invariant":
-            if config.algorithm_key == "bigamp_tensor_parallel":
-                policy_key = "tensor_parallel_partition_invariant_v1"
-                seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
-                random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
-            elif config.algorithm_key == "bigamp_spreading":
-                policy_key = "spreading_partition_invariant_v1"
-                seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
-                random_streams = ["student_initialization", "spreading_graph", "F_super"]
-            else:
-                policy_key = "matrix_student_init_partition_invariant_v1"
-                seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]
-                random_streams = ["student_initialization"]
-            return {
-                "policy_key": policy_key,
-                "seed_inputs": seed_inputs,
-                "random_streams": random_streams,
-                "partition_invariant": True,
-                "batch_partition_sensitive": False,
-                "automatic_rebatch_allowed": True,
-                "notes": "Opt-in partition-invariant seed policy; default legacy behavior is unchanged.",
-                "requested_policy": requested_policy,
-            }
-        return {
-            "policy_key": seed_policy.policy_key if seed_policy else "",
-            "seed_inputs": list(seed_policy.seed_inputs) if seed_policy else [],
-            "random_streams": list(seed_policy.random_streams) if seed_policy else [],
-            "partition_invariant": seed_policy.partition_invariant if seed_policy else False,
-            "batch_partition_sensitive": seed_policy.batch_partition_sensitive if seed_policy else True,
-            "automatic_rebatch_allowed": seed_policy.automatic_rebatch_allowed if seed_policy else False,
-            "notes": seed_policy.notes if seed_policy else "",
-            "requested_policy": requested_policy,
-        }
+        return get_effective_seed_policy_summary(config.algorithm_key, requested_policy)
 
     def _run_algorithm_result(
         self,

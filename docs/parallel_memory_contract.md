@@ -108,6 +108,32 @@ spreading、AGD 与 dense BigAMP 也可以显式设置同一个字段。AGD/dens
 
 `ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint 并退出，用户再用 clean process resume。
 
+effective seed policy 现在是 replan safety 的唯一来源：
+
+```text
+get_effective_seed_policy_summary(algorithm_key, requested_policy)
+  -> policy_key
+  -> partition_invariant
+  -> batch_partition_sensitive
+  -> automatic_rebatch_allowed
+```
+
+`ExecutionPlan` 会记录：
+
+```text
+seed_partition_policy
+replan_policy_key
+automatic_rebatch_allowed
+replan_implemented=false
+```
+
+这几个字段只说明“如果未来实现自动 rebatch，当前随机流 contract 是否允许这么做”。当前真实行为仍然是：
+
+- `automatic_rebatch_allowed=false`：`replan_with_safety()` 抛 `RuntimeError`，说明当前 seed policy 不允许静默重分批。
+- `automatic_rebatch_allowed=true`：`replan_with_safety()` 抛 `NotImplementedError`，说明随机流 contract 已允许重分批，但自动重规划逻辑还没有实现。
+
+也就是说，`partition_invariant` 现在打开的是“未来可安全实现自动 rebatch 的前置条件”，不是已经实现 OOM 后自动缩 batch。
+
 ## Metadata 写入位置
 
 `mf explain-config` 会显示：
@@ -137,6 +163,10 @@ resource_plan
     partition_invariant
     batch_partition_sensitive
     automatic_rebatch_allowed
+  replan_safety
+    automatic_rebatch_allowed
+    replan_implemented
+    notes
 ```
 
 真实 run 的 `metadata.json` 会包含：
@@ -153,6 +183,7 @@ contract.runtime_resource_plan
   allocation
   config_effective
   seed_policy
+  replan_safety
   batches
   metadata_only
 ```

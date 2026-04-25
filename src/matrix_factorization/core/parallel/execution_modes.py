@@ -47,6 +47,7 @@ class EstimationParams:
     allow_intra_connection: bool = False  # General Graph mode (W-W, X-X connections)
     tensor_order: int = 2
     tensor_dims: Optional[Tuple[int, ...]] = None
+    seed_partition_policy: str = "legacy"
     
     @property
     def alpha_max(self) -> float:
@@ -193,6 +194,10 @@ class ExecutionPlan:
     algorithm_key: str = ""
     gpu_model: str = ""
     available_memory_gb: float = 0.0
+    seed_partition_policy: str = "legacy"
+    replan_policy_key: str = ""
+    automatic_rebatch_allowed: bool = False
+    replan_implemented: bool = False
     
     @property
     def num_batches(self) -> int:

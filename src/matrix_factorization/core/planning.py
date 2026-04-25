@@ -25,6 +25,7 @@ from .contracts import (
     get_algorithm_metric_keys,
     get_analyzer_specs,
     get_batching_specs,
+    get_effective_seed_policy_summary,
     get_intervention_specs,
     get_memory_model_specs,
     get_metric_specs,
@@ -856,6 +857,7 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
     spreading = getattr(plan.config, "spreading", None)
     training = getattr(plan.config, "training", None)
     scan = getattr(plan.config, "scan", None)
+    seed_policy_summary = _effective_seed_policy_summary(plan)
     plan.resource_plan = {
         "algorithm_key": plan.resource_spec.algorithm_key,
         "estimator_key": plan.resource_spec.estimator_key,
@@ -880,7 +882,12 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "sample_range_policy": plan.memory_model_spec.sample_range_policy if plan.memory_model_spec else "",
             "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
         },
-        "seed_policy": _effective_seed_policy_summary(plan),
+        "seed_policy": seed_policy_summary,
+        "replan_safety": {
+            "automatic_rebatch_allowed": seed_policy_summary["automatic_rebatch_allowed"],
+            "replan_implemented": False,
+            "notes": "Automatic OOM replan is not implemented; current behavior is checkpoint/resume.",
+        },
         "config_effective": {
             "scan_num_points": len(getattr(scan, "values", []) or []),
             "samples_per_alpha": getattr(training, "samples_per_alpha", None),
@@ -906,42 +913,7 @@ def _effective_seed_policy_summary(plan: ExperimentPlan) -> Dict[str, Any]:
     algorithm_params = getattr(plan.config, "algorithm_params", None)
     requested_policy = getattr(algorithm_params, "seed_partition_policy", "legacy")
     algorithm_key = getattr(plan.config, "algorithm_key", None)
-    if (
-        algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
-        and requested_policy == "partition_invariant"
-    ):
-        if algorithm_key == "bigamp_tensor_parallel":
-            policy_key = "tensor_parallel_partition_invariant_v1"
-            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
-            random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
-        elif algorithm_key == "bigamp_spreading":
-            policy_key = "spreading_partition_invariant_v1"
-            seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
-            random_streams = ["student_initialization", "spreading_graph", "F_super"]
-        else:
-            policy_key = "matrix_student_init_partition_invariant_v1"
-            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]
-            random_streams = ["student_initialization"]
-        return {
-            "policy_key": policy_key,
-            "seed_inputs": seed_inputs,
-            "random_streams": random_streams,
-            "partition_invariant": True,
-            "batch_partition_sensitive": False,
-            "automatic_rebatch_allowed": True,
-            "notes": "Opt-in partition-invariant seed policy; default legacy behavior is unchanged.",
-            "requested_policy": requested_policy,
-        }
-    return {
-        "policy_key": plan.seed_policy_spec.policy_key if plan.seed_policy_spec else "",
-        "seed_inputs": list(plan.seed_policy_spec.seed_inputs) if plan.seed_policy_spec else [],
-        "random_streams": list(plan.seed_policy_spec.random_streams) if plan.seed_policy_spec else [],
-        "partition_invariant": plan.seed_policy_spec.partition_invariant if plan.seed_policy_spec else False,
-        "batch_partition_sensitive": plan.seed_policy_spec.batch_partition_sensitive if plan.seed_policy_spec else True,
-        "automatic_rebatch_allowed": plan.seed_policy_spec.automatic_rebatch_allowed if plan.seed_policy_spec else False,
-        "notes": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
-        "requested_policy": requested_policy,
-    }
+    return get_effective_seed_policy_summary(algorithm_key, requested_policy)
 
 
 def _select_output_specs(plan: ExperimentPlan, output_specs: Dict[str, OutputSpec]) -> None:

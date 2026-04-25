@@ -716,6 +716,51 @@ def get_seed_policy_specs() -> Dict[str, SeedPolicySpec]:
     return {spec.algorithm_key: spec for spec in specs}
 
 
+def get_effective_seed_policy_summary(
+    algorithm_key: str,
+    requested_policy: str = "legacy",
+) -> Dict[str, Any]:
+    """Config-aware seed policy summary used by plan, runner and memory planner."""
+    if (
+        algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
+        and requested_policy == "partition_invariant"
+    ):
+        if algorithm_key == "bigamp_tensor_parallel":
+            policy_key = "tensor_parallel_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "dimension", "role"]
+            random_streams = ["student_initialization", "tensor_supergraph", "F_tensor"]
+        elif algorithm_key == "bigamp_spreading":
+            policy_key = "spreading_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "spreading.seed", "alpha", "sample_index", "role"]
+            random_streams = ["student_initialization", "spreading_graph", "F_super"]
+        else:
+            policy_key = "matrix_student_init_partition_invariant_v1"
+            seed_inputs = ["seeds.base_seed", "alpha", "sample_index", "role"]
+            random_streams = ["student_initialization"]
+        return {
+            "policy_key": policy_key,
+            "seed_inputs": seed_inputs,
+            "random_streams": random_streams,
+            "partition_invariant": True,
+            "batch_partition_sensitive": False,
+            "automatic_rebatch_allowed": True,
+            "notes": "Opt-in partition-invariant seed policy; default legacy behavior is unchanged.",
+            "requested_policy": requested_policy,
+        }
+
+    seed_policy = get_seed_policy_specs().get(algorithm_key)
+    return {
+        "policy_key": seed_policy.policy_key if seed_policy else "",
+        "seed_inputs": list(seed_policy.seed_inputs) if seed_policy else [],
+        "random_streams": list(seed_policy.random_streams) if seed_policy else [],
+        "partition_invariant": seed_policy.partition_invariant if seed_policy else False,
+        "batch_partition_sensitive": seed_policy.batch_partition_sensitive if seed_policy else True,
+        "automatic_rebatch_allowed": seed_policy.automatic_rebatch_allowed if seed_policy else False,
+        "notes": seed_policy.notes if seed_policy else "",
+        "requested_policy": requested_policy,
+    }
+
+
 def get_metric_specs() -> Dict[str, MetricSpec]:
     specs = [
         MetricSpec("matrix.full.Q_Y", ["W_students", "X_students", "W_teacher", "X_teacher"], ["Q_Y_mean", "Q_Y_std"], "matrix", "full", "teacher-student", "cosine", "Dense matrix full-output cosine.", ["agd", "bigamp", "bigamp_spreading"]),

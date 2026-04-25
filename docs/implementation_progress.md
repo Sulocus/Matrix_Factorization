@@ -47,6 +47,7 @@
 - Result schema map：`docs/result_schema_contract.md` 新增 run directory/result/latest 的层级地图，明确 `config.json`、`metadata.json`、`metrics.json`、`output_contract.json`、`events.jsonl`、`manifest.json`、`artifacts/results.pt`、`plots/` 和 `results/latest` 的角色。测试会检查文档覆盖 canonical result files。
 - Algorithm integration map：新增 `docs/algorithm_integration_contract.md`，把 `agd/bigamp/bigamp_spreading/bigamp_tensor/bigamp_tensor_parallel/agd_tensor/agd_spreading/combined` 的主链路状态、result contract 和去重策略列成硬文档。测试会检查所有 `AlgorithmSpec.key` 都被文档覆盖。
 - Tensor parity seed status：tensor parity contract 现在区分 parallel 默认 legacy batch-sensitive seed 与 opt-in `partition_invariant`，避免把“parallel 内部分批稳定”误读成“serial/parallel 物理 parity 已完成”。
+- Replan safety metadata：effective seed policy 现在集中由 `get_effective_seed_policy_summary()` 生成，并进入 `ExperimentPlan.resource_plan`、runtime `runtime_resource_plan` 和 `ExecutionPlan`；`automatic_rebatch_allowed=true` 只表示随机流 contract 允许未来安全 rebatch，当前 `replan_implemented=false`，自动重规划仍会明确报 `NotImplementedError`。
 
 ## 本轮继续推进
 
@@ -66,6 +67,7 @@
   - AGD 与 dense BigAMP 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后同一个 alpha/sample 的 student initialization 不依赖 alpha batch 分组。
   - spreading 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 graph/F 使用稳定 base seed，cold/warm start 初始化按 alpha/sample/role 分流。`adaptive_restart=true` 暂时会 preflight error，因为 restart noise 还没纳入随机流 contract。
   - OOM 自动 replan 已 hard-gate；当前策略是 checkpoint/resume，不自动改变 batch partition。
+  - replan safety 已进入静态 plan、runtime metadata 和 `ExecutionPlan`；`partition_invariant` policy 会打开 `automatic_rebatch_allowed`，但 `replan_implemented=false` 会阻止程序把未来功能误报为已实现。
   - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
   - dense `bigamp` compile fallback 已进入 metadata；compile 失败时不再只靠 console print 暴露。
   - `bigamp_spreading` compile fallback 已进入 metadata；`requested_use_compile/effective_use_compile` 不再混用同一个字段。

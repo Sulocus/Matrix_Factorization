@@ -5,6 +5,7 @@ import torch
 
 from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
+    get_effective_seed_policy_summary,
     get_batching_specs,
     get_memory_model_specs,
     get_resource_specs,
@@ -172,6 +173,23 @@ def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     assert seed_policy.batch_partition_sensitive is True
     assert seed_policy.automatic_rebatch_allowed is False
     assert "batch_idx" in seed_policy.notes
+
+
+def test_effective_seed_policy_summary_is_shared_contract_source():
+    matrix_policy = get_effective_seed_policy_summary("bigamp", "partition_invariant")
+    spreading_policy = get_effective_seed_policy_summary("bigamp_spreading", "partition_invariant")
+    tensor_policy = get_effective_seed_policy_summary("bigamp_tensor_parallel", "partition_invariant")
+
+    assert matrix_policy["policy_key"] == "matrix_student_init_partition_invariant_v1"
+    assert spreading_policy["policy_key"] == "spreading_partition_invariant_v1"
+    assert tensor_policy["policy_key"] == "tensor_parallel_partition_invariant_v1"
+    assert matrix_policy["automatic_rebatch_allowed"] is True
+    assert spreading_policy["random_streams"] == [
+        "student_initialization",
+        "spreading_graph",
+        "F_super",
+    ]
+    assert "dimension" in tensor_policy["seed_inputs"]
 
 
 def test_tensor_supergraph_partition_invariant_indices_do_not_depend_on_batch_cmax():
@@ -362,6 +380,8 @@ def test_tensor_parallel_partition_invariant_seed_policy_updates_resource_plan(t
     assert plan.resource_plan["seed_policy"]["partition_invariant"] is True
     assert plan.resource_plan["seed_policy"]["batch_partition_sensitive"] is False
     assert plan.resource_plan["seed_policy"]["automatic_rebatch_allowed"] is True
+    assert plan.resource_plan["replan_safety"]["automatic_rebatch_allowed"] is True
+    assert plan.resource_plan["replan_safety"]["replan_implemented"] is False
 
 
 @pytest.mark.parametrize(
@@ -541,4 +561,31 @@ def test_parallel_coordinator_replan_is_hard_gated_by_seed_policy():
     )
 
     with pytest.raises(RuntimeError, match="Automatic OOM replan is disabled"):
+        coordinator.replan_with_safety()
+
+
+def test_parallel_coordinator_records_effective_replan_policy():
+    ParallelCoordinator = get_parallel_coordinator()
+    coordinator = ParallelCoordinator(
+        estimator=MemoryEstimator(),
+        config=AllocationPresets.CONSERVATIVE,
+    )
+    params = EstimationParams(
+        N1=2,
+        N2=2,
+        M=1,
+        S=1,
+        alpha_values=[0.1],
+        algorithm_key="bigamp",
+        seed_partition_policy="partition_invariant",
+    )
+    plan = coordinator.plan_execution(params)
+
+    assert plan.seed_partition_policy == "partition_invariant"
+    assert plan.replan_policy_key == "matrix_student_init_partition_invariant_v1"
+    assert plan.automatic_rebatch_allowed is True
+    assert plan.replan_implemented is False
+
+    coordinator.current_plan = plan
+    with pytest.raises(NotImplementedError, match="Automatic replan is not implemented"):
         coordinator.replan_with_safety()
