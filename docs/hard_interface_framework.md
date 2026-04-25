@@ -94,7 +94,7 @@ deprecated
 - `parameter_chain` 已扩展为参数消费 trace：每个 YAML path 会记录 `active_in_current_plan`、`effective_value`、`effective_source`、`derived_effect` 和 `consumption_status`。这不是证明物理行为正确，而是让“写了参数但没进入有效计划”的问题更容易在 preflight 中定位。
 - `parameter_chain` 会处理 seed alias 和覆盖关系：`seeds.model` 追踪到 `seeds.base_seed`，`seeds.data` 追踪到 `seeds.teacher_seed`；如果同时写了 `seeds.spreading_seed` 和更具体的 `spreading.seed`，前者会标成 `overridden_current_route` 并显示实际 spreading seed。
 - `parameter_chain` 会按当前 algorithm/scan 路由标记 inactive 字段。例如 AGD 路由下写入 `algorithm_params.damping` 或 `spreading.seed`，会显示 `inactive_current_route`，避免把“被 dataclass 接住”误读成“算法实际消费”。
-- runtime hooks 已先接入低风险 runner-level `after_batch`：新增 `batch_summary` probe，可记录 batch index、alpha values、metric keys 和 AlgorithmResult 可用输出。它不进入算法 step loop，因此不改变训练状态、随机数或数值行为。
+- runtime hooks 已先接入低风险 runner-level `after_batch`：`batch_summary` probe 会在 `runtime_extension_report.probe_reports.batch_summary` 里记录 batch index、alpha values、metric keys 和 AlgorithmResult 可用输出。它不进入算法 step loop，因此不改变训练状态、随机数或数值行为。
 - runtime extension 触发时会检查实际 `AlgorithmStateView` 是否包含 spec 声明的 `requires_state`；如果 algorithm spec 声明了能力但运行时没有传出对应 state，会直接报错。
 - analyzer 在 run 后执行前会检查实际 `ExperimentResult` 是否包含 `AnalyzerSpec.requires` 里的输入；如果理论 contract 说能产出、实际结果缺失，会直接报错。
 - 每个 scan point 的 result 会保存 `metric_contract`，`metrics.json` 顶层也会保存 `metric_contracts`，用于追踪 flat metrics 对应哪些 `MetricSpec` 以及来源是 `algorithm_result`、runner matrix 计算还是 runner spreading 计算。

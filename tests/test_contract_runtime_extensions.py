@@ -328,6 +328,13 @@ probes:
     assert report["dispatched_hooks"][0]["hook"] == "after_batch"
     assert report["dispatched_hooks"][0]["probes"] == ["batch_summary"]
     assert "batch_idx" in report["dispatched_hooks"][0]["state_capabilities"]
+    assert report["probe_reports"]["batch_summary"][0]["batch_idx"] == 0
+    assert report["probe_reports"]["batch_summary"][0]["alpha_values"] == [0.0]
+    assert report["probe_reports"]["batch_summary"][0]["metric_keys"] == [
+        "Q_Y_mean",
+        "overlap_matrix",
+    ]
+    assert report["probe_reports"]["batch_summary"][0]["metadata_only"] is True
 
 
 def test_runner_records_runtime_extension_report_without_running_hooks_inside_algorithm(tmp_path, monkeypatch):

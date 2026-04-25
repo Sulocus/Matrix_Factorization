@@ -29,6 +29,7 @@ class RuntimeExtensionReport:
     probes: List[str] = field(default_factory=list)
     analyzers: List[str] = field(default_factory=list)
     dispatched_hooks: List[Dict[str, Any]] = field(default_factory=list)
+    probe_reports: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     analyzer_reports: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -38,6 +39,7 @@ class RuntimeExtensionReport:
             "probes": list(self.probes),
             "analyzers": list(self.analyzers),
             "dispatched_hooks": list(self.dispatched_hooks),
+            "probe_reports": {key: list(value) for key, value in self.probe_reports.items()},
             "analyzer_reports": dict(self.analyzer_reports),
         }
 
@@ -116,6 +118,7 @@ class RuntimeExtensionExecutor:
         for probe in self.probes:
             if probe.trigger == hook_point.value:
                 self._require_state(probe.key, probe.requires_state, next_state)
+                self._record_probe_report(probe, next_state, context)
                 triggered_probes.append(probe.key)
 
         if triggered_interventions or triggered_probes:
@@ -128,6 +131,31 @@ class RuntimeExtensionExecutor:
                 "alpha": context.alpha,
             })
         return next_state
+
+    def _record_probe_report(
+        self,
+        probe: ProbeSpec,
+        state: AlgorithmStateView,
+        context: RuntimeHookContext,
+    ) -> None:
+        if probe.key == "batch_summary":
+            payload = {
+                "hook": context.hook.value,
+                "batch_idx": context.metadata.get("batch_idx", state.metadata.get("batch_idx")),
+                "alpha_values": list(context.metadata.get("alpha_values", state.metadata.get("alpha_values", []))),
+                "metric_keys": list(state.metadata.get("metric_keys", [])),
+                "algorithm_result_outputs": list(state.metadata.get("algorithm_result_outputs", [])),
+                "state_capabilities": state.available_capabilities(),
+                "metadata_only": True,
+            }
+        else:
+            payload = {
+                "hook": context.hook.value,
+                "state_capabilities": state.available_capabilities(),
+                "status": "declared_no_payload_executor",
+                "metadata_only": True,
+            }
+        self.report.probe_reports.setdefault(probe.key, []).append(payload)
 
     @staticmethod
     def _require_state(key: str, required: List[str], state: AlgorithmStateView) -> None:
