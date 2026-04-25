@@ -107,6 +107,44 @@ contract.runtime_resource_plan
   metadata_only
 ```
 
+tensor serial/parallel 的 `AlgorithmResult.metadata` 还会包含：
+
+```text
+tensor_execution
+  path
+  device
+  requested_use_bf16
+  effective_use_bf16
+  storage_dtype
+  requested_use_compile
+  effective_use_compile
+  compiled_step_available
+  compiled_super_step_available
+  tf32_matmul_enabled
+  tf32_cudnn_enabled
+  metadata_only
+
+internal_alpha_batch_plan
+  planner
+  alpha_values_input
+  alpha_values_execution_order
+  alpha_batches
+  sort_policy
+  probe_enabled
+  probe_method
+  probe_result_gb
+  target_memory_gb
+  max_alphas_per_batch
+  seed_partition_sensitive
+  metadata_only
+```
+
+这两块 metadata 只记录实际执行选择和内部分批；不做自动 retry，不自动改变 batch partition。
+
+## Metrics-only tensor path
+
+`bigamp_tensor_parallel.train_batch_result()` 是主 runner 使用的正式路径。它现在直接走 metrics-only 执行，不再分配 legacy `W_all/X_all` placeholder。旧 `train_batch_alphas()` 仍保留 tuple API，并在执行完 metrics 后返回 placeholder tensor，以兼容旧调用方。
+
 ## 不在本阶段做的事
 
 - 不根据 ResourceSpec 自动改 batch size。

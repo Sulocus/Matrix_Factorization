@@ -9,6 +9,7 @@ from matrix_factorization.core.experiment.config import (
     ExperimentConfig,
     MatrixParams,
     ScanConfig,
+    SpreadingConfig,
     TrainingParams,
 )
 from matrix_factorization.core.experiment.data_factory import ExperimentData
@@ -547,12 +548,21 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     algorithm = object.__new__(algorithm_cls)
     algorithm.order = 3
     algorithm.dims = (2, 2, 2)
+    algorithm.device = torch.device("cpu")
+    algorithm.requested_use_bf16 = False
+    algorithm.use_bf16 = False
+    algorithm.storage_dtype = torch.float32
+    algorithm.requested_use_compile = False
+    algorithm.use_compile = False
 
     def fake_train_batch_alphas(**kwargs):
         algorithm._batch_metrics = metric_payload
         return "legacy_placeholder_W", "legacy_placeholder_X"
 
-    algorithm.train_batch_alphas = fake_train_batch_alphas
+    if hasattr(algorithm_cls, "_run_batch_metrics_only"):
+        algorithm._run_batch_metrics_only = lambda **kwargs: setattr(algorithm, "_batch_metrics", metric_payload)
+    else:
+        algorithm.train_batch_alphas = fake_train_batch_alphas
     result = algorithm.train_batch_result(
         algorithm_key=algorithm_key,
         W_teacher=torch.zeros(2, 1),
@@ -571,6 +581,9 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     assert result.metadata["tensor_order"] == 3
     assert result.metadata["dims"] == [2, 2, 2]
     assert result.metadata["graph_kind"] in {"tensor_hypergraph", "tensor_supergraph"}
+    assert result.metadata["tensor_execution"]["metadata_only"] is True
+    assert result.metadata["tensor_execution"]["effective_use_bf16"] is False
+    assert result.metadata["internal_alpha_batch_plan"]["metadata_only"] is True
 
     check = ExperimentRunner._validate_metric_payload(
         algorithm_key,
@@ -578,6 +591,68 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
         source="algorithm_result",
     )
     assert check.is_valid
+
+
+def test_tensor_parallel_legacy_tuple_path_is_separate_from_metrics_only_path():
+    algorithm = object.__new__(BiGAMPTensorSpreadingParallel)
+    algorithm.order = 3
+    algorithm.S = 1
+    algorithm.dims = (2, 2, 2)
+    algorithm.M = 1
+    algorithm.device = torch.device("cpu")
+    algorithm._batch_metrics = {}
+    algorithm._run_batch_metrics_only = lambda **kwargs: setattr(
+        algorithm,
+        "_batch_metrics",
+        {0.5: {"Q_Y_mean": 0.8}},
+    )
+
+    W_all, X_all = algorithm.train_batch_alphas(
+        W_teacher=torch.zeros(2, 1),
+        X_teacher=torch.zeros(1, 2),
+        Y_teacher=torch.zeros(2, 2),
+        masks=None,
+        alpha_values=[0.5],
+        seed=1,
+    )
+
+    assert W_all.shape == (1, 1, 2, 1)
+    assert X_all.shape == (1, 1, 1, 2)
+    assert algorithm._batch_metrics[0.5]["Q_Y_mean"] == 0.8
+
+
+def test_tensor_parallel_respects_requested_bf16_false(monkeypatch):
+    config = _tiny_config()
+    config.algorithm_key = "bigamp_tensor_parallel"
+    config.spreading = SpreadingConfig(tensor_order=3)
+    config.algorithm_params.use_bf16 = False
+    config.algorithm_params.use_compile = False
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    algorithm = BiGAMPTensorSpreadingParallel(config, device=torch.device("cpu"))
+
+    assert algorithm.requested_use_bf16 is False
+    assert algorithm.use_bf16 is False
+    assert algorithm.storage_dtype == torch.float32
+
+
+def test_tensor_parallel_cpu_alpha_batch_plan_is_recorded_without_probe(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    algorithm = object.__new__(BiGAMPTensorSpreadingParallel)
+    algorithm.device = torch.device("cpu")
+
+    batches = algorithm._compute_alpha_batches([0.2, 0.1])
+
+    assert batches == [[0.2, 0.1]]
+    plan = algorithm._last_internal_alpha_batch_plan
+    assert plan["planner"] == "cpu_no_internal_alpha_batching"
+    assert plan["alpha_values_execution_order"] == [0.2, 0.1]
+    assert plan["probe_enabled"] is False
+    assert plan["seed_partition_sensitive"] is True
+    assert plan["metadata_only"] is True
 
 
 def test_runner_rejects_undeclared_metric_payload_keys():

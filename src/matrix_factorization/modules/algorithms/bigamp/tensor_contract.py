@@ -39,6 +39,94 @@ def pack_tensor_parallel_metrics(result: Dict[str, Any], local_idx: int) -> Dict
     return metrics
 
 
+def _json_scalar(value: Any) -> Any:
+    """Return a JSON-friendly scalar without importing torch in this helper."""
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value).replace("torch.", "")
+
+
+def build_tensor_execution_metadata(
+    *,
+    path: str,
+    device: Any = None,
+    requested_use_bf16: Optional[bool] = None,
+    effective_use_bf16: Optional[bool] = None,
+    storage_dtype: Any = None,
+    requested_use_compile: Optional[bool] = None,
+    effective_use_compile: Optional[bool] = None,
+    compiled_step_available: Optional[bool] = None,
+    compiled_super_step_available: Optional[bool] = None,
+    tf32_matmul_enabled: Optional[bool] = None,
+    tf32_cudnn_enabled: Optional[bool] = None,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Build metadata for tensor execution choices without changing execution."""
+    return {
+        "path": path,
+        "device": str(device) if device is not None else None,
+        "requested_use_bf16": requested_use_bf16,
+        "effective_use_bf16": effective_use_bf16,
+        "storage_dtype": _json_scalar(storage_dtype),
+        "requested_use_compile": requested_use_compile,
+        "effective_use_compile": effective_use_compile,
+        "compiled_step_available": compiled_step_available,
+        "compiled_super_step_available": compiled_super_step_available,
+        "tf32_matmul_enabled": tf32_matmul_enabled,
+        "tf32_cudnn_enabled": tf32_cudnn_enabled,
+        "metadata_only": True,
+        "notes": notes,
+    }
+
+
+def build_tensor_alpha_batch_metadata(
+    *,
+    planner: str,
+    device: Any,
+    alpha_values_input: Iterable[float],
+    alpha_batches: Iterable[Iterable[float]],
+    sort_policy: str,
+    probe_enabled: bool,
+    seed_partition_sensitive: bool,
+    probe_method: str = "",
+    alpha_max: Optional[float] = None,
+    probe_result_gb: Optional[float] = None,
+    probe_cache_hit: Optional[bool] = None,
+    total_memory_gb: Optional[float] = None,
+    target_memory_gb: Optional[float] = None,
+    target_memory_fraction: Optional[float] = None,
+    max_alphas_per_batch: Optional[int] = None,
+    fallback_reason: str = "",
+    empty_cache_between_batches: bool = False,
+) -> Dict[str, Any]:
+    """Build metadata for tensor alpha batching without driving batch choices."""
+    batches = [[float(alpha) for alpha in batch] for batch in alpha_batches]
+    return {
+        "planner": planner,
+        "device": str(device),
+        "alpha_values_input": [float(alpha) for alpha in alpha_values_input],
+        "alpha_values_execution_order": [float(alpha) for batch in batches for alpha in batch],
+        "alpha_batches": batches,
+        "num_batches": len(batches),
+        "sort_policy": sort_policy,
+        "probe_enabled": probe_enabled,
+        "probe_method": probe_method,
+        "alpha_max": None if alpha_max is None else float(alpha_max),
+        "probe_result_gb": None if probe_result_gb is None else float(probe_result_gb),
+        "probe_cache_hit": probe_cache_hit,
+        "total_memory_gb": None if total_memory_gb is None else float(total_memory_gb),
+        "target_memory_gb": None if target_memory_gb is None else float(target_memory_gb),
+        "target_memory_fraction": target_memory_fraction,
+        "max_alphas_per_batch": max_alphas_per_batch,
+        "fallback_reason": fallback_reason,
+        "seed_partition_sensitive": seed_partition_sensitive,
+        "empty_cache_between_batches": empty_cache_between_batches,
+        "metadata_only": True,
+    }
+
+
 def build_tensor_result_metadata(
     *,
     algorithm_key: str,

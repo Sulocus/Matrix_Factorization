@@ -12,14 +12,20 @@
 - Tensor parity contract：记录 teacher scale、alpha normalization、seed partition、dtype/compile、batching 等风险。
 - Resource/Batching contract：`ResourceSpec`、`BatchingSpec`、`mf explain-config` resource summary、run metadata `runtime_resource_plan`。
 - Parallel memory docs：记录当前并行/显存 contract 和高风险 review queue。
+- Tensor execution metadata：tensor serial/parallel result metadata 记录 dtype/compile、internal alpha batch plan、probe 状态。
+- Tensor parallel metrics-only 主路径：`train_batch_result()` 不再分配 legacy placeholder `W_all/X_all`，旧 tuple API 仍保留。
 
 ## 本轮继续推进
 
-- Flat-key 级 metric semantic 拆分：
+- Flat-key 级 metric semantic 拆分（已完成并 push）：
   - `Q_W_mean` 与 `Q_W_prime_mean` 拆开。
   - `Q_X_mean` 与 `Q_X_prime_mean` 拆开。
   - `physical_overlap_W/X/Y` 拆开。
   - replica raw / prime 拆开。
+- 并行/显存 hardening：
+  - execution metadata 已接入 tensor result。
+  - internal alpha batch plan 已接入 tensor result。
+  - metrics-only tensor path 已避免无用 placeholder factor 分配。
 
 ## 尚未完成
 
@@ -31,6 +37,8 @@
 - tensor serial/parallel teacher scale、alpha graph、damping 语义统一。
 - per-algorithm memory formula 与 probe 统一。
 - runtime probe/intervention 真正接入算法内部 step state。
+- source inventory 扩展到 scripts/debug/verification 与 trial 之外的所有探索文件。
+- metric/review queue 的最终命名选择需要人工确认。
 
 ## 暂不自动改的高风险项
 

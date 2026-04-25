@@ -19,7 +19,11 @@ from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
-from .tensor_contract import build_tensor_result_metadata, resolve_tensor_dims
+from .tensor_contract import (
+    build_tensor_execution_metadata,
+    build_tensor_result_metadata,
+    resolve_tensor_dims,
+)
 from .tensor_step import tensor_step, forward_pass_tensor
 from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_observations
 
@@ -298,6 +302,31 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 alpha_values_original=sorted(metrics_by_alpha),
                 alpha_values_execution_order=sorted(metrics_by_alpha),
                 batching_source="serial_alpha_sample_loop",
+                extra={
+                    "tensor_execution": build_tensor_execution_metadata(
+                        path="serial_tensor_hypergraph",
+                        device=getattr(self, "device", None),
+                        requested_use_bf16=False,
+                        effective_use_bf16=False,
+                        storage_dtype="float32",
+                        requested_use_compile=False,
+                        effective_use_compile=False,
+                        compiled_step_available=False,
+                        compiled_super_step_available=False,
+                        notes="Serial tensor metadata only; this path has no compile/dtype planner.",
+                    ),
+                    "internal_alpha_batch_plan": {
+                        "planner": "serial_alpha_sample_loop",
+                        "alpha_values_input": sorted(float(alpha) for alpha in metrics_by_alpha),
+                        "alpha_values_execution_order": sorted(float(alpha) for alpha in metrics_by_alpha),
+                        "alpha_batches": [[float(alpha)] for alpha in sorted(metrics_by_alpha)],
+                        "num_batches": len(metrics_by_alpha),
+                        "sort_policy": "legacy_sorted_metrics_keys",
+                        "probe_enabled": False,
+                        "seed_partition_sensitive": True,
+                        "metadata_only": True,
+                    },
+                },
             ),
         )
     

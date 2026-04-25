@@ -23,6 +23,8 @@ DEBUG_VERBOSE = False
 
 from .tensor_data import TensorHypergraph, TensorSpreadingData
 from .tensor_contract import (
+    build_tensor_alpha_batch_metadata,
+    build_tensor_execution_metadata,
     build_tensor_result_metadata,
     pack_tensor_parallel_metrics,
     resolve_tensor_dims,
@@ -111,11 +113,14 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution = kwargs.get('f_distribution', 'rademacher')
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
+            self.requested_use_bf16 = kwargs.get('use_bf16', True)
+            self.requested_use_compile = kwargs.get('use_compile', True)
 
         # === From runner ===
         elif hasattr(config, 'matrix'):
             self.config = config
             self.device = device
+            algorithm_params = getattr(config, 'algorithm_params', None)
 
             self.order = getattr(config.spreading, 'tensor_order', 3) if hasattr(config, 'spreading') else 3
 
@@ -135,10 +140,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 self.onsager_correction = config.spreading.onsager_correction
 
             # Warm Start / Init Mode
-            self.init_mode = getattr(config.algorithm_params, 'init_mode', 'spectral')
+            self.init_mode = getattr(algorithm_params, 'init_mode', 'spectral')
             # FIX: Correct parameter name matching config.py (init_overlap)
-            self.warm_start_rho = getattr(config.algorithm_params, 'init_overlap', 0.9)
-            self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
+            self.warm_start_rho = getattr(algorithm_params, 'init_overlap', 0.9)
+            self.debug_verbose = getattr(algorithm_params, 'debug_verbose', False)
+            self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
+            self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
 
             if DEBUG_VERBOSE:
                 print(f"DEBUG: Configured Init Mode: {self.init_mode}, Init Overlap (rho): {self.warm_start_rho}", flush=True)
@@ -156,6 +163,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution = 'rademacher'
             self.onsager_correction = False
             self.debug_verbose = False
+            self.requested_use_bf16 = True
+            self.requested_use_compile = True
         else:
             raise ValueError(f"config must be a config object or int, got {type(config)}")
 
@@ -166,12 +175,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         # Auto-detect hardware support for BF16 (Ampere+ GPUs)
         self.use_bf16 = False
         self.storage_dtype = torch.float32
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        if self.requested_use_bf16 and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
 
         # === Phase 1.5: torch.compile Support ===
-        self.use_compile = getattr(getattr(config, 'algorithm_params', None), 'use_compile', True)
+        self.use_compile = bool(self.requested_use_compile)
         if self.use_compile and BiGAMPTensorSpreadingParallel._compiled_step is None:
             try:
                 # Use 'default' mode for safety (no CUDA Graph issues)
@@ -240,11 +249,38 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         Uses greedy algorithm to group alphas into batches that fit in GPU memory.
         """
         A = len(alpha_values)
+        self._run_batch_metrics_only(
+            W_teacher=W_teacher,
+            X_teacher=X_teacher,
+            Y_teacher=Y_teacher,
+            masks=masks,
+            alpha_values=alpha_values,
+            seed=seed,
+            progress_callback=progress_callback,
+            step_callback=step_callback,
+            **kwargs,
+        )
 
-        teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
-
+        # Legacy tuple API: tensor metrics-only callers should use
+        # train_batch_result() to avoid allocating these placeholder factors.
         W_all = torch.zeros(A, self.S, self.dims[0], self.M, device=self.device)
         X_all = torch.zeros(A, self.S, self.M, self.dims[1] if self.order >= 2 else self.dims[0], device=self.device)
+        return W_all, X_all
+
+    def _run_batch_metrics_only(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: torch.Tensor,
+        alpha_values: List[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int, Optional[Dict]], None]] = None,
+        **kwargs,
+    ) -> None:
+        """Populate tensor batch metrics without allocating placeholder W/X."""
+        teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
 
         self._batch_metrics = {}
 
@@ -257,7 +293,6 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             for alpha in batch
         ]
 
-        global_alpha_idx = 0
         for batch_idx, batch_alphas in enumerate(alpha_batches):
             # Wrapper for step_callback to inject batch info
             current_callback = step_callback
@@ -273,20 +308,19 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 current_callback = internal_step_callback
 
             # Process this batch
-            result = self._train_full_parallel(
-                teacher_factors, batch_alphas, seed + batch_idx, self.device, current_callback
-            )
+            try:
+                result = self._train_full_parallel(
+                    teacher_factors, batch_alphas, seed + batch_idx, self.device, current_callback
+                )
 
-            # Store metrics for each alpha in this batch
-            for local_idx, alpha in enumerate(batch_alphas):
-                self._batch_metrics[alpha] = pack_tensor_parallel_metrics(result, local_idx)
-                global_alpha_idx += 1
-
-            # Clean up between batches
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        return W_all, X_all
+                # Store metrics for each alpha in this batch
+                for local_idx, alpha in enumerate(batch_alphas):
+                    self._batch_metrics[alpha] = pack_tensor_parallel_metrics(result, local_idx)
+            finally:
+                # Clean up between batches. This is metadata/cleanup hardening
+                # only; it does not retry or alter future batch partitioning.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     def train_batch_result(
         self,
@@ -319,7 +353,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             "step_callback": step_callback,
             **kwargs,
         })
-        self.train_batch_alphas(**call_kwargs)
+        self._run_batch_metrics_only(**call_kwargs)
         return self._metrics_only_algorithm_result(algorithm_key)
 
     def _metrics_only_algorithm_result(self, algorithm_key: str):
@@ -334,6 +368,18 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         artifacts = {}
         if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
             artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+        internal_alpha_batch_plan = getattr(self, "_last_internal_alpha_batch_plan", None)
+        if internal_alpha_batch_plan is None:
+            alpha_keys = sorted(metrics_by_alpha)
+            internal_alpha_batch_plan = build_tensor_alpha_batch_metadata(
+                planner="unknown_legacy_tensor_parallel_path",
+                device=getattr(self, "device", None),
+                alpha_values_input=alpha_keys,
+                alpha_batches=[alpha_keys],
+                sort_policy="metrics_key_order",
+                probe_enabled=False,
+                seed_partition_sensitive=True,
+            )
         return AlgorithmResult.from_metrics_only(
             metrics_by_alpha=metrics_by_alpha,
             artifacts=artifacts,
@@ -347,6 +393,23 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 alpha_values_original=getattr(self, "_last_alpha_values_original", None),
                 alpha_values_execution_order=getattr(self, "_last_alpha_values_execution_order", None),
                 batching_source="algorithm_internal_probe_alpha_batches",
+                extra={
+                    "tensor_execution": build_tensor_execution_metadata(
+                        path="parallel_tensor_supergraph",
+                        device=self.device,
+                        requested_use_bf16=bool(getattr(self, "requested_use_bf16", True)),
+                        effective_use_bf16=bool(getattr(self, "use_bf16", False)),
+                        storage_dtype=getattr(self, "storage_dtype", None),
+                        requested_use_compile=bool(getattr(self, "requested_use_compile", True)),
+                        effective_use_compile=bool(getattr(self, "use_compile", False)),
+                        compiled_step_available=BiGAMPTensorSpreadingParallel._compiled_step is not None,
+                        compiled_super_step_available=BiGAMPTensorSpreadingParallel._compiled_step_super is not None,
+                        tf32_matmul_enabled=torch.backends.cuda.matmul.allow_tf32,
+                        tf32_cudnn_enabled=torch.backends.cudnn.allow_tf32,
+                        notes="Execution metadata only; it does not change tensor update formulas.",
+                    ),
+                    "internal_alpha_batch_plan": internal_alpha_batch_plan,
+                },
             ),
         )
 
@@ -360,6 +423,16 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         This is fully dynamic and adapts to any dims, M, S configuration.
         """
         if not torch.cuda.is_available():
+            self._last_internal_alpha_batch_plan = build_tensor_alpha_batch_metadata(
+                planner="cpu_no_internal_alpha_batching",
+                device=self.device,
+                alpha_values_input=alpha_values,
+                alpha_batches=[alpha_values],
+                sort_policy="preserve_input_order",
+                probe_enabled=False,
+                seed_partition_sensitive=True,
+                empty_cache_between_batches=False,
+            )
             return [alpha_values]  # No batching needed on CPU
 
         # Sort alphas (process smaller alphas first for better cache behavior)
@@ -368,13 +441,15 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         # Use cached probe result if available
         cache_key = (tuple(self.dims), self.M, self.S, alpha_max)
+        probe_cache_hit = False
         if hasattr(self, '_probe_cache') and cache_key in self._probe_cache:
             base_mem_gb = self._probe_cache[cache_key]
+            probe_cache_hit = True
         else:
             # Probe memory for A=1
             from .tensor_memory import probe_tensor_super_memory
             base_mem_gb = probe_tensor_super_memory(
-                self.dims, self.M, self.S, alpha_max, self.device, use_bf16=True
+                self.dims, self.M, self.S, alpha_max, self.device, use_bf16=self.use_bf16
             )
             # Cache the result
             if not hasattr(self, '_probe_cache'):
@@ -387,10 +462,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         available_gb = total_gb * 0.8  # Increased to 80% (from 50%) to maximize utilization
 
         # Calculate maximum alphas per batch
+        fallback_reason = ""
         if base_mem_gb <= 0 or math.isinf(base_mem_gb):
             # Fallback if probe fails: attempt a reasonable batch size (e.g., 5)
             # This prevents fallback to serial execution (size=1) which is extremely slow
             max_alphas = min(5, len(sorted_alphas))
+            fallback_reason = f"memory probe returned {base_mem_gb}"
             logger.warning(
                 f"Memory probe failed (returned {base_mem_gb}). "
                 f"Batching fallback: Defaulting to max_alphas={max_alphas}. "
@@ -398,6 +475,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             )
         else:
             max_alphas = max(1, int(available_gb / base_mem_gb))
+        max_alphas = max(1, max_alphas)
 
         # Create batches
         batches = []
@@ -412,6 +490,25 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 f"(max {max_alphas} per batch, {base_mem_gb:.2f} GB each)"
             )
 
+        self._last_internal_alpha_batch_plan = build_tensor_alpha_batch_metadata(
+            planner="tensor_parallel_probe_alpha_batching",
+            device=self.device,
+            alpha_values_input=alpha_values,
+            alpha_batches=batches,
+            sort_policy="ascending_alpha_before_batching",
+            probe_enabled=True,
+            probe_method="probe_tensor_super_memory(A=1)",
+            alpha_max=alpha_max,
+            probe_result_gb=base_mem_gb,
+            probe_cache_hit=probe_cache_hit,
+            total_memory_gb=total_gb,
+            target_memory_gb=available_gb,
+            target_memory_fraction=0.8,
+            max_alphas_per_batch=max_alphas,
+            fallback_reason=fallback_reason,
+            seed_partition_sensitive=True,
+            empty_cache_between_batches=True,
+        )
         return batches
 
     # _estimate_batch_memory is no longer needed (replaced by probing)
