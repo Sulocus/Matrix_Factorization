@@ -18,7 +18,7 @@
 - Memory model contract：`MemoryModelSpec` 记录每个 algorithm 的 estimator 入口、公式依据、component、probe/calibration 状态；进入 `ExperimentPlan.resource_plan.memory_model`。
 - Seed policy contract：`SeedPolicySpec` 记录每个 algorithm 当前随机流、是否 partition invariant、是否允许自动重分批；进入 `mf explain-config`、`mf validate --json` 和 run metadata。
 - Tensor memory estimator 参数链路：`EstimationParams` 现在显式携带 `tensor_order/tensor_dims`，tensor memory estimator 不再隐式默认三阶张量。
-- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `170 passed, 9 skipped`。
+- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `181 passed, 9 skipped`。
 - Legacy pytest inventory：`get_legacy_pytest_inventory()` 和 `tests/test_source_inventory.py` 强制这些 legacy/local-GPU 测试必须登记并模块级 skip。
 - Source inventory expansion：根目录表面文件、`experiments/`、`scripts/analysis|debug|experiments|maintenance|verification/`、`tests/debug|verification/`、`trials/`、config 入口、teacher/graph/metric/output/runtime-extension 源文件都已进入机器清点测试。
 - Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
@@ -35,6 +35,7 @@
 - Memory breakdown reporting：`MemoryEstimator.estimate()` 现在会返回按组件拆分的 `breakdown`，覆盖 AGD、dense BiGAMP、spreading BiGAMP 和 tensor spreading；每个 runner batch 的 `runtime_resource_plan.batches[*].memory_breakdown` 会保存这份 metadata。这只暴露已有估计公式，不改变训练或 batching 行为。
 - Tensor parity report in plan：tensor serial/parallel gap report 已接入 `ExperimentPlan`、`mf explain-config` 和 `mf validate --json`，tensor 配置会直接显示 shared/missing metrics 与 result contract 差异。
 - Intervention contract detail：`ExperimentPlan.to_dict()` 现在输出 `intervention_contracts`，记录 trigger、requires_state、modifies_state 和 physical_sensitive；后续新增 intervention 不会只在名字层面接入。
+- Trial regression：`mf trial validate/run matrix_bigamp_quick` 已在 result-save hard gate 后重新验证，quick trial 输出仍隔离在 ignored `runs/trials/`，并写出 metric schema 与 batch memory breakdown。
 
 ## 本轮继续推进
 
