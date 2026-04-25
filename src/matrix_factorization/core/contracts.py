@@ -87,6 +87,19 @@ class BatchingSpec:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class MemoryModelSpec:
+    algorithm_key: str
+    estimator_entrypoint: str = "none"
+    formula_basis: str = ""
+    tensor_components: List[str] = field(default_factory=list)
+    calibration_status: str = "uncalibrated"
+    probe_required: bool = False
+    sample_range_policy: str = ""
+    drives_execution: bool = False
+    notes: str = ""
+
+
 @dataclass
 class AlgorithmStateView:
     """Capability-based state exposed to probes/interventions/analyzers.
@@ -563,6 +576,66 @@ def get_batching_specs() -> Dict[str, BatchingSpec]:
         BatchingSpec("agd_tensor", ["algorithm private"], "experimental", "experimental", "none", True, True),
         BatchingSpec("agd_spreading", ["legacy private"], "legacy", "legacy", "none", True, True),
         BatchingSpec("combined", [], "none", "none", "none", False, True),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
+
+
+def get_memory_model_specs() -> Dict[str, MemoryModelSpec]:
+    specs = [
+        MemoryModelSpec(
+            "agd",
+            "MemoryEstimator.register('agd')",
+            "matrix factor tensors plus optimizer/loss buffers",
+            ["student_factors", "gradients", "masks", "predictions"],
+            "formula_only",
+            False,
+            "runner plans sample_range but active AGD path does not consume it",
+            False,
+        ),
+        MemoryModelSpec(
+            "bigamp",
+            "MemoryEstimator.register('bigamp')",
+            "dense matrix BiGAMP W/X variances, masks, predictions, residuals",
+            ["student_factors", "factor_variances", "masks", "predictions", "residuals"],
+            "formula_only",
+            False,
+            "runner plans sample_range but active dense BiGAMP path does not consume it",
+            False,
+        ),
+        MemoryModelSpec(
+            "bigamp_spreading",
+            "MemoryEstimator.register('bigamp_spreading')",
+            "spreading graph edges C, F distribution, chunk_size edge streaming",
+            ["student_factors", "factor_variances", "supergraph", "F_super", "Y_super", "chunk_temporaries"],
+            "formula_only_with_chunking_metadata",
+            False,
+            "runner plans sample_range but spreading algorithm constructs per-batch graph internally",
+            False,
+        ),
+        MemoryModelSpec(
+            "bigamp_tensor",
+            "MemoryEstimator.register('bigamp_tensor')",
+            "serial tensor alpha/sample loop with DoF-scaled hyperedges",
+            ["tensor_factors", "tensor_observations", "serial_temporaries"],
+            "formula_only_reference",
+            False,
+            "serial sample loop; no runner sample_range split",
+            False,
+        ),
+        MemoryModelSpec(
+            "bigamp_tensor_parallel",
+            "MemoryEstimator.register('bigamp_tensor_parallel') + probe_tensor_super_memory(A=1)",
+            "TensorSuperGraph DoF-scaled edges, batched factors, F/Y, gather/scatter temporaries",
+            ["tensor_factors", "tensor_factor_variances", "tensor_supergraph", "F_tensor", "Y_tensor", "gather_temporaries"],
+            "formula_plus_algorithm_probe_metadata",
+            True,
+            "runner sample_range metadata is not consumed; algorithm performs internal alpha batching",
+            False,
+            "Probe and formula are observable metadata only until seed partition invariant is solved.",
+        ),
+        MemoryModelSpec("agd_tensor", "none", "experimental private path", [], "untracked_experimental", False, "experimental", False),
+        MemoryModelSpec("agd_spreading", "none", "legacy broken path", [], "legacy_untracked", False, "legacy", False),
+        MemoryModelSpec("combined", "none", "non-trainable helper", [], "not_applicable", False, "none", False),
     ]
     return {spec.algorithm_key: spec for spec in specs}
 

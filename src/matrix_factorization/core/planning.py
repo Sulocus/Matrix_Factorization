@@ -14,6 +14,7 @@ from .contracts import (
     AnalyzerSpec,
     BatchingSpec,
     MetricSpec,
+    MemoryModelSpec,
     OutputSpec,
     ParameterSpec,
     ProbeSpec,
@@ -24,6 +25,7 @@ from .contracts import (
     get_analyzer_specs,
     get_batching_specs,
     get_intervention_specs,
+    get_memory_model_specs,
     get_metric_specs,
     get_output_specs,
     get_parameter_specs,
@@ -66,6 +68,7 @@ class ExperimentPlan:
     teacher_spec: Optional[TeacherSpec] = None
     resource_spec: Optional[ResourceSpec] = None
     batching_spec: Optional[BatchingSpec] = None
+    memory_model_spec: Optional[MemoryModelSpec] = None
     resource_plan: Dict[str, Any] = field(default_factory=dict)
     metric_specs: List[MetricSpec] = field(default_factory=list)
     output_specs: List[OutputSpec] = field(default_factory=list)
@@ -122,6 +125,16 @@ class ExperimentPlan:
                 "sample_range_honored": self.batching_spec.sample_range_honored,
                 "metadata_only": self.batching_spec.metadata_only,
             } if self.batching_spec else None,
+            "memory_model_spec": {
+                "algorithm_key": self.memory_model_spec.algorithm_key,
+                "estimator_entrypoint": self.memory_model_spec.estimator_entrypoint,
+                "formula_basis": self.memory_model_spec.formula_basis,
+                "tensor_components": list(self.memory_model_spec.tensor_components),
+                "calibration_status": self.memory_model_spec.calibration_status,
+                "probe_required": self.memory_model_spec.probe_required,
+                "sample_range_policy": self.memory_model_spec.sample_range_policy,
+                "drives_execution": self.memory_model_spec.drives_execution,
+            } if self.memory_model_spec else None,
             "resource_plan": dict(self.resource_plan),
             "metrics": [spec.key for spec in self.metric_specs],
             "available_metric_keys": _available_metric_keys(self),
@@ -187,6 +200,11 @@ class ExperimentPlan:
             lines.append(f"  sample_batching: {self.resource_plan.get('sample_batching')}")
             lines.append(f"  seed_partition_sensitive: {self.resource_plan.get('seed_partition_sensitive')}")
             lines.append(f"  metadata_only: {self.resource_plan.get('metadata_only')}")
+            memory_model = self.resource_plan.get("memory_model") or {}
+            if memory_model:
+                lines.append(f"  memory_model: {memory_model.get('estimator_entrypoint')}")
+                lines.append(f"  memory_calibration: {memory_model.get('calibration_status')}")
+                lines.append(f"  memory_drives_execution: {memory_model.get('drives_execution')}")
         lines.append("")
         lines.append("有效参数摘要:")
         for key in sorted(self.effective_parameters):
@@ -330,6 +348,7 @@ def build_experiment_plan(
     teacher_specs = get_teacher_specs()
     resource_specs = get_resource_specs()
     batching_specs = get_batching_specs()
+    memory_model_specs = get_memory_model_specs()
 
     _validate_raw_paths(plan, parameter_specs)
 
@@ -342,6 +361,7 @@ def build_experiment_plan(
         return plan
     plan.resource_spec = resource_specs.get(algorithm_key)
     plan.batching_spec = batching_specs.get(algorithm_key)
+    plan.memory_model_spec = memory_model_specs.get(algorithm_key)
     _build_resource_plan(plan)
 
     teacher_key = getattr(config, "teacher_key", None)
@@ -353,6 +373,8 @@ def build_experiment_plan(
         plan.errors.append(f"algorithm_key 未注册 ResourceSpec: {algorithm_key}")
     if not plan.batching_spec:
         plan.errors.append(f"algorithm_key 未注册 BatchingSpec: {algorithm_key}")
+    if not plan.memory_model_spec:
+        plan.errors.append(f"algorithm_key 未注册 MemoryModelSpec: {algorithm_key}")
 
     _validate_required_config_paths(plan, parameter_specs)
 
@@ -712,6 +734,15 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
         "seed_partition_sensitive": plan.batching_spec.seed_partition_sensitive,
         "sample_range_honored": plan.batching_spec.sample_range_honored,
         "metadata_only": plan.batching_spec.metadata_only,
+        "memory_model": {
+            "estimator_entrypoint": plan.memory_model_spec.estimator_entrypoint if plan.memory_model_spec else None,
+            "formula_basis": plan.memory_model_spec.formula_basis if plan.memory_model_spec else "",
+            "tensor_components": list(plan.memory_model_spec.tensor_components) if plan.memory_model_spec else [],
+            "calibration_status": plan.memory_model_spec.calibration_status if plan.memory_model_spec else "",
+            "probe_required": plan.memory_model_spec.probe_required if plan.memory_model_spec else False,
+            "sample_range_policy": plan.memory_model_spec.sample_range_policy if plan.memory_model_spec else "",
+            "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
+        },
         "config_effective": {
             "scan_num_points": len(getattr(scan, "values", []) or []),
             "samples_per_alpha": getattr(training, "samples_per_alpha", None),

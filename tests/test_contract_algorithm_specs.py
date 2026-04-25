@@ -7,6 +7,7 @@ from matrix_factorization.core.contracts import (
     get_algorithm_source_inventory,
     get_algorithm_specs,
     get_batching_specs,
+    get_memory_model_specs,
     get_metric_specs,
     get_output_specs,
     get_parameter_specs,
@@ -120,13 +121,16 @@ def test_algorithm_specs_reference_existing_contracts():
 def test_active_algorithms_have_resource_and_batching_specs():
     resource_specs = get_resource_specs()
     batching_specs = get_batching_specs()
+    memory_model_specs = get_memory_model_specs()
 
     for algorithm_key, spec in get_algorithm_specs().items():
         assert algorithm_key in resource_specs
         assert algorithm_key in batching_specs
+        assert algorithm_key in memory_model_specs
         if spec.status == "active":
             assert resource_specs[algorithm_key].estimator_key
             assert batching_specs[algorithm_key].planner_layers
+            assert memory_model_specs[algorithm_key].calibration_status
 
 
 def test_algorithm_required_config_paths_are_preflight_checked(tmp_path, monkeypatch):

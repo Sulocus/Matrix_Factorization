@@ -75,6 +75,7 @@ def test_explain_config_command_reports_effective_route(tmp_path):
     assert "参数链路:" in result.stdout
     assert "resource / batching contract:" in result.stdout
     assert "seed_partition_sensitive: True" in result.stdout
+    assert "memory_model: MemoryEstimator.register('bigamp_tensor_parallel')" in result.stdout
 
 
 def test_validate_command_supports_json_output(tmp_path):
@@ -95,8 +96,11 @@ def test_validate_command_supports_json_output(tmp_path):
     assert "tensor_heatmap" in payload["outputs"]
     assert "overlap_matrix" in payload["output_plan"]["required_artifacts"]
     assert payload["resource_spec"]["algorithm_key"] == "bigamp_tensor_parallel"
+    assert payload["memory_model_spec"]["drives_execution"] is False
+    assert payload["memory_model_spec"]["probe_required"] is True
     assert payload["batching_spec"]["seed_partition_sensitive"] is True
     assert payload["resource_plan"]["probe_support"] == "A=1 tensor supergraph probe"
+    assert payload["resource_plan"]["memory_model"]["drives_execution"] is False
     assert "plots/animation_Y.gif" in payload["output_plan"]["output_files"]
     assert "ALGORITHM_ROUTE_OVERRIDE" in payload["warning_codes"]
     assert all("code" in issue and "message" in issue for issue in payload["issues"])

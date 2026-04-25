@@ -6,6 +6,7 @@
 
 - `ResourceSpec`：algorithm 的设备、dtype、compile、probe、empty-cache 能力声明。
 - `BatchingSpec`：algorithm 的 alpha batching、sample batching、chunking、seed partition 风险声明。
+- `MemoryModelSpec`：algorithm 的 memory estimator 入口、公式依据、主要 live tensor component、calibration/probe 状态。
 - `ExperimentPlan.resource_plan`：`mf explain-config` / `mf validate --json` 中的静态 resource summary。
 - `runtime_resource_plan`：run metadata 中的 runner-level execution plan。
 
@@ -88,6 +89,14 @@ resource / batching contract
 resource_spec
 batching_spec
 resource_plan
+  memory_model
+    estimator_entrypoint
+    formula_basis
+    tensor_components
+    calibration_status
+    probe_required
+    sample_range_policy
+    drives_execution
 ```
 
 真实 run 的 `metadata.json` 会包含：

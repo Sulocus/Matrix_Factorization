@@ -3,6 +3,7 @@ from pathlib import Path
 from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
     get_batching_specs,
+    get_memory_model_specs,
     get_resource_specs,
     get_tensor_parity_report,
 )
@@ -67,6 +68,7 @@ def test_parallel_memory_contract_docs_cover_runtime_metadata():
 def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     resource = get_resource_specs()["bigamp_tensor_parallel"]
     batching = get_batching_specs()["bigamp_tensor_parallel"]
+    memory_model = get_memory_model_specs()["bigamp_tensor_parallel"]
 
     assert resource.probe_support == "A=1 tensor supergraph probe"
     assert "tf32 matmul" in resource.dtype_modes
@@ -74,6 +76,19 @@ def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     assert batching.seed_partition_sensitive is True
     assert batching.metadata_only is True
     assert batching.sample_range_honored is False
+    assert memory_model.probe_required is True
+    assert memory_model.drives_execution is False
+    assert "tensorsupergraph" in memory_model.formula_basis.lower()
+
+
+def test_active_algorithms_have_memory_model_specs():
+    resource_specs = get_resource_specs()
+    memory_models = get_memory_model_specs()
+
+    for algorithm_key in resource_specs:
+        assert algorithm_key in memory_models
+        assert memory_models[algorithm_key].algorithm_key == algorithm_key
+        assert memory_models[algorithm_key].calibration_status
 
 
 def test_tensor_parity_report_keeps_seed_and_batching_as_review_items():
@@ -144,5 +159,7 @@ def test_tensor_parallel_experiment_plan_resource_summary_is_metadata_only(tmp_p
     assert plan.resource_plan["probe_support"] == "A=1 tensor supergraph probe"
     assert plan.resource_plan["metadata_only"] is True
     assert plan.resource_plan["seed_partition_sensitive"] is True
+    assert plan.resource_plan["memory_model"]["drives_execution"] is False
+    assert plan.resource_plan["memory_model"]["probe_required"] is True
     assert plan.resource_plan["config_effective"]["use_bf16"] is False
     assert plan.resource_plan["config_effective"]["use_compile"] is False
