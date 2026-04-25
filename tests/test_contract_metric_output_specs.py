@@ -375,3 +375,50 @@ output:
     assert plan.errors == []
     assert plan.output_plan.required_metrics == ["Q_W_mean", "Q_Y_mean"]
     assert "custom_curves" in plan.output_plan.specs
+    assert plan.output_plan.plot_semantics["A.y"]["metric_key"] == "Q_Y_mean"
+    assert (
+        plan.output_plan.plot_semantics["A.y"]["semantic_candidates"][0]["canonical_key"]
+        == "matrix.full.teacher_student.output_cosine"
+    )
+    assert plan.output_plan.metric_semantics["Q_W_mean"][0]["canonical_key"] == "factor.W.teacher_student.gram_cosine"
+
+
+def test_tensor_heatmap_output_plan_records_diagnostic_artifact_semantics(tmp_path):
+    config_path = tmp_path / "tensor_heatmap_plan.yaml"
+    config_path.write_text(
+        """
+tensor_order: 3
+algorithm: 4
+teacher: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.0
+  step: 1.0
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  use_compile: false
+  use_bf16: false
+spreading:
+  f_distribution: 1
+output:
+  enable_heatmap: true
+  heatmap_metric: Q_W
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+
+    assert plan.errors == []
+    assert plan.output_plan.artifact_semantics["overlap_matrix"]["canonical_key"] == "replica.heatmap.teacher_and_students.matrix"
+    assert plan.output_plan.artifact_semantics["overlap_matrix"]["result_role"] == "diagnostic"
+    assert plan.output_plan.artifact_semantics["overlap_matrix"]["heatmap_metric"] == "Q_W"

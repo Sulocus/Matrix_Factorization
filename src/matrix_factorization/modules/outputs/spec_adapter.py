@@ -24,6 +24,9 @@ class OutputPayloadCheck:
     available_artifacts: List[str] = field(default_factory=list)
     missing_metrics: List[str] = field(default_factory=list)
     missing_artifacts: List[str] = field(default_factory=list)
+    metric_semantics: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)
+    plot_semantics: Dict[str, Any] = field(default_factory=dict)
+    artifact_semantics: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:
@@ -39,6 +42,9 @@ class OutputPayloadCheck:
             "available_artifacts": list(self.available_artifacts),
             "missing_metrics": list(self.missing_metrics),
             "missing_artifacts": list(self.missing_artifacts),
+            "metric_semantics": dict(self.metric_semantics),
+            "plot_semantics": dict(self.plot_semantics),
+            "artifact_semantics": dict(self.artifact_semantics),
         }
 
 
@@ -59,6 +65,9 @@ class OutputSpecAdapter:
         required_metrics = set(output_plan.get("required_metrics") or [])
         required_artifacts = set(output_plan.get("required_artifacts") or [])
         requested_specs = list(output_plan.get("specs") or [])
+        metric_semantics = output_plan.get("metric_semantics") or {}
+        plot_semantics = output_plan.get("plot_semantics") or {}
+        artifact_semantics = output_plan.get("artifact_semantics") or {}
 
         # Fallback for direct ExperimentResult.save() calls without preflight
         # metadata. This preserves legacy behavior while enforcing the same
@@ -91,6 +100,9 @@ class OutputSpecAdapter:
             available_artifacts=sorted(artifacts),
             missing_metrics=missing_metrics,
             missing_artifacts=missing_artifacts,
+            metric_semantics=metric_semantics,
+            plot_semantics=plot_semantics,
+            artifact_semantics=artifact_semantics,
         )
 
     @staticmethod

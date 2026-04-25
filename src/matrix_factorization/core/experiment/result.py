@@ -717,8 +717,17 @@ class ExperimentResult:
             )
         return [float(self.results[value].metrics[metric_key]) for value in sorted_values]
 
-    @staticmethod
-    def _plot_label_for_metric(metric_key: str) -> str:
+    def _plot_label_for_metric(self, metric_key: str) -> str:
+        metric_schema = self.metric_schema()
+        flat_index = metric_schema.get("flat_key_index", {}) if isinstance(metric_schema, dict) else {}
+        semantic_classes = metric_schema.get("semantic_classes", {}) if isinstance(metric_schema, dict) else {}
+        candidates = flat_index.get(metric_key) or []
+        if candidates:
+            canonical_key = candidates[0].get("canonical_key")
+            semantic_class = semantic_classes.get(canonical_key, {})
+            display_name = semantic_class.get("display_name")
+            if display_name:
+                return display_name
         return {
             "Q_Y_mean": "Q_Y",
             "Q_Y_observed_mean": "Q_Y observed",

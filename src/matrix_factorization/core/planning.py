@@ -35,6 +35,9 @@ class OutputPlan:
     required_metrics: List[str] = field(default_factory=list)
     required_artifacts: List[str] = field(default_factory=list)
     output_files: List[str] = field(default_factory=list)
+    metric_semantics: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)
+    plot_semantics: Dict[str, Any] = field(default_factory=dict)
+    artifact_semantics: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,6 +45,9 @@ class OutputPlan:
             "required_metrics": list(self.required_metrics),
             "required_artifacts": list(self.required_artifacts),
             "output_files": list(self.output_files),
+            "metric_semantics": dict(self.metric_semantics),
+            "plot_semantics": dict(self.plot_semantics),
+            "artifact_semantics": dict(self.artifact_semantics),
         }
 
 
@@ -658,6 +664,7 @@ def _build_output_plan(plan: ExperimentPlan) -> None:
     required_metrics = set()
     required_artifacts = set()
     output_files = []
+    plot_semantics: Dict[str, Any] = {}
     for spec in plan.output_specs:
         output_files.extend(spec.output_files)
         for requirement in spec.requires:
@@ -670,14 +677,27 @@ def _build_output_plan(plan: ExperimentPlan) -> None:
     for plot_config in plan.output_options.get("plots") or []:
         for curve_code in plot_config.get("curves", []):
             try:
-                required_metrics.add(_curve_code_to_metric_key(curve_code))
+                metric_key = _curve_code_to_metric_key(curve_code)
+                required_metrics.add(metric_key)
+                plot_semantics[curve_code] = {
+                    "metric_key": metric_key,
+                    "semantic_candidates": _semantic_candidates_for_flat_key(plan, metric_key),
+                }
             except ValueError:
                 pass
+    metric_semantics = {
+        metric_key: _semantic_candidates_for_flat_key(plan, metric_key)
+        for metric_key in sorted(required_metrics)
+    }
+    artifact_semantics = _output_artifact_semantics(plan)
     plan.output_plan = OutputPlan(
         specs=[spec.key for spec in plan.output_specs],
         required_metrics=sorted(required_metrics),
         required_artifacts=sorted(required_artifacts),
         output_files=sorted(set(output_files)),
+        metric_semantics=metric_semantics,
+        plot_semantics=plot_semantics,
+        artifact_semantics=artifact_semantics,
     )
 
 
@@ -764,6 +784,12 @@ def _validate_custom_plot_metrics(plan: ExperimentPlan) -> None:
                     f"output.plots[{plot_idx}] 请求 {curve_code} -> {required_key}，"
                     f"但 algorithm '{plan.algorithm_spec.key}' 的 MetricSpec 未声明该 flat key。"
                 )
+            else:
+                semantics = _semantic_candidates_for_flat_key(plan, required_key)
+                if semantics:
+                    plan.effective_parameters[f"output.plots[{plot_idx}].{curve_code}.canonical"] = (
+                        semantics[0].get("canonical_key")
+                    )
 
 
 def _curve_code_to_metric_key(curve_code: str) -> str:
@@ -782,6 +808,39 @@ def _available_metric_keys(plan: ExperimentPlan) -> List[str]:
     for spec in plan.metric_specs:
         keys.update(spec.produces)
     return sorted(keys)
+
+
+def _semantic_candidates_for_flat_key(plan: ExperimentPlan, metric_key: str) -> List[Dict[str, str]]:
+    if not plan.algorithm_spec:
+        return []
+    from matrix_factorization.core.contracts import get_algorithm_metric_semantics
+
+    return get_algorithm_metric_semantics(plan.algorithm_spec.key).get(metric_key, [])
+
+
+def _output_artifact_semantics(plan: ExperimentPlan) -> Dict[str, Dict[str, str]]:
+    specs = set(plan.output_plan.specs if plan.output_plan else [])
+    # During construction plan.output_plan is not set yet, so fall back to
+    # selected specs directly.
+    if not specs:
+        specs = {spec.key for spec in plan.output_specs}
+    heatmap_metric = str(plan.output_options.get("heatmap_metric", "Q_Y") or "Q_Y").upper()
+    semantics: Dict[str, Dict[str, str]] = {}
+    if "tensor_heatmap" in specs or "tensor_gif" in specs:
+        semantics["overlap_matrix"] = {
+            "canonical_key": "replica.heatmap.teacher_and_students.matrix",
+            "result_role": "diagnostic",
+            "source": "algorithm overlap_matrix payload",
+            "heatmap_metric": heatmap_metric,
+        }
+    if "fallback_W_heatmap" in specs:
+        semantics["matrix_factors"] = {
+            "canonical_key": "factor.W.teacher_student.gram_cosine",
+            "result_role": "diagnostic",
+            "source": "fallback W factor heatmap",
+            "heatmap_metric": "Q_W",
+        }
+    return semantics
 
 
 def _validate_runtime_extension_compatibility(plan: ExperimentPlan) -> None:
