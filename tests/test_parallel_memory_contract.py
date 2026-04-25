@@ -667,7 +667,32 @@ def test_parallel_coordinator_records_effective_replan_policy():
     assert plan.replan_policy_key == "matrix_student_init_partition_invariant_v1"
     assert plan.automatic_rebatch_allowed is True
     assert plan.replan_implemented is False
+    assert plan.plan_id.startswith("plan_")
+    assert plan.estimation_params["algorithm_key"] == "bigamp"
+    assert plan.estimation_params["alpha_values"] == [0.1]
+    assert plan.estimation_params["seed_partition_policy"] == "partition_invariant"
+    assert plan.replan_provenance["source"] == "initial_plan"
+    assert plan.replan_provenance["num_batches"] == plan.num_batches
+    assert plan.replan_provenance["batch_summary"][0]["alpha_values"] == [0.1]
+    assert plan.replan_provenance["metadata_only"] is True
 
     coordinator.current_plan = plan
     with pytest.raises(NotImplementedError, match="Automatic replan is not implemented"):
         coordinator.replan_with_safety()
+
+
+def test_runtime_resource_plan_reports_replan_provenance():
+    config_path = Path("trials/active/matrix_bigamp_quick/config.yaml")
+    config, _, _ = load_yaml_config(config_path)
+    config.algorithm_params.seed_partition_policy = "partition_invariant"
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    params = runner._estimation_params_for_config(config, config.scan.values)
+    plan = runner.parallel_coordinator.plan_execution(params)
+
+    report = runner._runtime_resource_plan_report(config, plan)
+
+    assert report["replan_safety"]["plan_id"] == plan.plan_id
+    assert report["replan_safety"]["estimation_params"]["algorithm_key"] == config.algorithm_key
+    assert report["replan_safety"]["estimation_params"]["seed_partition_policy"] == "partition_invariant"
+    assert report["replan_safety"]["replan_provenance"]["batch_summary"]
+    assert report["replan_safety"]["replan_provenance"]["metadata_only"] is True

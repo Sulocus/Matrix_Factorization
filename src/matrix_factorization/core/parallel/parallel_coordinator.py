@@ -10,6 +10,8 @@ with support for:
 """
 from typing import List, Callable, Optional, Any, Dict
 from dataclasses import replace
+import hashlib
+import json
 import logging
 import gc
 import torch
@@ -133,7 +135,7 @@ class ParallelCoordinator:
             )
             logger.info(f"Selected FULL_PARALLEL mode: {full_estimate.total_gb:.1f}GB")
             self.stats["plans_created"] += 1
-            return plan
+            return self._attach_plan_provenance(plan, params)
         
         # Strategy 2: Fixed S, split Alpha (prefer keeping Sample parallel)
         batches = self._compute_alpha_batches(params, target_gb)
@@ -155,7 +157,7 @@ class ParallelCoordinator:
                 f"peak={total_mem:.1f}GB"
             )
             self.stats["plans_created"] += 1
-            return plan
+            return self._attach_plan_provenance(plan, params)
         
         # Strategy 3: Reduce S and split Alpha
         for s in range(S - 1, 0, -1):
@@ -177,7 +179,7 @@ class ParallelCoordinator:
                     **replan_metadata,
                 )
                 self.stats["plans_created"] += 1
-                return plan
+                return self._attach_plan_provenance(plan, params)
         
         # Strategy 4: Fallback to linear
         logger.warning("Falling back to LINEAR mode due to memory constraints")
@@ -405,7 +407,7 @@ class ParallelCoordinator:
         
         total_mem = max(b.estimated_memory_gb for b in batches) if batches else 0
         
-        return ExecutionPlan(
+        plan = ExecutionPlan(
             mode=ParallelMode.LINEAR,
             batches=batches,
             total_estimated_memory_gb=total_mem,
@@ -415,6 +417,45 @@ class ParallelCoordinator:
             available_memory_gb=available_gb,
             **replan_metadata,
         )
+        return self._attach_plan_provenance(plan, params)
+
+    @staticmethod
+    def _attach_plan_provenance(plan: ExecutionPlan, params: EstimationParams) -> ExecutionPlan:
+        params_snapshot = params.to_dict()
+        batch_summary = [
+            {
+                "sample_range": [int(batch.sample_range[0]), int(batch.sample_range[1])],
+                "alpha_range": [int(batch.alpha_range[0]), int(batch.alpha_range[1])],
+                "alpha_values": [float(alpha) for alpha in batch.alpha_values],
+                "estimated_memory_gb": float(batch.estimated_memory_gb),
+            }
+            for batch in plan.batches
+        ]
+        plan_payload = {
+            "mode": plan.mode.name,
+            "algorithm_key": plan.algorithm_key,
+            "estimation_params": params_snapshot,
+            "batches": batch_summary,
+            "seed_partition_policy": plan.seed_partition_policy,
+            "replan_policy_key": plan.replan_policy_key,
+        }
+        digest = hashlib.blake2b(
+            json.dumps(plan_payload, sort_keys=True).encode("utf-8"),
+            digest_size=8,
+        ).hexdigest()
+        plan.plan_id = f"plan_{digest}"
+        plan.estimation_params = params_snapshot
+        plan.replan_provenance = {
+            "source": "initial_plan",
+            "mode": plan.mode.name,
+            "num_batches": len(plan.batches),
+            "batch_summary": batch_summary,
+            "allocation_ratio": float(plan.allocation_config.allocation_ratio),
+            "available_memory_gb": float(plan.available_memory_gb),
+            "total_estimated_memory_gb": float(plan.total_estimated_memory_gb),
+            "metadata_only": True,
+        }
+        return plan
     
     def _execute_batch(
         self,

@@ -121,10 +121,15 @@ get_effective_seed_policy_summary(algorithm_key, requested_policy)
 `ExecutionPlan` 会记录：
 
 ```text
+plan_id
+parent_plan_id
+replan_attempt
 seed_partition_policy
 replan_policy_key
 automatic_rebatch_allowed
 replan_implemented=false
+estimation_params
+replan_provenance
 ```
 
 这几个字段只说明“如果未来实现自动 rebatch，当前随机流 contract 是否允许这么做”。当前真实行为仍然是：
@@ -190,6 +195,15 @@ contract.runtime_resource_plan
   config_effective
   seed_policy
   replan_safety
+    plan_id
+    parent_plan_id
+    replan_attempt
+    seed_partition_policy
+    replan_policy_key
+    automatic_rebatch_allowed
+    replan_implemented
+    estimation_params
+    replan_provenance
   batches
   metadata_only
 ```

@@ -6,7 +6,7 @@ and execution planning structures.
 """
 from enum import Enum, auto
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 
 
 class ParallelMode(Enum):
@@ -68,6 +68,25 @@ class EstimationParams:
     def is_spreading_algorithm(self) -> bool:
         """Check if this is a spreading-type algorithm."""
         return 'spreading' in self.algorithm_key.lower()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializable snapshot used for replan provenance."""
+        return {
+            "N1": int(self.N1),
+            "N2": int(self.N2),
+            "M": int(self.M),
+            "S": int(self.S),
+            "alpha_values": [float(alpha) for alpha in self.alpha_values],
+            "algorithm_key": self.algorithm_key,
+            "use_compile": bool(self.use_compile),
+            "use_bf16": bool(self.use_bf16),
+            "f_distribution": self.f_distribution,
+            "adaptive_damping": bool(self.adaptive_damping),
+            "allow_intra_connection": bool(self.allow_intra_connection),
+            "tensor_order": int(self.tensor_order),
+            "tensor_dims": [int(dim) for dim in self.tensor_dims] if self.tensor_dims else None,
+            "seed_partition_policy": self.seed_partition_policy,
+        }
 
 
 @dataclass
@@ -198,6 +217,11 @@ class ExecutionPlan:
     replan_policy_key: str = ""
     automatic_rebatch_allowed: bool = False
     replan_implemented: bool = False
+    plan_id: str = ""
+    parent_plan_id: str = ""
+    replan_attempt: int = 0
+    estimation_params: Dict[str, Any] = field(default_factory=dict)
+    replan_provenance: Dict[str, Any] = field(default_factory=dict)
     
     @property
     def num_batches(self) -> int:

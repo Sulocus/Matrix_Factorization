@@ -839,6 +839,11 @@ class ExperimentRunner:
                 "replan_policy_key": getattr(plan, "replan_policy_key", ""),
                 "automatic_rebatch_allowed": bool(getattr(plan, "automatic_rebatch_allowed", False)),
                 "replan_implemented": bool(getattr(plan, "replan_implemented", False)),
+                "plan_id": getattr(plan, "plan_id", ""),
+                "parent_plan_id": getattr(plan, "parent_plan_id", ""),
+                "replan_attempt": int(getattr(plan, "replan_attempt", 0)),
+                "estimation_params": dict(getattr(plan, "estimation_params", {}) or {}),
+                "replan_provenance": dict(getattr(plan, "replan_provenance", {}) or {}),
             },
             "batches": [
                 {
