@@ -1,0 +1,20 @@
+# Local noise
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.venv/
+
+# Keep main lightweight.
+*.pt
+*.checkpoint.pt
+checkpoints/
+runs/
+artifacts/
+results/*
+!results/latest/
+!results/latest/**
+
+# Reserved for manually selected display outputs.
+showcase_results/*
+!showcase_results/.gitkeep
