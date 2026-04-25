@@ -37,6 +37,7 @@
 - Intervention contract detail：`ExperimentPlan.to_dict()` 现在输出 `intervention_contracts`，记录 trigger、requires_state、modifies_state 和 physical_sensitive；后续新增 intervention 不会只在名字层面接入。
 - Trial regression：`mf trial validate/run matrix_bigamp_quick` 已在 result-save hard gate 后重新验证，quick trial 输出仍隔离在 ignored `runs/trials/`，并写出 metric schema 与 batch memory breakdown。
 - Compile fallback policy：新增 `algorithm_params.compile_fallback_policy`，默认 `allow` 保持旧 eager fallback；设为 `error` 时 tensor parallel 的 `torch.compile` 失败会在初始化阶段报错。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 tensor execution metadata。
+- DType fallback policy：新增 `algorithm_params.dtype_fallback_policy`，默认 `allow` 保持 BF16 不可用时回到 FP32 的旧行为；设为 `error` 时 tensor parallel 请求 BF16 但不可用会初始化失败。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 tensor execution metadata。
 
 ## 本轮继续推进
 
@@ -61,7 +62,7 @@
 
 - 真正的 seed partition invariant 改造。
 - OOM retry 自动缩 batch 的真实实现（当前已 hard-gate，不会伪装成已实现）。
-- dtype fallback 的用户策略选择（compile fallback 已有 `allow/error`；BF16/TF32 fallback 仍只有 metadata）。
+- TF32 fallback 的用户策略选择（compile/BF16 fallback 已有 `allow/error`；TF32 仍只有 metadata）。
 - spreading chunk size auto tuning 的真实实现（当前已记录执行 metadata，但不自动调参）。
 - tensor serial/parallel 训练 loop 合并。
 - tensor serial/parallel teacher scale、alpha graph、damping 语义统一。

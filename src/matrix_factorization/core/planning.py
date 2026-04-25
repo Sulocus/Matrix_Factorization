@@ -684,6 +684,7 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
         return algorithm_key in {"bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.compile_fallback_policy",
+        "algorithm_params.dtype_fallback_policy",
     }:
         return algorithm_key in {"bigamp_tensor_parallel"}
     if path in {
@@ -774,6 +775,7 @@ def _effective_parameter_summary(
         "algorithm_params.use_compile": getattr(algorithm_params, "use_compile", None),
         "algorithm_params.compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
         "algorithm_params.use_bf16": getattr(algorithm_params, "use_bf16", None),
+        "algorithm_params.dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
         "algorithm_params.init_mode": getattr(algorithm_params, "init_mode", None),
         "algorithm_params.init_overlap": getattr(algorithm_params, "init_overlap", None),
         "algorithm_params.adaptive_restart": getattr(algorithm_params, "adaptive_restart", None),
@@ -835,6 +837,7 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "use_compile": getattr(algorithm_params, "use_compile", None),
             "compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
             "use_bf16": getattr(algorithm_params, "use_bf16", None),
+            "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
             "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
             "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
         },

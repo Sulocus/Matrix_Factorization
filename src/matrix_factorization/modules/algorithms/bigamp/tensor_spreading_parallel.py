@@ -114,6 +114,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
             self.requested_use_bf16 = kwargs.get('use_bf16', True)
+            self.dtype_fallback_policy = kwargs.get('dtype_fallback_policy', 'allow')
             self.requested_use_compile = kwargs.get('use_compile', True)
             self.compile_fallback_policy = kwargs.get('compile_fallback_policy', 'allow')
 
@@ -146,6 +147,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.warm_start_rho = getattr(algorithm_params, 'init_overlap', 0.9)
             self.debug_verbose = getattr(algorithm_params, 'debug_verbose', False)
             self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
+            self.dtype_fallback_policy = getattr(algorithm_params, 'dtype_fallback_policy', 'allow')
             self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
             self.compile_fallback_policy = getattr(algorithm_params, 'compile_fallback_policy', 'allow')
 
@@ -166,6 +168,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.onsager_correction = False
             self.debug_verbose = False
             self.requested_use_bf16 = True
+            self.dtype_fallback_policy = 'allow'
             self.requested_use_compile = True
             self.compile_fallback_policy = 'allow'
         else:
@@ -178,14 +181,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 "algorithm_params.compile_fallback_policy must be 'allow' or 'error', "
                 f"got {self.compile_fallback_policy!r}"
             )
+        if self.dtype_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
+                f"got {self.dtype_fallback_policy!r}"
+            )
 
         # === Phase 1.5: BF16 Mixed Precision ===
         # Auto-detect hardware support for BF16 (Ampere+ GPUs)
         self.use_bf16 = False
         self.storage_dtype = torch.float32
-        if self.requested_use_bf16 and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        bf16_supported = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        if self.requested_use_bf16 and bf16_supported:
             self.use_bf16 = True
             self.storage_dtype = torch.bfloat16
+            self.dtype_status = "bf16_requested_and_effective"
+        elif self.requested_use_bf16:
+            self.dtype_status = "fallback_to_float32_bf16_unavailable"
+            self._handle_dtype_fallback()
+        else:
+            self.dtype_status = "bf16_disabled_by_config"
 
         # === Phase 1.5: torch.compile Support ===
         self.use_compile = bool(self.requested_use_compile)
@@ -238,6 +253,13 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 f"torch.compile failed for {target} and "
                 "algorithm_params.compile_fallback_policy='error'"
             ) from exc
+
+    def _handle_dtype_fallback(self) -> None:
+        if self.dtype_fallback_policy == "error":
+            raise RuntimeError(
+                "BF16 was requested but is unavailable and "
+                "algorithm_params.dtype_fallback_policy='error'"
+            )
 
     def _compile_status_for_super_path(self) -> str:
         if not bool(getattr(self, "requested_use_compile", True)):
@@ -437,6 +459,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         device=self.device,
                         requested_use_bf16=bool(getattr(self, "requested_use_bf16", True)),
                         effective_use_bf16=bool(getattr(self, "use_bf16", False)),
+                        dtype_fallback_policy=getattr(self, "dtype_fallback_policy", "allow"),
+                        dtype_status=getattr(self, "dtype_status", ""),
                         storage_dtype=getattr(self, "storage_dtype", None),
                         requested_use_compile=bool(getattr(self, "requested_use_compile", True)),
                         compile_fallback_policy=getattr(self, "compile_fallback_policy", "allow"),

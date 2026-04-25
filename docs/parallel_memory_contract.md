@@ -138,6 +138,8 @@ tensor_execution
   device
   requested_use_bf16
   effective_use_bf16
+  dtype_fallback_policy
+  dtype_status
   storage_dtype
   requested_use_compile
   compile_fallback_policy
@@ -174,6 +176,13 @@ internal_alpha_batch_plan
 
 这个策略不处理 OOM retry，也不自动切换 BF16/TF32。
 
+`algorithm_params.dtype_fallback_policy` 只控制 BF16 请求不能满足时的行为：
+
+- `allow`：默认值，保持旧行为；BF16 不可用时使用 FP32，并在 `dtype_status` 里记录 fallback。
+- `error`：严格调试模式；如果用户请求 BF16 但设备不可用或不支持 BF16，初始化直接失败。
+
+这个策略不自动打开 BF16，也不处理 TF32 或 OOM 后 dtype retry。
+
 `bigamp_spreading` 的 matrix-factor `AlgorithmResult.metadata.execution_metadata` 还会记录：
 
 ```text
@@ -199,7 +208,7 @@ metadata_only
 ## 不在本阶段做的事
 
 - 不根据 ResourceSpec 自动改 batch size。
-- 不自动切换 dtype。
+- 不在 OOM 后自动切换 dtype；普通 BF16 不可用只按 `dtype_fallback_policy` 处理。
 - 不在 OOM 后自动关闭 compile；普通 `torch.compile` 初始化失败只按 `compile_fallback_policy` 处理。
 - 不在 OOM 后自动重试。
 - 不改变 seed 与 batch partition 的关系。

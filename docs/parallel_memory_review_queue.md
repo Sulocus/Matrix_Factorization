@@ -42,11 +42,12 @@
 - tensor parallel 的实际 dtype/compile 状态已进入 `tensor_execution` metadata。
 - `algorithm_params.use_bf16=false` 已经会阻止 tensor parallel 自动启用 BF16；这是参数生效链路修正，不是 fallback 策略。
 - `algorithm_params.compile_fallback_policy` 已经把普通 `torch.compile` 初始化失败分成 `allow/error` 两种策略；默认 `allow` 保持旧 eager fallback，`error` 用于严格调试。
+- `algorithm_params.dtype_fallback_policy` 已经把 BF16 不可用分成 `allow/error` 两种策略；默认 `allow` 保持旧 FP32 fallback，`error` 用于严格调试。
 
 需要确认：
 
 - 是否允许 OOM 时自动关闭 compile。
-- 是否允许 OOM 时自动切 BF16。
+- 是否允许 OOM 时自动切 BF16 或 FP32。
 - plot/result metadata 中是否应把 dtype/compile 作为 physical-sensitive execution parameter。
 
 ## Chunk Size Auto Tuning

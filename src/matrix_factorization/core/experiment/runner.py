@@ -1226,6 +1226,7 @@ class ExperimentRunner:
                 "use_compile": getattr(algorithm_params, "use_compile", None),
                 "compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
                 "use_bf16": getattr(algorithm_params, "use_bf16", None),
+                "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
                 "adaptive_damping": getattr(algorithm_params, "adaptive_damping", None),
                 "init_mode": getattr(algorithm_params, "init_mode", None),
                 "init_overlap": getattr(algorithm_params, "init_overlap", None),

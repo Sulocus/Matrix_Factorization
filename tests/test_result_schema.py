@@ -601,6 +601,8 @@ def test_tensor_algorithms_return_formal_metrics_only_result(
     algorithm.device = torch.device("cpu")
     algorithm.requested_use_bf16 = False
     algorithm.use_bf16 = False
+    algorithm.dtype_fallback_policy = "allow"
+    algorithm.dtype_status = "bf16_disabled_by_config"
     algorithm.storage_dtype = torch.float32
     algorithm.requested_use_compile = False
     algorithm.use_compile = False
@@ -699,6 +701,8 @@ def test_tensor_parallel_execution_metadata_reports_super_compile_fallback(monke
     algorithm.device = torch.device("cpu")
     algorithm.requested_use_bf16 = False
     algorithm.use_bf16 = False
+    algorithm.dtype_fallback_policy = "allow"
+    algorithm.dtype_status = "bf16_disabled_by_config"
     algorithm.storage_dtype = torch.float32
     algorithm.requested_use_compile = True
     algorithm.use_compile = True
@@ -711,6 +715,8 @@ def test_tensor_parallel_execution_metadata_reports_super_compile_fallback(monke
     execution = result.metadata["tensor_execution"]
 
     assert execution["requested_use_compile"] is True
+    assert execution["dtype_fallback_policy"] == "allow"
+    assert execution["dtype_status"] == "bf16_disabled_by_config"
     assert execution["compile_fallback_policy"] == "allow"
     assert execution["effective_use_compile"] is False
     assert execution["compiled_step_available"] is True

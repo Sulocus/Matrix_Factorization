@@ -123,6 +123,27 @@ def test_tensor_parallel_records_compile_fallback_policy(tmp_path):
     assert algorithm.compile_fallback_policy == "error"
 
 
+def test_tensor_parallel_records_dtype_fallback_policy(tmp_path):
+    config_path = tmp_path / "tensor.yaml"
+    _write_config(config_path, tensor_order=3, algorithm=4)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "  use_bf16: false",
+        "  use_bf16: false\n  dtype_fallback_policy: error",
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    from matrix_factorization.core.planning import build_experiment_plan
+
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+    algorithm = BiGAMPTensorSpreadingParallel(config, device=None)
+
+    assert chain["algorithm_params.dtype_fallback_policy"]["effective_value"] == "error"
+    assert plan.resource_plan["config_effective"]["dtype_fallback_policy"] == "error"
+    assert algorithm.dtype_fallback_policy == "error"
+
+
 def test_tensor_parallel_compile_fallback_policy_error_raises(monkeypatch):
     monkeypatch.setattr(BiGAMPTensorSpreadingParallel, "_compiled_step", None)
     monkeypatch.setattr(BiGAMPTensorSpreadingParallel, "_compiled_step_super", None)
@@ -175,6 +196,48 @@ def test_tensor_parallel_compile_fallback_policy_allow_preserves_legacy_fallback
     assert algorithm.use_compile is False
     assert algorithm.compile_attempts[0]["target"] == "tensor_step_batch"
     assert algorithm.compile_attempts[0]["success"] is False
+
+
+def test_tensor_parallel_dtype_fallback_policy_error_raises(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_tensor_parallel",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=True,
+            dtype_fallback_policy="error",
+        ),
+        spreading=SpreadingConfig(tensor_order=3),
+        teacher_key="standard",
+    )
+
+    with pytest.raises(RuntimeError, match="dtype_fallback_policy='error'"):
+        BiGAMPTensorSpreadingParallel(config, device=torch.device("cpu"))
+
+
+def test_tensor_parallel_dtype_fallback_policy_allow_preserves_float32_fallback(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=2, N2=2, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_tensor_parallel",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=True,
+            dtype_fallback_policy="allow",
+        ),
+        spreading=SpreadingConfig(tensor_order=3),
+        teacher_key="standard",
+    )
+    algorithm = BiGAMPTensorSpreadingParallel(config, device=torch.device("cpu"))
+
+    assert algorithm.use_bf16 is False
+    assert algorithm.storage_dtype == torch.float32
+    assert algorithm.dtype_status == "fallback_to_float32_bf16_unavailable"
 
 
 def test_scaling_sweep_propagates_teacher_and_contract_metadata(monkeypatch):

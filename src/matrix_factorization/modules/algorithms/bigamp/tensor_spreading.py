@@ -308,6 +308,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                         device=getattr(self, "device", None),
                         requested_use_bf16=False,
                         effective_use_bf16=False,
+                        dtype_fallback_policy="not_applicable",
+                        dtype_status="float32_serial_path",
                         storage_dtype="float32",
                         requested_use_compile=False,
                         compile_fallback_policy="not_applicable",
