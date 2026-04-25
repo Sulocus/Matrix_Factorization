@@ -14,6 +14,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+from concurrent.futures import Future
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class CheckpointManager:
         # Max workers = 1 ensures sequential writes (no race on file access)
         import concurrent.futures
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._pending_saves: List[Future] = []
 
     def save(
         self,
@@ -140,10 +142,23 @@ class CheckpointManager:
         }
         
         # 2. Submit to background thread
-        self._executor.submit(self._atomic_save, payload, self.path)
+        future = self._executor.submit(self._atomic_save, payload, self.path)
+        self._pending_saves.append(future)
         
         # Returns immediately!
         logger.debug(f"Checkpoint save queued: {len(completed_alphas)} alphas")
+
+    def flush(self) -> None:
+        """Wait for queued checkpoint writes and surface async save failures."""
+        pending = list(self._pending_saves)
+        self._pending_saves.clear()
+        for future in pending:
+            future.result()
+
+    def close(self) -> None:
+        """Flush pending writes and stop the checkpoint IO worker."""
+        self.flush()
+        self._executor.shutdown(wait=True)
 
     @staticmethod
     def _atomic_save(payload: Dict, path: Path):
@@ -163,6 +178,7 @@ class CheckpointManager:
             # logger.debug(f"Async checkpoint complete: {path}")
         except Exception as e:
             logger.error(f"Async checkpoint failed: {e}")
+            raise
     
     def load(self) -> Optional[CheckpointData]:
         """
@@ -185,6 +201,7 @@ class CheckpointManager:
     
     def delete(self):
         """Delete checkpoint file."""
+        self.flush()
         if self.path.exists():
             self.path.unlink()
             logger.info("Checkpoint deleted")

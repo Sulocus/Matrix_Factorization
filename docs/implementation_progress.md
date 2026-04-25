@@ -48,6 +48,7 @@
 - Algorithm integration map：新增 `docs/algorithm_integration_contract.md`，把 `agd/bigamp/bigamp_spreading/bigamp_tensor/bigamp_tensor_parallel/agd_tensor/agd_spreading/combined` 的主链路状态、result contract 和去重策略列成硬文档。测试会检查所有 `AlgorithmSpec.key` 都被文档覆盖。
 - Tensor parity seed status：tensor parity contract 现在区分 parallel 默认 legacy batch-sensitive seed 与 opt-in `partition_invariant`，避免把“parallel 内部分批稳定”误读成“serial/parallel 物理 parity 已完成”。
 - Replan safety metadata：effective seed policy 现在集中由 `get_effective_seed_policy_summary()` 生成，并进入 `ExperimentPlan.resource_plan`、runtime `runtime_resource_plan` 和 `ExecutionPlan`；`automatic_rebatch_allowed=true` 只表示随机流 contract 允许未来安全 rebatch，当前 `replan_implemented=false`，自动重规划仍会明确报 `NotImplementedError`。
+- Checkpoint flush contract：`CheckpointManager.save()` 保持异步，但新增 `flush()` 暴露后台写入失败；OOM abort 退出前和成功清理 checkpoint 前都会等待 flush，避免把“save 已排队”误认为“checkpoint 已落盘”。
 
 ## 本轮继续推进
 

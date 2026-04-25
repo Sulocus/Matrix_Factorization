@@ -106,7 +106,7 @@ tensor parallel 会启用 opt-in v1 seed policy：
 
 spreading、AGD 与 dense BigAMP 也可以显式设置同一个字段。AGD/dense BigAMP 的 opt-in v1 只覆盖 student initialization：同一个 `(base_seed, alpha, sample, role)` 会得到同一个初始 factor，不依赖当前 alpha batch 怎么分组。spreading 的 opt-in v2 会保留 graph/F 的 base seed，不再混入 internal `batch_idx`，让 cold/warm start 初始化按 alpha/sample/role 分流，并让 adaptive restart noise 按 alpha/sample/step/role 分流。默认 `legacy` 不变。
 
-`ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint 并退出，用户再用 clean process resume。
+`ParallelCoordinator.replan_with_safety()` 当前会明确报错，而不是返回旧 plan 伪装成缩 batch。`MemoryGuard` 只负责 abort/checkpoint handoff：触发 critical memory 后由 runner 保存 checkpoint、等待 checkpoint flush 完成并退出，用户再用 clean process resume。
 
 effective seed policy 现在是 replan safety 的唯一来源：
 
@@ -133,6 +133,12 @@ replan_implemented=false
 - `automatic_rebatch_allowed=true`：`replan_with_safety()` 抛 `NotImplementedError`，说明随机流 contract 已允许重分批，但自动重规划逻辑还没有实现。
 
 也就是说，`partition_invariant` 现在打开的是“未来可安全实现自动 rebatch 的前置条件”，不是已经实现 OOM 后自动缩 batch。
+
+checkpoint 语义：
+
+- `CheckpointManager.save()` 仍是异步排队，避免正常 batch 间阻塞。
+- `CheckpointManager.flush()` 会等待所有已排队写入，并把后台写入异常重新抛到主线程。
+- OOM abort 退出前 runner 会调用 `flush()`；成功完成并删除 checkpoint 前也会先 `flush()`，避免后台 save 覆盖 cleanup。
 
 ## Metadata 写入位置
 

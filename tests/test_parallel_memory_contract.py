@@ -13,6 +13,8 @@ from matrix_factorization.core.contracts import (
     get_tensor_parity_report,
 )
 from matrix_factorization.core.planning import build_experiment_plan
+from matrix_factorization.core.experiment.result import ExperimentResult
+from matrix_factorization.core.experiment.runner import ExperimentRunner
 from matrix_factorization.core.parallel import (
     AllocationPresets,
     BatchConfig,
@@ -21,6 +23,8 @@ from matrix_factorization.core.parallel import (
     ParallelMode,
     get_parallel_coordinator,
 )
+from matrix_factorization.core.parallel.batch_checkpoint import CheckpointManager
+from matrix_factorization.core.parallel.memory_guard import MemoryAbortException
 from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
 from matrix_factorization.modules.algorithms.bigamp.tensor_contract import (
     build_tensor_alpha_batch_metadata,
@@ -152,6 +156,80 @@ def test_parallel_memory_contract_docs_cover_runtime_metadata():
     review_text = review.read_text(encoding="utf-8")
     assert "Seed Partition Invariant" in review_text
     assert "OOM Retry / Auto Shrink Batch" in review_text
+
+
+def test_checkpoint_flush_waits_for_async_save(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    manager = CheckpointManager(checkpoint_path)
+
+    manager.save(
+        config_dict={"algorithm_key": "bigamp"},
+        completed_alphas=[0.1],
+        results={0.1: {"metrics": {"Q_Y_mean": 0.5}}},
+        output_options={"save_tensors": False},
+        raw_yaml="algorithm: 1",
+    )
+    manager.flush()
+
+    loaded = manager.load()
+    assert loaded is not None
+    assert loaded.completed_alphas == [0.1]
+    assert loaded.results[0.1]["metrics"]["Q_Y_mean"] == 0.5
+
+    manager.delete()
+    assert not checkpoint_path.exists()
+
+
+def test_checkpoint_flush_surfaces_async_save_failure(tmp_path, monkeypatch):
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    manager = CheckpointManager(checkpoint_path)
+
+    def fail_save(payload, path):
+        raise RuntimeError("forced checkpoint failure")
+
+    monkeypatch.setattr(manager, "_atomic_save", fail_save)
+    manager.save(config_dict={}, completed_alphas=[], results={})
+
+    with pytest.raises(RuntimeError, match="forced checkpoint failure"):
+        manager.flush()
+
+
+def test_memory_abort_flushes_checkpoint_before_exit(tmp_path):
+    config_path = tmp_path / "matrix_config.yaml"
+    checkpoint_path = tmp_path / "oom_checkpoint.pt"
+    _write_matrix_config(config_path, algorithm=1)
+    config, _, raw_yaml = load_yaml_config(config_path)
+    result = ExperimentResult(
+        experiment_id="oom_checkpoint_contract",
+        config=config,
+        scan_dimension=config.scan.dimension,
+        scan_values=config.scan.values,
+    )
+
+    class AbortGuard:
+        is_running = True
+
+        def check_abort(self):
+            raise MemoryAbortException("forced abort")
+
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    runner._memory_guard = AbortGuard()
+
+    with pytest.raises(SystemExit) as exc:
+        runner._run_standard_scan(
+            config,
+            algorithm=object(),
+            result=result,
+            observer=None,
+            output_options={"checkpoint_path": str(checkpoint_path), "save_tensors": False},
+            raw_yaml=raw_yaml,
+        )
+
+    assert exc.value.code == 0
+    loaded = CheckpointManager(checkpoint_path).load()
+    assert loaded is not None
+    assert loaded.completed_alphas == []
+    assert loaded.raw_yaml == raw_yaml
 
 
 def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():

@@ -598,6 +598,7 @@ class ExperimentRunner:
                 
                 # Save checkpoint with completed alphas
                 ckpt_mgr.save(config_dict, completed_alphas, checkpoint_results, output_options, raw_yaml)
+                ckpt_mgr.flush()
                 
                 # Count remaining work
                 remaining_count = total_points - len(completed_alphas)
@@ -623,6 +624,7 @@ class ExperimentRunner:
         
         # Cleanup checkpoints on successful completion
         if global_point_idx == total_points:
+            ckpt_mgr.flush()
             ckpt_mgr.delete()
     
     def _run_steps_scan(
