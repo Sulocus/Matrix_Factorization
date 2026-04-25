@@ -21,6 +21,7 @@ sample batching: samples inside algorithm tensor
 resource estimator: runner.MemoryEstimator
 dtype: float32 / cuda bf16 autocast, controlled by algorithm_params.use_bf16
 dtype fallback: algorithm_params.dtype_fallback_policy
+tf32: controlled by algorithm_params.use_tf32
 ```
 
 当前 contract 标记 `sample_range_honored=false`，因为 runner 的 sample-range plan 没有作为正式 algorithm 输入传入。
@@ -33,6 +34,7 @@ alpha batching: runner alpha batches
 sample batching: W/X tensor batch
 compile: optional torch.compile
 compile fallback: algorithm_params.compile_fallback_policy
+tf32: controlled by algorithm_params.use_tf32
 ```
 
 这是 matrix dense path。当前显存 metadata 只记录 runner-level plan，不驱动新的 batch 行为。
@@ -49,6 +51,7 @@ chunking: spreading.chunk_size edge streaming
 dtype: float32 / bf16 storage, controlled by algorithm_params.use_bf16
 dtype fallback: algorithm_params.dtype_fallback_policy
 compile fallback: algorithm_params.compile_fallback_policy
+tf32: controlled by algorithm_params.use_tf32
 seed sensitive: true
 chunk policy: manual_config if spreading.chunk_size > 0, disabled_legacy_unchunked if 0
 ```
@@ -76,6 +79,7 @@ alpha batching: probe-based internal alpha batches
 sample batching: TensorSuperGraph sample parallel
 probe: A=1 tensor supergraph probe
 dtype: float32 / bf16 storage / tf32 matmul
+tf32: controlled by algorithm_params.use_tf32
 compile: torch.compile default optional
 seed sensitive: true
 seed policy: legacy_tensor_parallel_batch_idx_seed
@@ -154,6 +158,7 @@ tensor_execution
   compiled_super_step_available
   compile_status
   compile_attempts
+  requested_use_tf32
   tf32_matmul_enabled
   tf32_cudnn_enabled
   metadata_only
@@ -201,6 +206,9 @@ effective_use_compile
 compile_fallback_policy
 compile_status
 compile_attempts
+requested_use_tf32
+tf32_matmul_enabled
+tf32_cudnn_enabled
 requested_use_bf16
 effective_use_bf16
 dtype_fallback_policy

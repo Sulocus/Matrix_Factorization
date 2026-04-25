@@ -1227,6 +1227,7 @@ class ExperimentRunner:
                 "compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
                 "use_bf16": getattr(algorithm_params, "use_bf16", None),
                 "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
+                "use_tf32": getattr(algorithm_params, "use_tf32", None),
                 "adaptive_damping": getattr(algorithm_params, "adaptive_damping", None),
                 "init_mode": getattr(algorithm_params, "init_mode", None),
                 "init_overlap": getattr(algorithm_params, "init_overlap", None),
@@ -1347,6 +1348,7 @@ class ExperimentRunner:
             compile_fallback_policy: str = config.algorithm_params.compile_fallback_policy
             use_bf16: bool = config.algorithm_params.use_bf16
             dtype_fallback_policy: str = config.algorithm_params.dtype_fallback_policy
+            use_tf32: bool = config.algorithm_params.use_tf32
             adaptive_damping: bool = config.algorithm_params.adaptive_damping
         
         @dc

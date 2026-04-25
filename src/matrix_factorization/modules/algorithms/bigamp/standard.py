@@ -112,6 +112,9 @@ class BiGAMPAlgorithm(AlgorithmBase):
         self.noise_var = config.algorithm.noise_var
         self.max_steps = config.training.max_steps
         self.S = config.training.samples_per_alpha
+        self.requested_use_tf32 = getattr(config.algorithm, 'use_tf32', True)
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
+        torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
         self.requested_use_compile = getattr(config.algorithm, 'use_compile', True)
         self.compile_fallback_policy = getattr(config.algorithm, 'compile_fallback_policy', 'allow')
         if self.compile_fallback_policy not in {'allow', 'error'}:
@@ -152,6 +155,9 @@ class BiGAMPAlgorithm(AlgorithmBase):
             "compile_fallback_policy": self.compile_fallback_policy,
             "compile_status": self._compile_status(),
             "compile_attempts": list(self.compile_attempts),
+            "requested_use_tf32": bool(self.requested_use_tf32),
+            "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
+            "tf32_cudnn_enabled": torch.backends.cudnn.allow_tf32,
             "metadata_only": True,
         }
 
@@ -345,4 +351,3 @@ class BiGAMPAlgorithm(AlgorithmBase):
     def supports_batch_training(self) -> bool:
         """BiG-AMP supports efficient batch training."""
         return True
-

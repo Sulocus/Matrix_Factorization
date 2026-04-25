@@ -39,6 +39,9 @@ class AGDAlgorithm(AlgorithmBase):
         self.lr = config.algorithm.learning_rate
         self.max_epochs = config.training.max_epochs
         self.S = config.training.samples_per_alpha
+        self.requested_use_tf32 = getattr(config.algorithm, 'use_tf32', True)
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
+        torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
 
         # Early stop settings
         self.use_early_stop = getattr(config.algorithm, 'use_early_stop', False)
@@ -75,6 +78,9 @@ class AGDAlgorithm(AlgorithmBase):
             "dtype_fallback_policy": self.dtype_fallback_policy,
             "dtype_status": self.dtype_status,
             "compute_dtype": str(self.compute_dtype).replace("torch.", ""),
+            "requested_use_tf32": bool(self.requested_use_tf32),
+            "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
+            "tf32_cudnn_enabled": torch.backends.cudnn.allow_tf32,
             "metadata_only": True,
         }
 

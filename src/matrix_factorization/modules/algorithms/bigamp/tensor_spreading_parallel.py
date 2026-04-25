@@ -115,6 +115,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.device = kwargs.get('device', device) or torch.device('cpu')
             self.requested_use_bf16 = kwargs.get('use_bf16', True)
             self.dtype_fallback_policy = kwargs.get('dtype_fallback_policy', 'allow')
+            self.requested_use_tf32 = kwargs.get('use_tf32', True)
             self.requested_use_compile = kwargs.get('use_compile', True)
             self.compile_fallback_policy = kwargs.get('compile_fallback_policy', 'allow')
 
@@ -148,6 +149,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.debug_verbose = getattr(algorithm_params, 'debug_verbose', False)
             self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
             self.dtype_fallback_policy = getattr(algorithm_params, 'dtype_fallback_policy', 'allow')
+            self.requested_use_tf32 = getattr(algorithm_params, 'use_tf32', True)
             self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
             self.compile_fallback_policy = getattr(algorithm_params, 'compile_fallback_policy', 'allow')
 
@@ -169,6 +171,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.debug_verbose = False
             self.requested_use_bf16 = True
             self.dtype_fallback_policy = 'allow'
+            self.requested_use_tf32 = True
             self.requested_use_compile = True
             self.compile_fallback_policy = 'allow'
         else:
@@ -186,6 +189,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
                 f"got {self.dtype_fallback_policy!r}"
             )
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
+        torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
 
         # === Phase 1.5: BF16 Mixed Precision ===
         # Auto-detect hardware support for BF16 (Ampere+ GPUs)
@@ -472,6 +477,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         compiled_super_step_available=BiGAMPTensorSpreadingParallel._compiled_step_super is not None,
                         compile_status=self._compile_status_for_super_path(),
                         compile_attempts=getattr(self, "compile_attempts", []),
+                        requested_use_tf32=bool(getattr(self, "requested_use_tf32", True)),
                         tf32_matmul_enabled=torch.backends.cuda.matmul.allow_tf32,
                         tf32_cudnn_enabled=torch.backends.cudnn.allow_tf32,
                         notes="Execution metadata only; it does not change tensor update formulas.",

@@ -210,6 +210,38 @@ def test_bigamp_records_compile_fallback_policy(tmp_path):
     assert algorithm._contract_execution_metadata["compile_status"] == "disabled_by_config"
 
 
+def test_bigamp_honors_use_tf32_false(tmp_path):
+    original_matmul = torch.backends.cuda.matmul.allow_tf32
+    original_cudnn = torch.backends.cudnn.allow_tf32
+    try:
+        config_path = tmp_path / "matrix.yaml"
+        _write_config(config_path, tensor_order=2, algorithm=1)
+        text = config_path.read_text(encoding="utf-8").replace(
+            "  use_bf16: false",
+            "  use_bf16: false\n  use_tf32: false",
+        )
+        config_path.write_text(text, encoding="utf-8")
+
+        config, output_options, raw_yaml = load_yaml_config(config_path)
+        from matrix_factorization.core.planning import build_experiment_plan
+
+        plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+        chain = {item["path"]: item for item in plan.parameter_chain()}
+        algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+        algorithm = BiGAMPAlgorithm(algo_config, device=torch.device("cpu"))
+
+        assert chain["algorithm_params.use_tf32"]["effective_value"] is False
+        assert chain["algorithm_params.use_tf32"]["consumption_status"] == "effective"
+        assert plan.resource_plan["config_effective"]["use_tf32"] is False
+        assert algorithm._contract_execution_metadata["requested_use_tf32"] is False
+        assert algorithm._contract_execution_metadata["tf32_matmul_enabled"] is False
+        assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is False
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = original_matmul
+        torch.backends.cudnn.allow_tf32 = original_cudnn
+
+
 def test_tensor_parallel_records_dtype_fallback_policy(tmp_path):
     config_path = tmp_path / "tensor.yaml"
     _write_config(config_path, tensor_order=3, algorithm=4)
@@ -229,6 +261,37 @@ def test_tensor_parallel_records_dtype_fallback_policy(tmp_path):
     assert chain["algorithm_params.dtype_fallback_policy"]["effective_value"] == "error"
     assert plan.resource_plan["config_effective"]["dtype_fallback_policy"] == "error"
     assert algorithm.dtype_fallback_policy == "error"
+
+
+def test_tensor_parallel_honors_use_tf32_false(tmp_path):
+    original_matmul = torch.backends.cuda.matmul.allow_tf32
+    original_cudnn = torch.backends.cudnn.allow_tf32
+    try:
+        config_path = tmp_path / "tensor.yaml"
+        _write_config(config_path, tensor_order=3, algorithm=4)
+        text = config_path.read_text(encoding="utf-8").replace(
+            "  use_bf16: false",
+            "  use_bf16: false\n  use_tf32: false",
+        )
+        config_path.write_text(text, encoding="utf-8")
+
+        config, output_options, raw_yaml = load_yaml_config(config_path)
+        from matrix_factorization.core.planning import build_experiment_plan
+
+        plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+        algorithm = BiGAMPTensorSpreadingParallel(config, device=torch.device("cpu"))
+        algorithm._batch_metrics = {0.0: {"Q_Y_mean": 0.1}}
+        result = algorithm._metrics_only_algorithm_result("bigamp_tensor_parallel")
+        execution = result.metadata["tensor_execution"]
+
+        assert plan.resource_plan["config_effective"]["use_tf32"] is False
+        assert execution["requested_use_tf32"] is False
+        assert execution["tf32_matmul_enabled"] is False
+        assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is False
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = original_matmul
+        torch.backends.cudnn.allow_tf32 = original_cudnn
 
 
 def test_tensor_parallel_compile_fallback_policy_error_raises(monkeypatch):

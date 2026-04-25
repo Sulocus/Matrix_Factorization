@@ -38,6 +38,7 @@
 - Trial regression：`mf trial validate/run matrix_bigamp_quick` 已在 result-save hard gate 后重新验证，quick trial 输出仍隔离在 ignored `runs/trials/`，并写出 metric schema 与 batch memory breakdown。
 - Compile fallback policy：新增 `algorithm_params.compile_fallback_policy`，默认 `allow` 保持旧 eager fallback；设为 `error` 时 dense BigAMP/spreading/tensor parallel 的 `torch.compile` 失败会在初始化阶段报错。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
 - DType fallback policy：新增 `algorithm_params.dtype_fallback_policy`，默认 `allow` 保持 BF16 不可用时回到 FP32 的旧行为；设为 `error` 时 AGD/spreading/tensor parallel 请求 BF16 但不可用会初始化失败。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
+- TF32 policy：新增 `algorithm_params.use_tf32`，默认 `true` 保持旧的全局 TF32 开启行为；AGD、dense BigAMP、spreading 和 tensor parallel 初始化时会按该字段设置 torch backend，并写入 execution metadata。
 - Resource parameter route narrowing：`algorithm_params.use_compile/use_bf16` 的 `ParameterSpec` 和 active-route 判断已收窄到真实消费它们的 algorithm；例如 dense `bigamp` 下写 `use_bf16` 会显示 inactive，AGD 下写 `use_compile` 会显示 inactive。
 
 ## 本轮继续推进
@@ -61,13 +62,14 @@
   - spreading chunk_size 已进入 algorithm result metadata；当前仍是手动配置而不是自动调参。
   - `agd` 已消费 `algorithm_params.use_bf16=false`，不会再只根据 CUDA device 自动打开 autocast。
   - `bigamp_spreading` 已消费 `algorithm_params.use_bf16=false`，不会再在用户显式关闭 BF16 时根据硬件自动打开。
+  - `algorithm_params.use_tf32` 已接入 AGD、dense BigAMP、spreading 和 tensor parallel，默认保持旧行为，显式关闭会写入 metadata。
   - Resource/Batching 与 tensor parity 的显存约束已加入测试。
 
 ## 尚未完成
 
 - 真正的 seed partition invariant 改造。
 - OOM retry 自动缩 batch 的真实实现（当前已 hard-gate，不会伪装成已实现）。
-- TF32 fallback 的用户策略选择（compile/AGD-BF16/spreading-BF16/tensor-BF16 fallback 已有 `allow/error`；TF32 仍只有 metadata）。
+- TF32 OOM fallback 的用户策略选择（`use_tf32` 已可显式控制，但 OOM 后不自动切换）。
 - spreading chunk size auto tuning 的真实实现（当前已记录执行 metadata，但不自动调参）。
 - tensor serial/parallel 训练 loop 合并。
 - tensor serial/parallel teacher scale、alpha graph、damping 语义统一。
@@ -84,5 +86,5 @@
 - damping update direction。
 - Onsager / `prev_s`。
 - seed 与 batch partition 的关系。
-- BF16/TF32/torch.compile 自动切换。
+- BF16/TF32/torch.compile OOM 后自动切换。
 - OOM 后自动重试并继续跑。

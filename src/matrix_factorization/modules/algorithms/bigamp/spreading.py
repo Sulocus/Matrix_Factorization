@@ -129,6 +129,9 @@ class BiGAMPSpreading(AlgorithmBase):
         self.noise_var = config.algorithm_params.noise_var
         self.max_steps = config.training.max_steps
         self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
+        self.requested_use_tf32 = getattr(config.algorithm_params, 'use_tf32', True)
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
+        torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
 
         # Spreading configuration
         spreading_cfg = config.spreading
@@ -291,6 +294,9 @@ class BiGAMPSpreading(AlgorithmBase):
             "compile_fallback_policy": getattr(self, "compile_fallback_policy", "allow"),
             "compile_status": self._compile_status_for_spreading_path(),
             "compile_attempts": list(getattr(self, "compile_attempts", [])),
+            "requested_use_tf32": bool(getattr(self, "requested_use_tf32", True)),
+            "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
+            "tf32_cudnn_enabled": torch.backends.cudnn.allow_tf32,
             "requested_use_bf16": bool(getattr(self, "requested_use_bf16", True)),
             "effective_use_bf16": bool(getattr(self, "use_bf16", False)),
             "dtype_fallback_policy": getattr(self, "dtype_fallback_policy", "allow"),
