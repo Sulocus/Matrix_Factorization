@@ -28,8 +28,8 @@ def compute_qy_unobserved(
         mask: Observation mask, shape (N1, N2). 1 = observed, 0 = unobserved
 
     Returns:
-        Cosine similarity on unobserved positions, or 0.0 if no unobserved
-        positions or norms are too small.
+        Absolute projection on unobserved positions, or 0.0 if no unobserved
+        positions or teacher norm is too small.
 
     Example:
         >>> mask = torch.randint(0, 2, (100, 100))  # Binary mask
@@ -42,19 +42,12 @@ def compute_qy_unobserved(
     Y_teacher_unobs = Y_teacher * unobs_mask
     Y_student_unobs = Y_student * unobs_mask
 
-    # Compute norms
-    norm_teacher = Y_teacher_unobs.norm()
-    norm_student = Y_student_unobs.norm()
-
-    # Check for valid norms
-    if norm_teacher < 1e-12 or norm_student < 1e-12:
+    norm_teacher_sq = (Y_teacher_unobs ** 2).sum()
+    if norm_teacher_sq < 1e-12:
         return 0.0
 
-    # Compute cosine similarity
     dot_product = (Y_teacher_unobs.flatten() * Y_student_unobs.flatten()).sum()
-    cosine = dot_product / (norm_teacher * norm_student)
-
-    return float(cosine)
+    return float(dot_product.abs() / (norm_teacher_sq + 1e-12))
 
 
 @torch.no_grad()
@@ -75,23 +68,19 @@ def compute_qy_observed(
         mask: Observation mask (1 = observed, 0 = unobserved)
 
     Returns:
-        Cosine similarity on observed positions.
+        Absolute projection on observed positions.
     """
     obs_mask = mask.float()
 
     Y_teacher_obs = Y_teacher * obs_mask
     Y_student_obs = Y_student * obs_mask
 
-    norm_teacher = Y_teacher_obs.norm()
-    norm_student = Y_student_obs.norm()
-
-    if norm_teacher < 1e-12 or norm_student < 1e-12:
+    norm_teacher_sq = (Y_teacher_obs ** 2).sum()
+    if norm_teacher_sq < 1e-12:
         return 0.0
 
     dot_product = (Y_teacher_obs.flatten() * Y_student_obs.flatten()).sum()
-    cosine = dot_product / (norm_teacher * norm_student)
-
-    return float(cosine)
+    return float(dot_product.abs() / (norm_teacher_sq + 1e-12))
 
 
 @torch.no_grad()
@@ -113,7 +102,7 @@ def compute_physical_overlap_unobserved(
         return 0.0
 
     dot_product = (Y_teacher_unobs.flatten() * Y_student_unobs.flatten()).sum()
-    return float(dot_product / norm_teacher_sq)
+    return float(dot_product.abs() / (norm_teacher_sq + 1e-12))
 
 
 @torch.no_grad()
@@ -134,7 +123,7 @@ def compute_physical_overlap_observed(
         return 0.0
 
     dot_product = (Y_teacher_obs.flatten() * Y_student_obs.flatten()).sum()
-    return float(dot_product / norm_teacher_sq)
+    return float(dot_product.abs() / (norm_teacher_sq + 1e-12))
 
 
 @torch.no_grad()
@@ -164,11 +153,8 @@ def compute_qy_split(
     y_s_flat = Y_student.flatten()
     y_t_flat = Y_teacher.flatten()
 
-    # Full Q_Y
-    Q_Y_full = float(
-        (y_s_flat * y_t_flat).sum() /
-        (y_s_flat.norm() * y_t_flat.norm() + 1e-12)
-    )
+    norm_teacher_sq = (y_t_flat ** 2).sum()
+    Q_Y_full = 0.0 if norm_teacher_sq < 1e-12 else float((y_s_flat * y_t_flat).sum().abs() / (norm_teacher_sq + 1e-12))
 
     return {
         'Q_Y_observed': compute_qy_observed(Y_student, Y_teacher, mask),

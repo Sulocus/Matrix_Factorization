@@ -30,8 +30,19 @@ def pack_tensor_parallel_metrics(result: Dict[str, Any], local_idx: int) -> Dict
         metrics["Q_Y_observed_mean"] = result["Q_Y_observed"][local_idx]
     if "Q_Y_observed_std" in result:
         metrics["Q_Y_observed_std"] = result["Q_Y_observed_std"][local_idx]
-    if "physical_overlap" in result:
-        metrics["physical_overlap_Y_mean"] = result["physical_overlap"][local_idx]
+    if "Q_Y_unobserved" in result:
+        metrics["Q_Y_unobserved_mean"] = result["Q_Y_unobserved"][local_idx]
+    if "Q_Y_unobserved_std" in result:
+        metrics["Q_Y_unobserved_std"] = result["Q_Y_unobserved_std"][local_idx]
+    if "Q_N" in result:
+        metrics["Q_N_mean"] = result["Q_N"][local_idx]
+    if "Q_N_std" in result:
+        metrics["Q_N_std"] = result["Q_N_std"][local_idx]
+    for key, values in result.items():
+        if key.startswith("Q_N_mode") and not key.endswith("_std"):
+            metrics[f"{key}_mean"] = values[local_idx]
+        elif key.startswith("Q_N_mode") and key.endswith("_std"):
+            metrics[key] = values[local_idx]
     if "overlap_matrices" in result:
         matrix = result["overlap_matrices"][local_idx]
         metrics["overlap_matrix"] = matrix.tolist() if hasattr(matrix, "tolist") else matrix

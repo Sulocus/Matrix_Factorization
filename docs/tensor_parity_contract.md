@@ -83,7 +83,7 @@ batching semantics
 
 `get_tensor_parity_report()` 会从 `AlgorithmSpec` 自动生成当前 gap report。当前已知 contract-level gap 包括：
 
-- serial 缺少 `tensor.full.Q_Y` 和 `tensor.physical_overlap_Y`。
+- serial 缺少 `tensor.full.Q_Y`、`tensor.unobserved.Q_Y` 和完整 heldout measurement projection。
 - parallel 使用 `tensor_supergraph`，serial 使用 `tensor_hypergraph`。
 - 两者虽然都已经返回正式 metrics-only `AlgorithmResult`，但 result contract 仍标记为 `legacy_tensor_metrics_only`，表示它们还没有统一暴露 tensor factors、variance state 和完整 artifact schema。
 - parallel 默认 seed policy 仍是 legacy batch-sensitive；`partition_invariant` 是 opt-in 执行策略，不代表 serial/parallel 随机流已经统一。

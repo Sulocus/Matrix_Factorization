@@ -308,7 +308,7 @@ def test_resume_partial_batch_runs_only_remaining_alphas(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runner,
         "_compute_metrics",
-        lambda **kwargs: {"Q_Y_mean": 0.5, "MSE": 0.5},
+        lambda **kwargs: {"Q_Y_mean": 0.5, "Q_W_mean": 0.5},
     )
 
     first_alpha = float(config.scan.values[0])

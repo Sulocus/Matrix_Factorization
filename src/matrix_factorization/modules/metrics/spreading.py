@@ -2,10 +2,9 @@
 Evaluation metrics for random spreading model.
 
 Key difference from standard metrics:
-- Q_Y must use the same F coefficients for both teacher and student
-- Otherwise, even perfect W, X recovery gives Q_Y << 1
-
-Q_W, Q_X, Q_W', Q_X' are unchanged (Gram matrix comparisons).
+- Q_Y uses the same F coefficients for both teacher and student.
+- Formal Q_Y is absolute projection, not cosine or reconstruction error.
+- Q_W/Q_X are coordinate projection overlaps; Gram-root metrics are diagnostics.
 """
 
 from typing import Dict, TYPE_CHECKING
@@ -15,6 +14,75 @@ from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
 
 if TYPE_CHECKING:
     from ..teachers.random_spreading import SpreadingDataParallel
+
+
+@torch.no_grad()
+def _projection_abs_values(student: torch.Tensor, teacher: torch.Tensor) -> torch.Tensor:
+    norm_teacher_sq = (teacher.flatten() ** 2).sum()
+    if float(norm_teacher_sq.abs().item()) < 1e-12:
+        return torch.zeros((), device=student.device, dtype=torch.float32)
+    return ((student.flatten() * teacher.flatten()).sum().abs() / (norm_teacher_sq + 1e-12)).float()
+
+
+@torch.no_grad()
+def _deterministic_heldout_edges(
+    *,
+    N1: int,
+    N2: int,
+    observed_i: torch.Tensor,
+    observed_j: torch.Tensor,
+    count: int,
+    seed: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample deterministic heldout matrix edges outside the observed set."""
+    total = int(N1) * int(N2)
+    if count <= 0 or total <= 0:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return empty, empty
+
+    observed_keys = (observed_i.long() * int(N2) + observed_j.long()).unique()
+    available = max(0, total - int(observed_keys.numel()))
+    target = min(int(count), available)
+    if target <= 0:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return empty, empty
+
+    gen = torch.Generator(device=device).manual_seed(int(seed))
+    selected: list[torch.Tensor] = []
+    selected_count = 0
+    attempts = 0
+    while selected_count < target and attempts < 32:
+        attempts += 1
+        draw = max(64, 3 * (target - selected_count))
+        candidates = torch.randint(0, total, (draw,), generator=gen, device=device)
+        mask = ~torch.isin(candidates, observed_keys)
+        if selected:
+            mask &= ~torch.isin(candidates, torch.cat(selected))
+        unique_candidates = candidates[mask].unique()
+        if unique_candidates.numel() == 0:
+            continue
+        take = unique_candidates[: target - selected_count]
+        selected.append(take)
+        selected_count += int(take.numel())
+
+    if selected_count < target:
+        # Deterministic fallback for dense regimes where rejection sampling stalls.
+        all_keys = torch.arange(total, device=device)
+        mask = ~torch.isin(all_keys, observed_keys)
+        if selected:
+            mask &= ~torch.isin(all_keys, torch.cat(selected))
+        fallback = all_keys[mask][: target - selected_count]
+        if fallback.numel() > 0:
+            selected.append(fallback)
+            selected_count += int(fallback.numel())
+
+    if not selected:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return empty, empty
+
+    keys = torch.cat(selected)[:target].long()
+    return keys // int(N2), keys % int(N2)
 
 
 @torch.no_grad()
@@ -29,7 +97,7 @@ def compute_qy_spreading(
     Both teacher Y and student Y are computed at observed positions
     using the SAME F coefficients. This ensures fair comparison.
 
-    Q_Y = cos(Y_student, Y_teacher) = dot / (||Y_s|| × ||Y_t||)
+    Q_Y = |<Y_student, Y_teacher>| / <Y_teacher, Y_teacher>
 
     Args:
         W_student: (N1, M) or (S, N1, M) student W matrix
@@ -37,7 +105,7 @@ def compute_qy_spreading(
         spreading_data: SpreadingData with F and teacher Y_values
 
     Returns:
-        Cosine similarity in [0, 1] range (approximately)
+        Absolute projection overlap, not clipped.
 
     Note:
         If W_student has batch dimension, returns mean Q_Y across samples.
@@ -65,12 +133,7 @@ def compute_qy_spreading(
 
     Y_teacher_values = spreading_data.Y_values
 
-    # Cosine similarity
-    dot = (Y_student_values * Y_teacher_values).sum()
-    norm_s = Y_student_values.norm()
-    norm_t = Y_teacher_values.norm()
-
-    return float(dot / (norm_s * norm_t + 1e-12))
+    return float(_projection_abs_values(Y_student_values, Y_teacher_values))
 
 
 @torch.no_grad()
@@ -101,10 +164,7 @@ def compute_physical_overlap_spreading(
 
     Y_teacher_values = spreading_data.Y_values
 
-    dot = (Y_student_values * Y_teacher_values).sum()
-    norm_t_sq = (Y_teacher_values ** 2).sum()
-
-    return float(dot / (norm_t_sq + 1e-12))
+    return float(_projection_abs_values(Y_student_values, Y_teacher_values))
 
 
 @torch.no_grad()
@@ -162,10 +222,9 @@ def compute_all_metrics_spreading(
     Compute all metrics for random spreading model.
 
     Includes:
-    - Q_Y: Y-space overlap (using spreading-aware computation)
-    - Q_W, Q_X: Gram matrix cosine similarity
-    - Q_W', Q_X': Normalized Gram overlap [0, 1]
-    - MSE: Mean squared error at observed positions
+    - Q_Y: F-aware projection overlap
+    - Q_W, Q_X: coordinate projection overlap
+    - Q_W_GRAM_ROOT, Q_X_GRAM_ROOT: Gram-root diagnostics
 
     Args:
         W_student: (N1, M) or (S, N1, M) student W
@@ -177,7 +236,7 @@ def compute_all_metrics_spreading(
     Returns:
         Dictionary with all metrics
     """
-    from .overlap import compute_cosine_similarity, gram_overlap_normalized
+    from .overlap import gram_overlap_root, projection_abs
 
     results = {}
 
@@ -189,18 +248,14 @@ def compute_all_metrics_spreading(
         W_s = W_student
         X_s = X_student
 
-    # Standard Gram overlaps (rotation-invariant)
-    results['Q_W'] = compute_cosine_similarity(W_s, W_teacher, use_left=True)
-    results['Q_X'] = compute_cosine_similarity(X_s, X_teacher, use_left=False)
-    results['Q_W_prime'] = gram_overlap_normalized(W_s, W_teacher, use_left=True)
-    results['Q_X_prime'] = gram_overlap_normalized(X_s, X_teacher, use_left=False)
+    results['Q_W'] = projection_abs(W_s, W_teacher)
+    results['Q_X'] = projection_abs(X_s, X_teacher)
+    results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_s, W_teacher, use_left=True)
+    results['Q_X_GRAM_ROOT'] = gram_overlap_root(X_s, X_teacher, use_left=False)
 
     # Spreading-aware Q_Y
     results['Q_Y'] = compute_qy_spreading(W_student, X_student, spreading_data)
-    results['physical_overlap_Y'] = compute_physical_overlap_spreading(W_student, X_student, spreading_data)
-
-    # MSE
-    results['MSE'] = compute_mse_spreading(W_student, X_student, spreading_data)
+    results['Q_Y_observed'] = results['Q_Y']
 
     return results
 
@@ -225,7 +280,7 @@ def compute_all_metrics_spreading_parallel(
         Dictionary of metrics averaged across samples.
         If target_alpha_idx is set, tensors will have size (1,) instead of (A,).
     """
-    from .overlap import compute_cosine_similarity, gram_overlap_normalized
+    from .overlap import compute_cosine_similarity, gram_overlap_normalized, gram_overlap_root, projection_abs
     from ..teachers.random_spreading import compute_sparse_Y
 
     S = W_students.shape[0]
@@ -254,23 +309,14 @@ def compute_all_metrics_spreading_parallel(
 
     # Initialize result tensors
     Q_Y_all = torch.zeros(S, output_A, device=device)
-    Physical_Y_all = torch.zeros(S, output_A, device=device)
     Q_W_all = torch.zeros(S, output_A, device=device)
     Q_X_all = torch.zeros(S, output_A, device=device)
-    Q_W_prime_all = torch.zeros(S, output_A, device=device)
-    Q_X_prime_all = torch.zeros(S, output_A, device=device)
-    Physical_W_all = torch.zeros(S, output_A, device=device)
-    Physical_X_all = torch.zeros(S, output_A, device=device)
+    Q_W_gram_root_all = torch.zeros(S, output_A, device=device)
+    Q_X_gram_root_all = torch.zeros(S, output_A, device=device)
     
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
-    Q_Y_total_all = torch.zeros(S, output_A, device=device)
-    Physical_Y_total_all = torch.zeros(S, output_A, device=device)
-    MSE_all = torch.zeros(S, output_A, device=device)
-
-    # 计算教师的完整 Y 矩阵（标准乘法，F=1）
-    Y_teacher_full = W_teacher @ X_teacher  # (N1, N2)
-    y_t_sq = Y_teacher_full ** 2 + 1e-12
+    Q_Y_full_all = torch.zeros(S, output_A, device=device)
 
     for s in range(S):
         # Pre-calculate indices for this sample
@@ -301,65 +347,44 @@ def compute_all_metrics_spreading_parallel(
                 W_s, X_s, F_current, i_current.long(), j_current.long()
             )
             
-            # Cosine Q_Y (Observed)
-            dot = (Y_student_obs * Y_teacher_obs).sum()
-            norm_s = Y_student_obs.norm()
-            norm_t = Y_teacher_obs.norm()
-            qy_obs = dot / (norm_s * norm_t + 1e-12)
-            
+            qy_obs = _projection_abs_values(Y_student_obs, Y_teacher_obs)
             Q_Y_observed_all[s, out_idx] = qy_obs
-            
-            # Physical Overlap (Observed) - Not fully correct for spreading but kept for compat
-            norm_t_sq_obs = (Y_teacher_obs ** 2).sum()
-            Physical_Y_all[s, out_idx] = dot / (norm_t_sq_obs + 1e-12)
 
             # --- 2. Overlap Metrics (Q_W, Q_X, etc) ---
-            Q_W_all[s, out_idx] = compute_cosine_similarity(W_s, W_teacher, use_left=True)
-            Q_X_all[s, out_idx] = compute_cosine_similarity(X_s, X_teacher, use_left=False)
-            Q_W_prime_all[s, out_idx] = gram_overlap_normalized(W_s, W_teacher, use_left=True)
-            Q_X_prime_all[s, out_idx] = gram_overlap_normalized(X_s, X_teacher, use_left=False)
-            
-            # Physical Overlap (Projection coefficient: <A,B> / ||B||^2)
-            w_dot = (W_s * W_teacher).sum()
-            w_norm_sq = (W_teacher ** 2).sum() + 1e-12
-            Physical_W_all[s, out_idx] = w_dot.abs() / w_norm_sq  # abs for sign ambiguity
-            
-            x_dot = (X_s * X_teacher).sum()
-            x_norm_sq = (X_teacher ** 2).sum() + 1e-12
-            Physical_X_all[s, out_idx] = x_dot.abs() / x_norm_sq
+            Q_W_all[s, out_idx] = projection_abs(W_s, W_teacher)
+            Q_X_all[s, out_idx] = projection_abs(X_s, X_teacher)
+            Q_W_gram_root_all[s, out_idx] = gram_overlap_root(W_s, W_teacher, use_left=True)
+            Q_X_gram_root_all[s, out_idx] = gram_overlap_root(X_s, X_teacher, use_left=False)
 
-            # --- 3. Full Matrix Metrics (Q_Y_total, Physical_Total, Unobserved) ---
-            # Student full Y
-            Y_student_full = W_s @ X_s
-            
-            # a) Full Matrix Cosine (Q_Y_total)
-            y_t_flat = Y_teacher_full.flatten()
-            y_s_flat = Y_student_full.flatten()
-            dot_full = (y_t_flat * y_s_flat).sum()
-                
-            Q_Y_total_all[s, out_idx] = dot_full / (y_t_flat.norm() * y_s_flat.norm() + 1e-12)
-            
-            # b) Physical Overlap Mean (average of point-wise overlaps)
-            overlap_pointwise = (Y_student_full * Y_teacher_full) / y_t_sq
-            Physical_Y_total_all[s, out_idx] = overlap_pointwise.mean()
-
-            # c) MSE
-            MSE_all[s, out_idx] = (y_t_flat - y_s_flat).pow(2).mean()
-            
-            # c) Unobserved
-            # Create mask for observed
-            N1, N2 = Y_teacher_full.shape
-            observed_mask = torch.zeros(N1, N2, dtype=torch.bool, device=device)
-            observed_mask[i_current.long(), j_current.long()] = True 
-            
-            y_t_unobs = Y_teacher_full[~observed_mask]
-            y_s_unobs = Y_student_full[~observed_mask]
-            
-            if y_t_unobs.numel() > 0:
-                dot_u = (y_t_unobs * y_s_unobs).sum()
-                Q_Y_unobserved_all[s, out_idx] = dot_u / (y_t_unobs.norm() * y_s_unobs.norm() + 1e-12)
+            # --- 3. Heldout F-aware measurement projection ---
+            N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
+            h_i, h_j = _deterministic_heldout_edges(
+                N1=N1,
+                N2=N2,
+                observed_i=i_current.long(),
+                observed_j=j_current.long(),
+                count=int(C_k),
+                seed=int(spreading_data.supergraph.seeds[s].item()) + 7919 * (int(a) + 1),
+                device=device,
+            )
+            if h_i.numel() > 0:
+                gen = torch.Generator(device=device).manual_seed(
+                    int(spreading_data.supergraph.seeds[s].item()) + 104729 * (int(a) + 1)
+                )
+                if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian":
+                    F_holdout = torch.randn(h_i.numel(), spreading_data.M, generator=gen, device=device)
+                else:
+                    F_holdout = (torch.randint(0, 2, (h_i.numel(), spreading_data.M), generator=gen, device=device, dtype=torch.int8) * 2 - 1).float()
+                Y_teacher_holdout = compute_sparse_Y(W_teacher, X_teacher, F_holdout, h_i.long(), h_j.long())
+                Y_student_holdout = compute_sparse_Y(W_s, X_s, F_holdout, h_i.long(), h_j.long())
+                Q_Y_unobserved_all[s, out_idx] = _projection_abs_values(Y_student_holdout, Y_teacher_holdout)
+                Q_Y_full_all[s, out_idx] = _projection_abs_values(
+                    torch.cat([Y_student_obs.flatten(), Y_student_holdout.flatten()]),
+                    torch.cat([Y_teacher_obs.flatten(), Y_teacher_holdout.flatten()]),
+                )
             else:
-                Q_Y_unobserved_all[s, out_idx] = 1.0
+                Q_Y_unobserved_all[s, out_idx] = 0.0
+                Q_Y_full_all[s, out_idx] = qy_obs
 
     # ===== Replica metrics (student-student) =====
     Q_W_replica_all = torch.zeros(output_A, device=device)
@@ -388,28 +413,20 @@ def compute_all_metrics_spreading_parallel(
 
     # Aggregate across samples
     results = {
-        'Q_Y_mean': Q_Y_total_all.mean(dim=0),  # Full Cosine
-        'Q_Y_std': Q_Y_total_all.std(dim=0),
+        'Q_Y_mean': Q_Y_full_all.mean(dim=0),
+        'Q_Y_std': Q_Y_full_all.std(dim=0),
         'Q_Y_observed_mean': Q_Y_observed_all.mean(dim=0),
         'Q_Y_observed_std': Q_Y_observed_all.std(dim=0),
         'Q_Y_unobserved_mean': Q_Y_unobserved_all.mean(dim=0),
         'Q_Y_unobserved_std': Q_Y_unobserved_all.std(dim=0),
-        'physical_overlap_Y_mean': Physical_Y_total_all.mean(dim=0),
-        'physical_overlap_Y_std': Physical_Y_total_all.std(dim=0),
         'Q_W_mean': Q_W_all.mean(dim=0),
         'Q_W_std': Q_W_all.std(dim=0),
         'Q_X_mean': Q_X_all.mean(dim=0),
         'Q_X_std': Q_X_all.std(dim=0),
-        'Q_W_prime_mean': Q_W_prime_all.mean(dim=0),
-        'Q_W_prime_std': Q_W_prime_all.std(dim=0),
-        'Q_X_prime_mean': Q_X_prime_all.mean(dim=0),
-        'Q_X_prime_std': Q_X_prime_all.std(dim=0),
-        'physical_overlap_W_mean': Physical_W_all.mean(dim=0),
-        'physical_overlap_W_std': Physical_W_all.std(dim=0),
-        'physical_overlap_X_mean': Physical_X_all.mean(dim=0),
-        'physical_overlap_X_std': Physical_X_all.std(dim=0),
-        'MSE': MSE_all.mean(dim=0),
-        'MSE_std': MSE_all.std(dim=0),
+        'Q_W_GRAM_ROOT_mean': Q_W_gram_root_all.mean(dim=0),
+        'Q_W_GRAM_ROOT_std': Q_W_gram_root_all.std(dim=0),
+        'Q_X_GRAM_ROOT_mean': Q_X_gram_root_all.mean(dim=0),
+        'Q_X_GRAM_ROOT_std': Q_X_gram_root_all.std(dim=0),
         'Q_W_replica_mean': Q_W_replica_all,
         'Q_X_replica_mean': Q_X_replica_all,
         'Q_W_prime_replica_mean': Q_W_prime_replica_all,

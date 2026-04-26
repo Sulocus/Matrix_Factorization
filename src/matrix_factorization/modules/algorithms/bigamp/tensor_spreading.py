@@ -29,6 +29,7 @@ from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_obser
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.modules.metrics.tensor_metrics import compute_tensor_factor_projection_overlaps
 
 
 @dataclass
@@ -218,6 +219,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Progress is tracked by runner, no print needed
             
             alpha_q_y_list = []
+            alpha_qn_list = []
+            alpha_qn_modes = [[] for _ in range(self.order)]
             
             # TODO: Consider reusing hypergraph for samples (resample_mask=False case)
             
@@ -230,13 +233,31 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 )
                 
                 alpha_q_y_list.append(result['Q_Y'])
+                if 'Q_N' in result:
+                    alpha_qn_list.append(result['Q_N'])
+                for d in range(self.order):
+                    key = f'Q_N_mode{d}'
+                    if key in result:
+                        alpha_qn_modes[d].append(result[key])
                 completed_steps += self.max_steps
             
             # Store aggregated metrics per alpha
+            mean_qy = sum(alpha_q_y_list) / len(alpha_q_y_list)
             self._batch_metrics[alpha] = {
-                'Q_Y_mean': sum(alpha_q_y_list) / len(alpha_q_y_list),
-                'Q_Y_std': (sum((q - sum(alpha_q_y_list)/len(alpha_q_y_list))**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
+                'Q_Y_mean': mean_qy,
+                'Q_Y_observed_mean': mean_qy,
+                'Q_Y_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
+                'Q_Y_observed_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
             }
+            if alpha_qn_list:
+                mean_qn = sum(alpha_qn_list) / len(alpha_qn_list)
+                self._batch_metrics[alpha]['Q_N_mean'] = mean_qn
+                self._batch_metrics[alpha]['Q_N_std'] = (sum((q - mean_qn)**2 for q in alpha_qn_list) / max(1, len(alpha_qn_list)-1)) ** 0.5 if len(alpha_qn_list) > 1 else 0.0
+            for d, values in enumerate(alpha_qn_modes):
+                if values:
+                    mean_mode = sum(values) / len(values)
+                    self._batch_metrics[alpha][f'Q_N_mode{d}_mean'] = mean_mode
+                    self._batch_metrics[alpha][f'Q_N_mode{d}_std'] = (sum((q - mean_mode)**2 for q in values) / max(1, len(values)-1)) ** 0.5 if len(values) > 1 else 0.0
 
             # Metrics stored for runner retrieval
         
@@ -454,23 +475,25 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                     mse = ((Y - Y_pred) ** 2).mean().item()
                 print(f"  Step {step + 1}/{self.max_steps}: MSE = {mse:.6f}")
         
-        # Compute final metrics
+        # Compute final projection-first metrics
         Y_student = forward_pass_tensor(factors, F, hg.indices)
-        mse = ((Y - Y_student) ** 2).mean().item()
-        
-        if Y.numel() > 1:
-            y_var = Y.var().item() + 1e-10
+        norm_teacher_sq = (Y.flatten() ** 2).sum()
+        if float(norm_teacher_sq.abs().item()) < 1e-12:
+            Q_Y = 0.0
         else:
-            y_var = Y.abs().mean().item()**2 + 1e-10
-            
-        Q_Y = max(0.0, 1.0 - mse / y_var)
+            Q_Y = float((Y_student.flatten() * Y.flatten()).sum().abs() / (norm_teacher_sq + 1e-12))
+        qn_modes = compute_tensor_factor_projection_overlaps(teacher_factors, factors)
+        Q_N = sum(qn_modes) / len(qn_modes)
         
-        return {
+        result = {
             'Q_Y': Q_Y,
-            'MSE': mse,
+            'Q_N': Q_N,
             'alpha': alpha,
             'C': hg.C,
         }
+        for d, value in enumerate(qn_modes):
+            result[f'Q_N_mode{d}'] = value
+        return result
     
     # =========================================================================
     # Legacy Interface (for backward compatibility)

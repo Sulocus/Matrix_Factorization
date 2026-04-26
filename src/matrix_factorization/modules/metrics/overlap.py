@@ -8,6 +8,25 @@ import torch
 
 
 @torch.no_grad()
+def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = 1e-12) -> float:
+    """
+    Absolute projection overlap used by the formal projection-first metrics.
+
+    Q = |<student, teacher>| / <teacher, teacher>
+
+    The value is not clipped.  Values above 1 are preserved because they carry
+    scale information rather than being a numerical error.
+    """
+    student_flat = student.flatten()
+    teacher_flat = teacher.flatten()
+    norm_teacher_sq = (teacher_flat ** 2).sum()
+    if float(norm_teacher_sq.abs().item()) < eps:
+        return 0.0
+    dot = (student_flat * teacher_flat).sum().abs()
+    return float(dot / (norm_teacher_sq + eps))
+
+
+@torch.no_grad()
 def compute_cosine_similarity(A: torch.Tensor, B: torch.Tensor, use_left: bool = True) -> float:
     """
     Compute Gram matrix overlap using cosine similarity.
@@ -95,9 +114,15 @@ def gram_overlap_normalized(A: torch.Tensor, B: torch.Tensor, use_left: bool = T
 
 
 @torch.no_grad()
+def gram_overlap_root(A: torch.Tensor, B: torch.Tensor, use_left: bool = True) -> float:
+    """Square root of the baseline-corrected Gram overlap diagnostic."""
+    return float(np.sqrt(max(0.0, gram_overlap_normalized(A, B, use_left=use_left))))
+
+
+@torch.no_grad()
 def compute_qy(Y_student: torch.Tensor, Y_teacher: torch.Tensor) -> float:
     """
-    Compute Y-space overlap (rotationally invariant).
+    Legacy Y-space cosine similarity.
 
     Args:
         Y_student: Student's Y = W @ X
@@ -144,7 +169,7 @@ def compute_all_metrics(
         mask: Observation mask (required for Q_Y_unobserved/Q_Y_observed)
         metrics_to_compute: List of metric names to compute.
             If None, computes all standard metrics.
-            Valid names: Q_W, Q_X, Q_W_prime, Q_X_prime, Q_Y, Gen_Error,
+            Valid names: Q_W, Q_X, Q_W_GRAM_ROOT, Q_X_GRAM_ROOT, Q_Y,
                         Q_Y_unobserved, Q_Y_observed
 
     Returns:
@@ -152,7 +177,7 @@ def compute_all_metrics(
     """
     # Default: all standard metrics
     if metrics_to_compute is None:
-        metrics_to_compute = ['Q_W', 'Q_X', 'Q_W_prime', 'Q_X_prime', 'Q_Y', 'Gen_Error']
+        metrics_to_compute = ['Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT', 'Q_Y']
 
     if Y_teacher is None:
         Y_teacher = W_teacher @ X_teacher
@@ -163,25 +188,23 @@ def compute_all_metrics(
 
     # Compute requested metrics dynamically
     if 'Q_W' in metrics_to_compute:
-        results['Q_W'] = compute_cosine_similarity(W_student, W_teacher, use_left=True)
+        results['Q_W'] = projection_abs(W_student, W_teacher)
 
     if 'Q_X' in metrics_to_compute:
-        results['Q_X'] = compute_cosine_similarity(X_student, X_teacher, use_left=False)
+        results['Q_X'] = projection_abs(X_student, X_teacher)
 
-    if 'Q_W_prime' in metrics_to_compute:
-        results['Q_W_prime'] = gram_overlap_normalized(W_student, W_teacher, use_left=True)
+    if 'Q_W_GRAM_ROOT' in metrics_to_compute:
+        results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_student, W_teacher, use_left=True)
 
-    if 'Q_X_prime' in metrics_to_compute:
-        results['Q_X_prime'] = gram_overlap_normalized(X_student, X_teacher, use_left=False)
+    if 'Q_X_GRAM_ROOT' in metrics_to_compute:
+        results['Q_X_GRAM_ROOT'] = gram_overlap_root(X_student, X_teacher, use_left=False)
 
     if 'Q_Y' in metrics_to_compute:
-        results['Q_Y'] = compute_qy(Y_student, Y_teacher)
+        results['Q_Y'] = projection_abs(Y_student, Y_teacher)
 
     # New Physical Overlap Metrics
-    if 'physical_overlap_Y' in metrics_to_compute or 'Q_Y' in metrics_to_compute:
-        # We compute this when Q_Y is requested too, or if explicitly requested
-        # For Y, absolute=False
-        results['physical_overlap_Y'] = compute_physical_overlap(Y_student, Y_teacher, absolute=False)
+    if 'physical_overlap_Y' in metrics_to_compute:
+        results['physical_overlap_Y'] = projection_abs(Y_student, Y_teacher)
 
     if 'physical_overlap_W' in metrics_to_compute:
         # For W, absolute=True (sign ambiguity)
@@ -224,7 +247,7 @@ def _compute_qy_masked(
     observed: bool = False,
 ) -> float:
     """
-    Compute Q_Y on observed or unobserved positions.
+    Compute projection-first Q_Y on observed or unobserved positions.
 
     Args:
         Y_student: Student reconstruction
@@ -233,7 +256,7 @@ def _compute_qy_masked(
         observed: If True, compute on observed positions; else unobserved
 
     Returns:
-        Cosine similarity on the selected positions
+        Absolute projection overlap on the selected positions
     """
     # Handle batch dimension in mask
     if mask.dim() == 3:
@@ -249,13 +272,9 @@ def _compute_qy_masked(
     y_t = Y_teacher[selection_mask].flatten()
 
     if y_s.numel() == 0:
-        return 1.0  # 完全观测时，unobserved 位置为空，返回 1.0 表示完美泛化
+        return 0.0
 
-    dot = (y_s * y_t).sum()
-    norm_s = y_s.norm()
-    norm_t = y_t.norm()
-
-    return float(dot / (norm_s * norm_t + 1e-12))
+    return projection_abs(y_s, y_t)
 
 
 @torch.no_grad()
@@ -289,12 +308,9 @@ def _compute_physical_overlap_masked(
     y_t = Y_teacher[selection_mask].flatten()
 
     if y_s.numel() == 0:
-        return 1.0  # 完全观测时，unobserved 位置为空，返回 1.0 表示完美泛化
+        return 0.0
 
-    dot = (y_s * y_t).sum()
-    norm_true_sq = (y_t ** 2).sum()
-
-    return float(dot / (norm_true_sq + 1e-12))
+    return projection_abs(y_s, y_t)
 
 
 @torch.no_grad()
@@ -443,7 +459,6 @@ def get_metric_function(name: str) -> callable:
     elif 'physical' in name:
         return compute_physical_overlap
     elif 'qy' in name:
-        return compute_qy
+        return projection_abs
     else:
         raise ValueError(f"Unknown metric function: {name}")
-

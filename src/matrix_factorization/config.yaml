@@ -146,7 +146,7 @@ output:
   # Heatmap 设置
   enable_heatmap: true     # 是否生成 Heatmap (Replica Overlap)
   rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
-  heatmap_metric: "Q_Y"     # 绘制指标: "Q_Y" (Tensor Overlap) 或 "Q_W" (Factor Gram Overlap)
+  heatmap_metric: "Q_Y"     # 绘制指标: "Q_Y" (projection overlap) 或 "Q_W" (Factor Gram diagnostic)
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
   
   # =============================================================================
@@ -155,14 +155,12 @@ output:
   # 格式: 类别.指标[:R]，其中 :R = replica (学生-学生 overlap)
   #
   # 指标类别：
-  #   A (Cosine):     A.y=Q_Y  A.w=Q_W  A.x=Q_X
-  #   B (Normalized): B.w=Q_W' B.x=Q_X'
+  #   A (Projection): A.y=Q_Y  A.w=Q_W  A.x=Q_X
+  #   B (Gram root):  B.w=Q_W_GRAM_ROOT  B.x=Q_X_GRAM_ROOT
   #   C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
-  #   D (Physical):   D.y D.w D.x
-  #   E (Other):      E.e=Gen_Error (不支持:R)
+  #   N (Tensor):     N.n=Q_N
   #
   # 示例: curves: [A.y, A.w, A.y:R] → Q_Y, Q_W, Q_Y(replica) 画同一张图
   
   plots:
-    - curves: [A.y]  # Q_Y + 归一化 overlap
-  #  - curves: [D.y]       # Physical overlap Y
+    - curves: [A.y]  # Q_Y projection

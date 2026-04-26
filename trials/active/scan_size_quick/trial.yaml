@@ -8,7 +8,6 @@ artifact_policy: ignored_workspace
 output_root: runs/trials/scan_size_quick
 expected_metrics:
   - Q_Y_mean
-  - MSE
 promotion_target:
   - scan framework
 notes: 两个小尺寸，每个尺寸一个 alpha 点。

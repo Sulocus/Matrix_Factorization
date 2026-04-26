@@ -59,10 +59,11 @@ def test_tensor_parity_report_records_current_contract_gaps():
 
     assert report["same_result_contract"] is True
     assert report["result_contracts"]["serial"] == "legacy_tensor_metrics_only"
-    assert report["shared_metrics"] == []
+    assert report["shared_metrics"] == ["tensor.factor.Q_N"]
     assert "tensor.serial_observed.Q_Y" in report["parallel_missing_serial_metrics"]
     assert "tensor.full.Q_Y" in report["serial_missing_parallel_metrics"]
     assert "tensor.observed.Q_Y" in report["serial_missing_parallel_metrics"]
+    assert "tensor.unobserved.Q_Y" in report["serial_missing_parallel_metrics"]
     assert "tensor_supergraph" in report["parallel_only_data_requirements"]
     assert report["parity_item_details"]["seed_partition"]["risk"] == "high"
     assert report["parity_item_details"]["batching_semantics"]["area"] == "resource"

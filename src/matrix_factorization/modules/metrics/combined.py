@@ -2,11 +2,10 @@
 Combined metrics calculator for flexible configuration.
 
 Supports selecting which metrics to compute:
-- Q_Y: Y-space overlap (rotationally invariant)
-- Q_W, Q_X: Factor overlaps (raw cosine)
-- Q_W', Q_X': Normalized factor overlaps
+- Q_Y: measurement projection overlap
+- Q_W, Q_X: coordinate projection overlaps
+- Q_W_GRAM_ROOT, Q_X_GRAM_ROOT: Gram-root diagnostics
 - Q_Y_unobserved: Q_Y on unobserved positions only
-- Gen_Error: Generalization error (MSE)
 - Replica: Pairwise replica overlaps
 
 This module enables LLM-driven configuration to select metrics
@@ -17,28 +16,21 @@ from typing import Dict, Any, List, Optional
 import torch
 
 from .overlap import (
-    compute_cosine_similarity,
-    gram_overlap_normalized,
-    compute_qy,
-    compute_generalization_error,
-    compute_physical_overlap,
+    gram_overlap_root,
+    projection_abs,
 )
 from .qy_unobserved import compute_qy_unobserved, compute_qy_split
 
 
 # Available metric keys
 ALL_METRICS = {
-    "Q_Y",           # Y-space overlap
-    "Q_W",           # W Gram cosine overlap
-    "Q_X",           # X Gram cosine overlap
-    "Q_W_prime",     # W Gram normalized overlap
-    "Q_X_prime",     # X Gram normalized overlap
+    "Q_Y",           # measurement projection
+    "Q_W",           # W coordinate projection
+    "Q_X",           # X coordinate projection
+    "Q_W_GRAM_ROOT", # W Gram-root diagnostic
+    "Q_X_GRAM_ROOT", # X Gram-root diagnostic
     "Q_Y_unobserved", # Q_Y on unobserved positions
     "Q_Y_observed",  # Q_Y on observed positions
-    "Gen_Error",     # Generalization error (MSE)
-    "physical_overlap_Y", # Physical overlap Y
-    "physical_overlap_W", # Physical overlap W
-    "physical_overlap_X", # Physical overlap X
 }
 
 # Metric aliases for natural language parsing
@@ -50,16 +42,11 @@ METRIC_ALIASES = {
     "q_w": "Q_W",
     "qx": "Q_X",
     "q_x": "Q_X",
-    "qw_prime": "Q_W_prime",
-    "qw'": "Q_W_prime",
-    "qx_prime": "Q_X_prime",
-    "qx'": "Q_X_prime",
-    "normalized": {"Q_W_prime", "Q_X_prime"},
+    "qw_gram_root": "Q_W_GRAM_ROOT",
+    "qx_gram_root": "Q_X_GRAM_ROOT",
+    "gram_root": {"Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"},
     "qy_unobs": "Q_Y_unobserved",
     "unobserved": "Q_Y_unobserved",
-    "generalization": "Gen_Error",
-    "mse": "Gen_Error",
-    "error": "Gen_Error",
 }
 
 
@@ -68,7 +55,7 @@ class CombinedMetrics:
     Flexible metrics calculator that computes selected metrics.
 
     Example configurations:
-    - {"metrics": ["Q_Y", "Q_W_prime", "Q_X_prime"]} -> Standard metrics
+    - {"metrics": ["Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"]} -> Standard metrics
     - {"metrics": ["Q_Y", "Q_Y_unobserved"]} -> Compare observed vs unobserved
     - {"metrics": "all"} -> All available metrics
 
@@ -89,7 +76,7 @@ class CombinedMetrics:
         """
         if metrics is None:
             # Default standard metrics
-            self.metrics = {"Q_Y", "Q_W_prime", "Q_X_prime", "Gen_Error"}
+            self.metrics = {"Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"}
         elif metrics == "all" or (isinstance(metrics, list) and "all" in metrics):
             self.metrics = ALL_METRICS.copy()
         else:
@@ -131,22 +118,19 @@ class CombinedMetrics:
 
         # Compute requested metrics
         if "Q_Y" in self.metrics:
-            results["Q_Y"] = compute_qy(Y_student, Y_teacher)
+            results["Q_Y"] = projection_abs(Y_student, Y_teacher)
 
         if "Q_W" in self.metrics:
-            results["Q_W"] = compute_cosine_similarity(W_student, W_teacher, use_left=True)
+            results["Q_W"] = projection_abs(W_student, W_teacher)
 
         if "Q_X" in self.metrics:
-            results["Q_X"] = compute_cosine_similarity(X_student, X_teacher, use_left=False)
+            results["Q_X"] = projection_abs(X_student, X_teacher)
 
-        if "Q_W_prime" in self.metrics:
-            results["Q_W_prime"] = gram_overlap_normalized(W_student, W_teacher, use_left=True)
+        if "Q_W_GRAM_ROOT" in self.metrics:
+            results["Q_W_GRAM_ROOT"] = gram_overlap_root(W_student, W_teacher, use_left=True)
 
-        if "Q_X_prime" in self.metrics:
-            results["Q_X_prime"] = gram_overlap_normalized(X_student, X_teacher, use_left=False)
-
-        if "Gen_Error" in self.metrics:
-            results["Gen_Error"] = compute_generalization_error(Y_student, Y_teacher)
+        if "Q_X_GRAM_ROOT" in self.metrics:
+            results["Q_X_GRAM_ROOT"] = gram_overlap_root(X_student, X_teacher, use_left=False)
 
         # Unobserved metrics require mask
         if mask is not None:
@@ -156,16 +140,6 @@ class CombinedMetrics:
             if "Q_Y_observed" in self.metrics:
                 split = compute_qy_split(Y_student, Y_teacher, mask)
                 results["Q_Y_observed"] = split["Q_Y_observed"]
-
-        # Physical overlaps
-        if "physical_overlap_Y" in self.metrics:
-            results["physical_overlap_Y"] = compute_physical_overlap(Y_student, Y_teacher, absolute=False)
-
-        if "physical_overlap_W" in self.metrics:
-            results["physical_overlap_W"] = compute_physical_overlap(W_student, W_teacher, absolute=True)
-
-        if "physical_overlap_X" in self.metrics:
-            results["physical_overlap_X"] = compute_physical_overlap(X_student, X_teacher, absolute=True)
 
         return results
 

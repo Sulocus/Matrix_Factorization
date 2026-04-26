@@ -1,91 +1,76 @@
-# SMF 指标定义文档
+# Metric Guide
 
-本文档定义了 SMF 系统中使用的所有指标及其物理意义。
+本文档记录当前 active path 的正式指标。旧结果中的 cosine `Q_Y`、`physical_overlap_*`、`MSE`、`Gen_Error` 和 `Q_*_prime` 只作为 legacy/debug 解释保留，不能和新 schema v3 的同名或近似名字直接比较。
 
----
+## Formal Projection Metrics
 
-## 余弦相似度指标 (Cosine Similarity)
+### `Q_Y`
 
-### Q_Y - Y 余弦相似度
-**公式**: `cos(Y_s, Y_t) = <Y_s, Y_t> / (||Y_s|| * ||Y_t||)`
+公式：
 
-**意义**: 测量学生矩阵 Y_student 与教师矩阵 Y_teacher 的方向相似度。
-- Q_Y = 1: 完美重建
-- Q_Y ≈ 0: 随机/正交
-- Q_Y = -1: 完全反向
+```text
+Q_Y = abs(<Y_student, Y_teacher>) / <Y_teacher, Y_teacher>
+```
 
-### Q_W - W Gram 余弦相似度
-**公式**: `cos(W_s @ W_s^T, W_t @ W_t^T)`
+规则：
 
-**意义**: 比较 W 的 Gram 矩阵（行-行协方差结构）。
-消除了 W 和 X 的内在置换对称性（gauge symmetry）。
+- 不做 cosine normalization。
+- 不裁切，大于 1 的值保留。
+- `Q_Y_mean / Q_Y_std` 的 `mean/std` 只是 sample 或 replica 统计后缀。
+- `Q_Y_observed` 表示 observed/training measurement set。
+- `Q_Y_unobserved` 表示 heldout 或 unobserved measurement set。
+- matrix、spreading、tensor 使用同一个物理概念，只是 measurement set 的生成方式不同。
 
-### Q_X - X Gram 余弦相似度
-**公式**: `cos(X_s^T @ X_s, X_t^T @ X_t)`
+### `Q_W` / `Q_X`
 
-**意义**: 比较 X 的 Gram 矩阵（列-列协方差结构）。
+公式：
 
----
+```text
+Q_W = abs(<W_student, W_teacher>) / <W_teacher, W_teacher>
+Q_X = abs(<X_student, X_teacher>) / <X_teacher, X_teacher>
+```
 
-## 归一化重叠 (Normalized Overlap)
+这是 matrix latent factor 的 coordinate projection overlap。它对 rotation/gauge/permutation 敏感，因此需要同时看 Gram-root diagnostic。
 
-### Q_W_prime, Q_X_prime
-**公式**: 在 [0, 1] 范围内的归一化版本
+### `Q_N`
 
-**意义**: 与 Q_W/Q_X 相同，但保证结果在 [0, 1] 区间。
+公式：
 
----
+```text
+Q_N_mode_d = abs(<N_student^(d), N_teacher^(d)>) / <N_teacher^(d), N_teacher^(d)>
+Q_N = mean_d Q_N_mode_d
+```
 
-## 观测/未观测边指标 (Observed/Unobserved)
+`Q_N` 是 tensor latent node/spin/factor overlap，对齐 matrix 的 `Q_W/Q_X`。
 
-### Q_Y_observed - 观测边余弦
-**公式**: 只在观测到的边位置计算 cos(Y_s, Y_t)
+## Formal Diagnostics
 
-**意义**: 测量**拟合能力**
-- 高 Q_Y_observed 但低 Q_Y_unobserved = 过拟合
-- 两者都高 = 真正学习
+### `Q_W_GRAM_ROOT` / `Q_X_GRAM_ROOT`
 
-### Q_Y_unobserved - 未观测边余弦
-**公式**: 只在未观测的边位置计算 cos(Y_s, Y_t)
+公式：
 
-**意义**: 测量**泛化能力/预测能力**
-- 这是判断是否发生相变的关键指标
-- 相变后 Q_Y_unobserved → 1
+```text
+Q_W_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(W), 0))
+Q_X_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
+```
 
----
+它们不是 coordinate projection，而是解决 matrix factor rotation/gauge 后更稳定的 learning diagnostic。
 
-## 物理重叠 (Physical Overlap)
+## Removed From Formal Metrics
 
-### physical_overlap_Y
-**公式**: `<Y_s, Y_t> / <Y_t, Y_t>`
+- `MSE`：只能作为 algorithm 内部 loss/debug，不进入 formal result metric。
+- `Gen_Error`：legacy alias，不进入 formal result metric。
+- `physical_overlap_Y/W/X`：旧 projection 名，已迁移到 `Q_Y/Q_W/Q_X`。
+- `Q_W_prime/Q_X_prime`：旧 baseline-corrected Gram 名，已迁移到 `Q_W_GRAM_ROOT/Q_X_GRAM_ROOT`。
+- `Q_Y_COS` 或旧 cosine `Q_Y`：legacy result 解释，不进入新 run formal schema。
 
-**意义**: Y_student 在 Y_teacher 方向上的投影系数（不归一化 Y_s）。
+## Result Schema
 
-### physical_overlap_W, physical_overlap_X
-**公式**: `|<W_s, W_t>| / <W_t, W_t>` （取绝对值处理符号对称性）
+新 run 的 `metrics.json.metric_schema.schema_version` 为 `3`，并包含：
 
-**意义**: 对应变量的投影系数。
+```text
+compatibility.projection_metric_migration = true
+compatibility.legacy_q_y_cosine_not_comparable = true
+```
 
----
-
-## 误差指标 (Error Metrics)
-
-### MSE - 均方误差
-**公式**: `||Y_s - Y_t||² / N`
-
-**意义**: 平均每个元素的平方误差。
-
-### Gen_Error - 泛化误差
-**意义**: 在未观测边上的预测误差。
-
----
-
-## 相变行为总结
-
-| 区域 | Q_Y_observed | Q_Y_unobserved | Q_W | 解释 |
-|------|--------------|----------------|-----|------|
-| α < α_c | 1.0 | ~0 | 低 | 过拟合 |
-| α ≈ α_c | ~1 | 增长中 | 增长中 | 临界区 |
-| α > α_c | 1.0 | 1.0 | ~1 | 相变成功 |
-
-其中 α_c 是相变临界点（对于 N=200, M=50，大约在 α ≈ 3.4）。
+因此旧 schema 中的 `Q_Y_mean` 不应被重解释成新 projection `Q_Y_mean`。

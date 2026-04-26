@@ -8,7 +8,6 @@ artifact_policy: ignored_workspace
 output_root: runs/trials/scan_steps_quick
 expected_metrics:
   - Q_Y_mean
-  - MSE
 promotion_target:
   - scan framework
 notes: 固定 alpha，扫描两个很小的 max_steps。

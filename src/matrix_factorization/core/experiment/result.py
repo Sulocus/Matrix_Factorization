@@ -527,7 +527,7 @@ class ExperimentResult:
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]
         self._write_json(path / 'metrics.json', {
-            "schema_version": 2,
+            "schema_version": 3,
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
             "contract": self.metadata.contract,
@@ -615,7 +615,7 @@ class ExperimentResult:
 
         if self.result_cube.artifacts:
             self._write_json(path / 'metrics.json', {
-                "schema_version": 2,
+                "schema_version": 3,
                 "experiment_id": self.experiment_id,
                 "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
                 "contract": self.metadata.contract,
@@ -651,15 +651,15 @@ class ExperimentResult:
             metric_keys = self._available_metric_keys()
             q_y_key = self._first_available_metric(
                 metric_keys,
-                ["Q_Y_mean", "Q_Y_observed_mean", "physical_overlap_Y_mean"],
+                ["Q_Y_mean", "Q_Y_observed_mean", "Q_Y_unobserved_mean"],
             )
             if q_y_key is None:
                 raise ValueError(
                     "scalar_curves output requires one of "
-                    "['Q_Y_mean', 'Q_Y_observed_mean', 'physical_overlap_Y_mean']; "
+                    "['Q_Y_mean', 'Q_Y_observed_mean', 'Q_Y_unobserved_mean']; "
                     f"available metrics: {sorted(metric_keys)}"
                 )
-            q_w_key = self._first_available_metric(metric_keys, ["Q_W_mean", "Q_W_prime_mean"])
+            q_w_key = self._first_available_metric(metric_keys, ["Q_W_mean", "Q_W_GRAM_ROOT_mean", "Q_N_mean"])
             q_y_means = self._metric_series(sorted_values, q_y_key)
             q_w_means = self._metric_series(sorted_values, q_w_key) if q_w_key else []
 
@@ -917,9 +917,11 @@ class ExperimentResult:
         return {
             "Q_Y_mean": "Q_Y",
             "Q_Y_observed_mean": "Q_Y observed",
-            "physical_overlap_Y_mean": "physical overlap Y",
+            "Q_Y_unobserved_mean": "Q_Y unobserved",
             "Q_W_mean": "Q_W",
-            "Q_W_prime_mean": "Q_W prime",
+            "Q_W_GRAM_ROOT_mean": "Q_W Gram root",
+            "Q_X_GRAM_ROOT_mean": "Q_X Gram root",
+            "Q_N_mean": "Q_N",
         }.get(metric_key, metric_key)
 
     @staticmethod

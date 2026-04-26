@@ -12,7 +12,6 @@ artifact_roots:
   - results/trials/matrix_bigamp_quick
 expected_metrics:
   - Q_Y_mean
-  - MSE
 promotion_target:
   - trial framework
 notes: 这是 Research Trial v1 的内置 quick trial，只验证小尺寸链路能真实运行。

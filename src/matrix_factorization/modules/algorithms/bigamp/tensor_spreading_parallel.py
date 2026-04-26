@@ -43,9 +43,9 @@ from .tensor_step_super import tensor_step_super, forward_pass_tensor_super
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
 from matrix_factorization.modules.metrics.tensor_metrics import (
-    compute_tensor_cosine,
     compute_factor_gram_overlap,
-    compute_tensor_physical_overlap
+    compute_tensor_projection_abs,
+    compute_tensor_factor_projection_overlaps,
 )
 
 
@@ -897,41 +897,70 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         # Z_hat: (A, S*C_max) -> (A, S, C_max)
         Z_hat_reshaped = Z_hat.reshape(A, S, C_max)
 
-        # Compute MSE per alpha, per sample
-        # Use alpha_mask to only count valid edges
+        # Compute formal observed Q_Y per alpha/sample as absolute projection
+        # on the training hyperedge measurements.
         alpha_mask_reshaped = supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_max)  # (A, S, C_max)
+        mask_float = alpha_mask_reshaped.float()
+        obs_dot = (Y_reshaped.unsqueeze(0) * Z_hat_reshaped * mask_float).sum(dim=2).abs()
+        obs_norm = ((Y_reshaped.unsqueeze(0) ** 2) * mask_float).sum(dim=2)
+        Q_Y_per_alpha_sample = torch.where(
+            obs_norm > 1e-12,
+            obs_dot / (obs_norm + 1e-12),
+            torch.zeros_like(obs_norm),
+        )
 
-        diff_sq = (Y_reshaped.unsqueeze(0) - Z_hat_reshaped) ** 2  # (A, S, C_max)
-        diff_sq_masked = diff_sq * alpha_mask_reshaped.float()
-
-        # Count valid edges per alpha
-        edge_counts = alpha_mask_reshaped.sum(dim=2).float()  # (A, S)
-        mse_per_alpha_sample = diff_sq_masked.sum(dim=2) / (edge_counts + 1e-10)  # (A, S)
-
-        # Compute variance of Y for normalization
-        y_var = Y_reshaped.var(dim=1, keepdim=True)  # (S, 1)
-        # Handle case where C_max=1 (var is NaN) or var=0
-        y_var = torch.nan_to_num(y_var, nan=1.0) + 1e-10
-
-        # DEBUG: Print Y stats (disabled)
-        # print(f"DEBUG Y_stats: Mean={Y_reshaped.mean().item():.6f}, Var_mean={y_var.mean().item():.6f}, Min={Y_reshaped.min().item():.6f}, Max={Y_reshaped.max().item():.6f}", flush=True)
-
-        # Q_Y per alpha, per sample
-        # FIX: At Alpha=0, edge_counts is 0, causing mse=0 and Q=1.0 (Artificial Perfection).
-        # We must mask this out: if edges=0, Q should be 0.0 (uninformed).
-        valid_mask = (edge_counts > 0.5).float()
-
-        # DEBUG: Check typical MSE vs Var (disabled)
-        # avg_mse = mse_per_alpha_sample.mean(dim=1)
-        # print(f"DEBUG MSE per alpha (first 5): {avg_mse[:5].tolist()}", flush=True)
-        # print(f"DEBUG Q_Y raw (first 5): {(1.0 - avg_mse[:5] / y_var.mean()).tolist()}", flush=True)
-
-        raw_q = 1.0 - mse_per_alpha_sample / y_var.T
-        Q_Y_per_alpha_sample = torch.clamp(raw_q * valid_mask, min=0.0)  # (A, S)
+        # Deterministic heldout F-aware measurements.  These measurements are
+        # generated after training and are not used by the AMP updates.
+        heldout_supergraph = create_tensor_supergraph(
+            self.dims,
+            alpha_values,
+            M,
+            S,
+            seed + 910_003,
+            device,
+            partition_invariant=self._uses_partition_invariant_seed_policy(),
+        )
+        heldout_superdata = create_tensor_superdata(
+            heldout_supergraph,
+            teacher_factors,
+            self.f_distribution,
+            seed + 911_021,
+            partition_invariant=self._uses_partition_invariant_seed_policy(),
+        )
+        F_holdout_flat, Y_holdout_flat = heldout_superdata.get_flat_tensors()
+        Z_holdout = forward_pass_tensor_super(
+            factors,
+            F_holdout_flat,
+            heldout_supergraph.get_offset_indices(),
+            S,
+            N_dims,
+        )
+        C_holdout_max = heldout_supergraph.C_max
+        Y_holdout_reshaped = Y_holdout_flat.reshape(S, C_holdout_max)
+        Z_holdout_reshaped = Z_holdout.reshape(A, S, C_holdout_max)
+        holdout_mask = heldout_supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_holdout_max).float()
+        holdout_dot = (Y_holdout_reshaped.unsqueeze(0) * Z_holdout_reshaped * holdout_mask).sum(dim=2).abs()
+        holdout_norm = ((Y_holdout_reshaped.unsqueeze(0) ** 2) * holdout_mask).sum(dim=2)
+        Q_Y_unobserved_sample = torch.where(
+            holdout_norm > 1e-12,
+            holdout_dot / (holdout_norm + 1e-12),
+            torch.zeros_like(holdout_norm),
+        )
+        full_dot = obs_dot + holdout_dot
+        full_norm = obs_norm + holdout_norm
+        Q_Y_full_sample = torch.where(
+            full_norm > 1e-12,
+            full_dot / (full_norm + 1e-12),
+            torch.zeros_like(full_norm),
+        )
 
         # Aggregate: mean and std over samples
-        Q_Y_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
-        Q_Y_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_observed_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
+        Q_Y_observed_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_unobserved_per_alpha = Q_Y_unobserved_sample.mean(dim=1).cpu().tolist()
+        Q_Y_unobserved_std_per_alpha = Q_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_full_per_alpha = Q_Y_full_sample.mean(dim=1).cpu().tolist()
+        Q_Y_full_std_per_alpha = Q_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
 
         # Reshape factors from (A, S*N_d, M) to (A, S, N_d, M)
         # We need access to individual samples for correct metrics.
@@ -948,34 +977,31 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             heatmap_metric_fn = compute_factor_gram_overlap
             heatmap_metric_code = "Q_W"
         else:
-            heatmap_metric_fn = compute_tensor_cosine
+            heatmap_metric_fn = compute_tensor_projection_abs
             heatmap_metric_code = "Q_Y"
 
-        # Full Tensor Metrics
-        Q_Y = []  # Mean Cosine Similarity of samples with Teacher
-        # We calculate standard deviation across replicas for RSB diagnostics.
-        Q_Y_list_std = []
-        physical_overlap = []  # Mean Projection coefficient
+        Q_N_modes = [[] for _ in range(self.order)]
+        Q_N = []
+        Q_N_std = []
         overlap_matrices = []  # One (Teacher + S replicas) matrix per alpha.
 
         for a_idx in range(A):
             # Calculate metrics per sample, then average. This avoids cancelling
             # incompatible replica states before measuring overlap.
-            cosines = []
-            overlaps = []
+            qn_samples = []
             sample_factors = []
 
             for s in range(S):
                 student_factors_s = [f[a_idx, s, :, :] for f in factors_all_samples]
                 sample_factors.append(student_factors_s)
-                cosines.append(compute_tensor_cosine(teacher_factors, student_factors_s))
-                overlaps.append(compute_tensor_physical_overlap(teacher_factors, student_factors_s))
+                qn_modes_s = compute_tensor_factor_projection_overlaps(teacher_factors, student_factors_s)
+                qn_samples.append(sum(qn_modes_s) / len(qn_modes_s))
+                for d, value in enumerate(qn_modes_s):
+                    Q_N_modes[d].append(value)
 
-            cosines_tensor = torch.tensor(cosines, dtype=torch.float32)
-            overlaps_tensor = torch.tensor(overlaps, dtype=torch.float32)
-            Q_Y.append(cosines_tensor.mean().item())
-            physical_overlap.append(overlaps_tensor.mean().item())
-            Q_Y_list_std.append(cosines_tensor.std().item() if S > 1 else 0.0)
+            qn_tensor = torch.tensor(qn_samples, dtype=torch.float32)
+            Q_N.append(qn_tensor.mean().item())
+            Q_N_std.append(qn_tensor.std().item() if S > 1 else 0.0)
 
             q_matrix = np.eye(S + 1, dtype=float)
             for s in range(S):
@@ -990,11 +1016,28 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             overlap_matrices.append(q_matrix)
 
         return {
-            'Q_Y': Q_Y,  # Full tensor Cosine Similarity (mean of samples)
-            'Q_Y_observed': Q_Y_per_alpha,  # Observation-only Cosine for diagnostics
-            'Q_Y_observed_std': Q_Y_std_per_alpha,
-            'Q_Y_std': Q_Y_list_std,  # Std deviation of overlaps across replicas
-            'physical_overlap': physical_overlap,  # Mean Projection coefficient
+            'Q_Y': Q_Y_full_per_alpha,
+            'Q_Y_std': Q_Y_full_std_per_alpha,
+            'Q_Y_observed': Q_Y_observed_per_alpha,
+            'Q_Y_observed_std': Q_Y_observed_std_per_alpha,
+            'Q_Y_unobserved': Q_Y_unobserved_per_alpha,
+            'Q_Y_unobserved_std': Q_Y_unobserved_std_per_alpha,
+            'Q_N': Q_N,
+            'Q_N_std': Q_N_std,
+            **{
+                f'Q_N_mode{d}': [
+                    float(torch.tensor(Q_N_modes[d][a_idx * S:(a_idx + 1) * S]).mean().item())
+                    for a_idx in range(A)
+                ]
+                for d in range(self.order)
+            },
+            **{
+                f'Q_N_mode{d}_std': [
+                    float(torch.tensor(Q_N_modes[d][a_idx * S:(a_idx + 1) * S]).std().item()) if S > 1 else 0.0
+                    for a_idx in range(A)
+                ]
+                for d in range(self.order)
+            },
             'overlap_matrices': overlap_matrices,  # One (S+1)x(S+1) heatmap per alpha
             'overlap_matrix_metric': heatmap_metric_code,
             'A': A,
@@ -1088,18 +1131,30 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         # Compute final metrics for all samples
         Y_student = forward_pass_tensor_batch(factors, F, hg.indices)  # (S, C)
-        mse_per_sample = ((Y - Y_student) ** 2).mean(dim=1)  # (S,)
-
-        y_var = Y.var(dim=1) + 1e-10  # (S,)
-        Q_Y_per_sample = torch.clamp(1.0 - mse_per_sample / y_var, min=0.0)  # (S,)
+        teacher_norm = (Y ** 2).sum(dim=1)
+        projection_dot = (Y * Y_student).sum(dim=1).abs()
+        Q_Y_per_sample = torch.where(
+            teacher_norm > 1e-12,
+            projection_dot / (teacher_norm + 1e-12),
+            torch.zeros_like(teacher_norm),
+        )
 
         Q_Y_mean = Q_Y_per_sample.mean().item()
         Q_Y_std = Q_Y_per_sample.std().item() if S > 1 else 0.0
+        qn_samples = []
+        for s in range(S):
+            qn_modes = compute_tensor_factor_projection_overlaps(
+                teacher_factors,
+                [factors[d][s] for d in range(self.order)],
+            )
+            qn_samples.append(sum(qn_modes) / len(qn_modes))
+        qn_tensor = torch.tensor(qn_samples, dtype=torch.float32)
 
         return {
             'Q_Y_mean': Q_Y_mean,
             'Q_Y_std': Q_Y_std,
-            'MSE_mean': mse_per_sample.mean().item(),
+            'Q_N_mean': qn_tensor.mean().item(),
+            'Q_N_std': qn_tensor.std().item() if S > 1 else 0.0,
             'alpha': alpha,
             'C': C,
             'S': S,
@@ -1174,7 +1229,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 'alpha_idx': alpha_idx,
                 'Q_Y': result['Q_Y_mean'],
                 'Q_Y_std': result['Q_Y_std'],
-                'MSE': result['MSE_mean'],
+                'Q_N': result['Q_N_mean'],
                 'C': result['C'],
             })
 

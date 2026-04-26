@@ -31,11 +31,11 @@ COLORS = {
     'Q_Y': '#d62728',           # Red
     'Q_Y_unobserved': '#17becf', # Cyan
     'Q_Y_observed': '#bcbd22',   # Yellow-green
-    'Q_W_prime': '#9467bd',     # Purple
-    'Q_X_prime': '#8c564b',     # Brown
+    'Q_W_GRAM_ROOT': '#9467bd', # Purple
+    'Q_X_GRAM_ROOT': '#8c564b', # Brown
     'Q_W': '#1f77b4',           # Blue
     'Q_X': '#ff7f0e',           # Orange
-    'Gen_Error': '#2ca02c',     # Green
+    'Q_N': '#2ca02c',           # Green
 }
 
 # Unified style settings - now uses publication config values
@@ -60,7 +60,7 @@ DEFAULT_DPI = PUB_CONFIG.dpi
 @register_output(
     key="plotting",
     name="Result Plotting",
-    description="Unified style Q_Y, Q_W', Q_X' curve plots",
+    description="Unified style Q_Y, Q_W_GRAM_ROOT, Q_X_GRAM_ROOT curve plots",
 )
 class ResultPlotter(OutputBase):
     """
@@ -89,7 +89,7 @@ class ResultPlotter(OutputBase):
         error_style: str = 'bar',
     ) -> Path:
         """
-        Create summary plot with Q_Y, Q_W', Q_X' vs alpha.
+        Create summary plot with Q_Y, Q_W_GRAM_ROOT, Q_X_GRAM_ROOT vs alpha.
 
         Args:
             results: Dict mapping alpha -> metrics dict
@@ -106,10 +106,10 @@ class ResultPlotter(OutputBase):
         alphas = sorted([float(a) for a in results.keys()])
         qy_mean = [results[a]['Q_Y_mean'] for a in alphas]
         qy_std = [results[a].get('Q_Y_std', 0) for a in alphas]
-        qw_prime_mean = [results[a]['Q_W_prime_mean'] for a in alphas]
-        qw_prime_std = [results[a].get('Q_W_prime_std', 0) for a in alphas]
-        qx_prime_mean = [results[a]['Q_X_prime_mean'] for a in alphas]
-        qx_prime_std = [results[a].get('Q_X_prime_std', 0) for a in alphas]
+        qw_gram_root_mean = [results[a]['Q_W_GRAM_ROOT_mean'] for a in alphas]
+        qw_gram_root_std = [results[a].get('Q_W_GRAM_ROOT_std', 0) for a in alphas]
+        qx_gram_root_mean = [results[a]['Q_X_GRAM_ROOT_mean'] for a in alphas]
+        qx_gram_root_std = [results[a].get('Q_X_GRAM_ROOT_std', 0) for a in alphas]
 
         # Create figure
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -138,29 +138,29 @@ class ResultPlotter(OutputBase):
                                [m + s for m, s in zip(qy_mean, qy_std)],
                                color=COLORS['Q_Y'], alpha=ERROR_CONFIG.band_alpha)
             
-            ax.plot(alphas, qw_prime_mean, color=COLORS['Q_W_prime'], label="$Q'_W$", **plot_kwargs)
-            if any(s > 0 for s in qw_prime_std):
+            ax.plot(alphas, qw_gram_root_mean, color=COLORS['Q_W_GRAM_ROOT'], label="$Q_{W,gram}^{1/2}$", **plot_kwargs)
+            if any(s > 0 for s in qw_gram_root_std):
                 ax.fill_between(alphas,
-                               [m - s for m, s in zip(qw_prime_mean, qw_prime_std)],
-                               [m + s for m, s in zip(qw_prime_mean, qw_prime_std)],
-                               color=COLORS['Q_W_prime'], alpha=ERROR_CONFIG.band_alpha)
+                               [m - s for m, s in zip(qw_gram_root_mean, qw_gram_root_std)],
+                               [m + s for m, s in zip(qw_gram_root_mean, qw_gram_root_std)],
+                               color=COLORS['Q_W_GRAM_ROOT'], alpha=ERROR_CONFIG.band_alpha)
             
-            ax.plot(alphas, qx_prime_mean, color=COLORS['Q_X_prime'], label="$Q'_X$", **plot_kwargs)
-            if any(s > 0 for s in qx_prime_std):
+            ax.plot(alphas, qx_gram_root_mean, color=COLORS['Q_X_GRAM_ROOT'], label="$Q_{X,gram}^{1/2}$", **plot_kwargs)
+            if any(s > 0 for s in qx_gram_root_std):
                 ax.fill_between(alphas,
-                               [m - s for m, s in zip(qx_prime_mean, qx_prime_std)],
-                               [m + s for m, s in zip(qx_prime_mean, qx_prime_std)],
-                               color=COLORS['Q_X_prime'], alpha=ERROR_CONFIG.band_alpha)
+                               [m - s for m, s in zip(qx_gram_root_mean, qx_gram_root_std)],
+                               [m + s for m, s in zip(qx_gram_root_mean, qx_gram_root_std)],
+                               color=COLORS['Q_X_GRAM_ROOT'], alpha=ERROR_CONFIG.band_alpha)
         else:
             # Bar style - traditional error bars
             ax.errorbar(alphas, qy_mean, yerr=_get_yerr(qy_std),
                         color=COLORS['Q_Y'], label='$Q_Y$', **plot_kwargs)
 
-            ax.errorbar(alphas, qw_prime_mean, yerr=_get_yerr(qw_prime_std),
-                        color=COLORS['Q_W_prime'], label="$Q'_W$", **plot_kwargs)
+            ax.errorbar(alphas, qw_gram_root_mean, yerr=_get_yerr(qw_gram_root_std),
+                        color=COLORS['Q_W_GRAM_ROOT'], label="$Q_{W,gram}^{1/2}$", **plot_kwargs)
 
-            ax.errorbar(alphas, qx_prime_mean, yerr=_get_yerr(qx_prime_std),
-                        color=COLORS['Q_X_prime'], label="$Q'_X$", **plot_kwargs)
+            ax.errorbar(alphas, qx_gram_root_mean, yerr=_get_yerr(qx_gram_root_std),
+                        color=COLORS['Q_X_GRAM_ROOT'], label="$Q_{X,gram}^{1/2}$", **plot_kwargs)
 
         # Formatting
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
@@ -311,9 +311,9 @@ class ResultPlotter(OutputBase):
             'Q_Y_observed': '$Q_Y$ (observed)',
             'Q_W': '$Q_W$',
             'Q_X': '$Q_X$',
-            'Q_W_prime': "$Q'_W$",
-            'Q_X_prime': "$Q'_X$",
-            'Gen_Error': 'Gen Error',
+            'Q_W_GRAM_ROOT': "$Q_{W,gram}^{1/2}$",
+            'Q_X_GRAM_ROOT': "$Q_{X,gram}^{1/2}$",
+            'Q_N': '$Q_N$',
         }
 
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -1169,14 +1169,11 @@ def plot_custom_curves(
         'Q_Y': '$Q_Y$',
         'Q_W': '$Q_W$',
         'Q_X': '$Q_X$',
-        'Q_W_prime': "$Q'_W$",
-        'Q_X_prime': "$Q'_X$",
+        'Q_W_GRAM_ROOT': "$Q_{W,gram}^{1/2}$",
+        'Q_X_GRAM_ROOT': "$Q_{X,gram}^{1/2}$",
+        'Q_N': '$Q_N$',
         'Q_Y_observed': '$Q_Y$ (obs)',
         'Q_Y_unobserved': '$Q_Y$ (unobs)',
-        'physical_overlap_Y': 'Phys $Q_Y$',
-        'physical_overlap_W': 'Phys $Q_W$',
-        'physical_overlap_X': 'Phys $Q_X$',
-        'Gen_Error': 'Gen Error',
     }
     
     # 扩展颜色映射 (支持 replica)
@@ -1187,21 +1184,15 @@ def plot_custom_curves(
         'Q_W_replica': '#a0c8e0',
         'Q_X': '#ff7f0e',
         'Q_X_replica': '#ffcc99',
-        'Q_W_prime': '#9467bd',
-        'Q_W_prime_replica': '#c9b3d6',
-        'Q_X_prime': '#8c564b',
-        'Q_X_prime_replica': '#c4a59e',
+        'Q_W_GRAM_ROOT': '#9467bd',
+        'Q_W_GRAM_ROOT_replica': '#c9b3d6',
+        'Q_X_GRAM_ROOT': '#8c564b',
+        'Q_X_GRAM_ROOT_replica': '#c4a59e',
+        'Q_N': '#2ca02c',
         'Q_Y_observed': '#bcbd22',
         'Q_Y_observed_replica': '#e0e088',
         'Q_Y_unobserved': '#17becf',
         'Q_Y_unobserved_replica': '#88daed',
-        'physical_overlap_Y': '#d62728',
-        'physical_overlap_Y_replica': '#ff9999',
-        'physical_overlap_W': '#1f77b4',
-        'physical_overlap_W_replica': '#a0c8e0',
-        'physical_overlap_X': '#ff7f0e',
-        'physical_overlap_X_replica': '#ffcc99',
-        'Gen_Error': '#2ca02c',
     }
     
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -1303,7 +1294,7 @@ def plot_multi_metric_comparison(
         results_list: List of results dictionaries
         labels: Labels for each experiment (e.g. ['Cold Start', 'Warm Start'])
         output_path: Output file path
-        metrics: List of metric keys to plot (e.g. ['Q_Y_mean', 'Q_W_prime_mean'])
+        metrics: List of metric keys to plot (e.g. ['Q_Y_mean', 'Q_W_GRAM_ROOT_mean'])
         title: Plot title
         legend_loc: Legend location
         format: Output format
@@ -1323,20 +1314,16 @@ def plot_multi_metric_comparison(
         'Q_Y_mean': {'color': COLORS['Q_Y'], 'label': '$Q_Y$'},
         'Q_Y': {'color': COLORS['Q_Y'], 'label': '$Q_Y$'},
         
-        'Q_W_prime_mean': {'color': COLORS['Q_W_prime'], 'label': "$Q'_W$"},
-        'Q_W_prime': {'color': COLORS['Q_W_prime'], 'label': "$Q'_W$"},
+        'Q_W_GRAM_ROOT_mean': {'color': COLORS['Q_W_GRAM_ROOT'], 'label': "$Q_{W,gram}^{1/2}$"},
+        'Q_W_GRAM_ROOT': {'color': COLORS['Q_W_GRAM_ROOT'], 'label': "$Q_{W,gram}^{1/2}$"},
         
         'Q_W_mean': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
         'Q_W': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
         
-        'Q_X_prime_mean': {'color': COLORS['Q_X_prime'], 'label': "$Q'_X$"},
-        'Q_X_prime': {'color': COLORS['Q_X_prime'], 'label': "$Q'_X$"},
-        
-        'MSE': {'color': '#2ca02c', 'label': 'MSE'},
-        'D.y': {'color': '#2ca02c', 'label': 'MSE'},
-        
-        'physical_overlap_Y_mean': {'color': '#bcbd22', 'label': 'Phys-$Q_Y$'},
-        'physical_overlap_W_mean': {'color': '#8c564b', 'label': 'Phys-$Q_W$'},
+        'Q_X_GRAM_ROOT_mean': {'color': COLORS['Q_X_GRAM_ROOT'], 'label': "$Q_{X,gram}^{1/2}$"},
+        'Q_X_GRAM_ROOT': {'color': COLORS['Q_X_GRAM_ROOT'], 'label': "$Q_{X,gram}^{1/2}$"},
+        'Q_N_mean': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
+        'Q_N': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
     }
     
     # Experiment-to-Style Map

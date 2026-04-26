@@ -50,13 +50,13 @@ def test_experiment_result_directory_schema(tmp_path):
                 scan_value=alpha,
                 metrics={
                     "Q_W_mean": q_y / 2,
+                    "Q_W_GRAM_ROOT_mean": q_y / 2,
                     "Q_Y_mean": q_y,
-                    "MSE": 1.0 - q_y,
                 },
                 metric_contract={
                     "algorithm_key": "bigamp",
                     "source": "runner_matrix_metrics",
-                    "metric_specs": ["matrix.full.Q_Y", "matrix.error.MSE"],
+                    "metric_specs": ["matrix.full.Q_Y", "matrix.factor.Q_W"],
                 },
             ),
         )
@@ -88,22 +88,23 @@ def test_experiment_result_directory_schema(tmp_path):
     assert not (run_dir / "artifacts" / "results.pt").exists()
 
     metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    assert metrics["schema_version"] == 2
+    assert metrics["schema_version"] == 3
     assert metrics["result_cube"]["schema_version"] == 1
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]
-    assert metrics["available_metric_keys"] == ["MSE", "Q_W_mean", "Q_Y_mean"]
-    assert metrics["metric_schema"]["schema_version"] == 2
+    assert metrics["available_metric_keys"] == ["Q_W_GRAM_ROOT_mean", "Q_W_mean", "Q_Y_mean"]
+    assert metrics["metric_schema"]["schema_version"] == 3
     assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
-    assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "matrix.full.teacher_student.output_cosine"
-    assert metrics["metric_schema"]["flat_key_index"]["MSE"][0]["canonical_key"] == "matrix.full.teacher_student.reconstruction_mse"
-    assert "matrix.full.teacher_student.output_cosine" in metrics["metric_schema"]["semantic_classes"]
-    assert metrics["metric_semantics"]["Q_Y_mean"][0]["space"] == "matrix"
+    assert metrics["metric_schema"]["compatibility"]["projection_metric_migration"] is True
+    assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert metrics["metric_schema"]["flat_key_index"]["Q_W_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_GRAM_ROOT"
+    assert "measurement.full.teacher_student.Q_Y_projection" in metrics["metric_schema"]["semantic_classes"]
+    assert metrics["metric_semantics"]["Q_Y_mean"][0]["space"] == "measurement"
     assert metrics["metric_contracts"]["0.5"]["source"] == "runner_matrix_metrics"
     assert "matrix.full.Q_Y" in metrics["metric_contracts"]["0.5"]["metric_specs"]
     assert metrics["metrics"]["0.5"]["Q_Y_mean"] == 0.8
-    assert metrics["results"]["0.5"]["metrics"]["MSE"] == pytest.approx(0.2)
+    assert "MSE" not in metrics["results"]["0.5"]["metrics"]
     assert metrics["results"]["0.5"]["metric_contract"]["algorithm_key"] == "bigamp"
     assert metrics["factor_payload_contract"]["matrix_factors"] == {
         "W_students": False,
@@ -684,7 +685,7 @@ def test_algorithm_base_train_batch_result_filters_unsupported_legacy_kwargs():
         (
             BiGAMPTensorSpreading,
             "bigamp_tensor",
-            {0.5: {"Q_Y_mean": 0.7, "Q_Y_std": 0.0}},
+            {0.5: {"Q_Y_mean": 0.7, "Q_Y_std": 0.0, "Q_N_mean": 0.6, "Q_N_std": 0.0}},
         ),
         (
             BiGAMPTensorSpreadingParallel,
@@ -695,7 +696,10 @@ def test_algorithm_base_train_batch_result_filters_unsupported_legacy_kwargs():
                     "Q_Y_std": 0.0,
                     "Q_Y_observed_mean": 0.75,
                     "Q_Y_observed_std": 0.0,
-                    "physical_overlap_Y_mean": 0.6,
+                    "Q_Y_unobserved_mean": 0.7,
+                    "Q_Y_unobserved_std": 0.0,
+                    "Q_N_mean": 0.6,
+                    "Q_N_std": 0.0,
                     "overlap_matrix": [[1.0]],
                     "overlap_matrix_metric": "Q_Y",
                 }
@@ -919,7 +923,8 @@ def test_runner_accepts_declared_tensor_artifact_metric_keys():
             "Q_Y_mean": 0.1,
             "Q_Y_std": 0.0,
             "Q_Y_observed_mean": 0.1,
-            "physical_overlap_Y_mean": 0.1,
+            "Q_Y_unobserved_mean": 0.1,
+            "Q_N_mean": 0.1,
             "overlap_matrix": [[1.0]],
             "overlap_matrix_metric": "Q_Y",
         },
@@ -928,6 +933,7 @@ def test_runner_accepts_declared_tensor_artifact_metric_keys():
 
     assert check.source == "algorithm_result"
     assert "tensor.full.Q_Y" in check.metric_specs
+    assert "tensor.factor.Q_N" in check.metric_specs
 
 
 def test_custom_plot_missing_metric_fails_before_silent_zero(tmp_path):
@@ -1064,7 +1070,7 @@ def test_default_scalar_plot_requires_real_qy_metric(tmp_path):
     )
     result.add_result(
         0.0,
-        SingleRunResult(scan_value=0.0, metrics={"MSE": 1.0}),
+        SingleRunResult(scan_value=0.0, metrics={"Q_W_mean": 1.0}),
     )
 
     with pytest.raises(ValueError, match="scalar_curves output requires"):

@@ -82,7 +82,7 @@ def test_explain_config_command_reports_effective_route(tmp_path):
     assert "seed_policy: legacy_tensor_parallel_batch_idx_seed" in result.stdout
     assert "automatic_rebatch_allowed: False" in result.stdout
     assert "tensor serial/parallel parity:" in result.stdout
-    assert "serial_missing_parallel_metrics: tensor.full.Q_Y, tensor.observed.Q_Y, tensor.physical_overlap_Y" in result.stdout
+    assert "serial_missing_parallel_metrics: tensor.full.Q_Y, tensor.observed.Q_Y, tensor.unobserved.Q_Y" in result.stdout
 
 
 def test_validate_command_supports_json_output(tmp_path):

@@ -90,7 +90,8 @@ def compute_matrix_metric_payload(
     from .overlap import (
         compute_cosine_similarity,
         gram_overlap_normalized,
-        compute_qy,
+        gram_overlap_root,
+        projection_abs,
         _compute_qy_masked,
     )
     import math
@@ -105,19 +106,14 @@ def compute_matrix_metric_payload(
 
     S = W_for_metrics.shape[0]
 
-    # A类: Cosine Similarity (Teacher-Student)
+    # Formal projection metrics
     Q_W_list = []
     Q_X_list = []
-    # B类: Normalized (Prime)
-    Q_W_prime_list = []
-    Q_X_prime_list = []
-    # D类: Physical Overlap
-    Physical_W_list = []
-    Physical_X_list = []
+    # Gauge/rotation-insensitive diagnostics
+    Q_W_gram_root_list = []
+    Q_X_gram_root_list = []
     # Y metrics
     Q_Y_list = []
-    MSE_list = []
-    Physical_Y_list = []
     Q_Y_observed_list = []
     Q_Y_unobserved_list = []
 
@@ -128,26 +124,11 @@ def compute_matrix_metric_payload(
     Y_students = torch.bmm(W_for_metrics, X_for_metrics)
 
     for s in range(S):
-        Q_W_list.append(compute_cosine_similarity(W_for_metrics[s], data.W_teacher, use_left=True))
-        Q_X_list.append(compute_cosine_similarity(X_for_metrics[s], data.X_teacher, use_left=False))
-
-        Q_W_prime_list.append(gram_overlap_normalized(W_for_metrics[s], data.W_teacher, use_left=True))
-        Q_X_prime_list.append(gram_overlap_normalized(X_for_metrics[s], data.X_teacher, use_left=False))
-
-        w_dot = (W_for_metrics[s] * data.W_teacher).sum()
-        w_norm_sq = (data.W_teacher ** 2).sum() + 1e-12
-        Physical_W_list.append(float(w_dot.abs() / w_norm_sq))
-
-        x_dot = (X_for_metrics[s] * data.X_teacher).sum()
-        x_norm_sq = (data.X_teacher ** 2).sum() + 1e-12
-        Physical_X_list.append(float(x_dot.abs() / x_norm_sq))
-
-        Q_Y_list.append(compute_qy(Y_students[s], Y_teacher))
-        MSE_list.append(float((Y_students[s] - Y_teacher).pow(2).mean()))
-
-        y_dot = (Y_students[s] * Y_teacher).sum()
-        y_norm_sq = (Y_teacher ** 2).sum() + 1e-12
-        Physical_Y_list.append(float(y_dot / y_norm_sq))
+        Q_W_list.append(projection_abs(W_for_metrics[s], data.W_teacher))
+        Q_X_list.append(projection_abs(X_for_metrics[s], data.X_teacher))
+        Q_W_gram_root_list.append(gram_overlap_root(W_for_metrics[s], data.W_teacher, use_left=True))
+        Q_X_gram_root_list.append(gram_overlap_root(X_for_metrics[s], data.X_teacher, use_left=False))
+        Q_Y_list.append(projection_abs(Y_students[s], Y_teacher))
 
         if data.masks is not None:
             if data.masks.dim() == 3:
@@ -173,32 +154,21 @@ def compute_matrix_metric_payload(
                 Q_X_prime_replica_list.append(gram_overlap_normalized(X_for_metrics[i], X_for_metrics[j], use_left=False))
 
     result = {
-        # A类: Cosine
         "Q_W_mean": float(np.mean(Q_W_list)),
         "Q_W_std": float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
         "Q_X_mean": float(np.mean(Q_X_list)),
         "Q_X_std": float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
         "Q_Y_mean": float(np.mean(Q_Y_list)),
         "Q_Y_std": float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
-        "MSE": float(np.mean(MSE_list)),
-        "MSE_std": float(np.std(MSE_list, ddof=1)) if len(MSE_list) > 1 else 0.0,
-        # B类: Prime
-        "Q_W_prime_mean": float(np.mean(Q_W_prime_list)),
-        "Q_W_prime_std": float(np.std(Q_W_prime_list, ddof=1)) if len(Q_W_prime_list) > 1 else 0.0,
-        "Q_X_prime_mean": float(np.mean(Q_X_prime_list)),
-        "Q_X_prime_std": float(np.std(Q_X_prime_list, ddof=1)) if len(Q_X_prime_list) > 1 else 0.0,
+        "Q_W_GRAM_ROOT_mean": float(np.mean(Q_W_gram_root_list)),
+        "Q_W_GRAM_ROOT_std": float(np.std(Q_W_gram_root_list, ddof=1)) if len(Q_W_gram_root_list) > 1 else 0.0,
+        "Q_X_GRAM_ROOT_mean": float(np.mean(Q_X_gram_root_list)),
+        "Q_X_GRAM_ROOT_std": float(np.std(Q_X_gram_root_list, ddof=1)) if len(Q_X_gram_root_list) > 1 else 0.0,
         # Replica
         "Q_W_replica_mean": float(np.mean(Q_W_replica_list)) if Q_W_replica_list else 0.0,
         "Q_X_replica_mean": float(np.mean(Q_X_replica_list)) if Q_X_replica_list else 0.0,
         "Q_W_prime_replica_mean": float(np.mean(Q_W_prime_replica_list)) if Q_W_prime_replica_list else 0.0,
         "Q_X_prime_replica_mean": float(np.mean(Q_X_prime_replica_list)) if Q_X_prime_replica_list else 0.0,
-        # D类: Physical
-        "physical_overlap_W_mean": float(np.mean(Physical_W_list)),
-        "physical_overlap_W_std": float(np.std(Physical_W_list, ddof=1)) if len(Physical_W_list) > 1 else 0.0,
-        "physical_overlap_X_mean": float(np.mean(Physical_X_list)),
-        "physical_overlap_X_std": float(np.std(Physical_X_list, ddof=1)) if len(Physical_X_list) > 1 else 0.0,
-        "physical_overlap_Y_mean": float(np.mean(Physical_Y_list)),
-        "physical_overlap_Y_std": float(np.std(Physical_Y_list, ddof=1)) if len(Physical_Y_list) > 1 else 0.0,
     }
 
     # C类: Observed/Unobserved

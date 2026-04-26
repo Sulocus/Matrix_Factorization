@@ -596,6 +596,7 @@ class BiGAMPSpreading(AlgorithmBase):
             alpha_values=torch.tensor(alpha_values, device=self.device),
             W_teacher=W_teacher,
             X_teacher=X_teacher,
+            f_distribution=self.f_distribution,
         )
 
     def train_sample(

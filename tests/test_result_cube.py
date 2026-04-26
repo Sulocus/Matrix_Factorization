@@ -36,7 +36,7 @@ def test_result_cube_is_saved_in_metrics_json(tmp_path):
             "alpha": {"key": "alpha", "path": "alpha", "values": [0.0]},
         }
     )
-    single = SingleRunResult(scan_value="p0000", metrics={"Q_Y_mean": 0.4, "MSE": 0.6})
+    single = SingleRunResult(scan_value="p0000", metrics={"Q_Y_mean": 0.4, "Q_W_mean": 0.6})
     result.add_result("p0000", single)
     result.result_cube.add_point(
         "p0000",
@@ -58,7 +58,7 @@ def test_result_cube_is_saved_in_metrics_json(tmp_path):
 def test_alpha_only_result_cube_keeps_legacy_metrics_payload(tmp_path):
     config = _config({"axes": {"alpha": {"path": "alpha", "values": [0.0]}}})
     result = ExperimentResult("alpha", config, scan_dimension="alpha", scan_values=[0.0])
-    single = SingleRunResult(scan_value=0.0, metrics={"Q_Y_mean": 0.7, "MSE": 0.3})
+    single = SingleRunResult(scan_value=0.0, metrics={"Q_Y_mean": 0.7, "Q_W_mean": 0.3})
     result.add_result(0.0, single)
     result.result_cube = ResultCube(axes={"alpha": {"key": "alpha", "path": "alpha", "values": [0.0]}})
     result.result_cube.add_point("p0000", {"alpha": 0.0}, single.metrics)

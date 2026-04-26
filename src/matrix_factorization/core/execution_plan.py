@@ -419,7 +419,7 @@ def build_execution_plan_from_dict(config_dict: Dict[str, Any],
     # Metrics and plots from execution_params
     exec_params = execution_params or {}
     metrics = exec_params.get('metrics_to_compute',
-                              ['Q_Y', 'Q_W', 'Q_X', 'Q_W_prime', 'Q_X_prime', 'Gen_Error'])
+                              ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT'])
 
     plots = []
     if exec_params.get('include_summary_plot', True):

@@ -23,11 +23,11 @@ from ...core.config import Config
 
 # Default metric groups
 METRIC_GROUPS = {
-    "standard": ["Q_Y", "Q_W_prime", "Q_X_prime"],
-    "full": ["Q_Y", "Q_W", "Q_X", "Q_W_prime", "Q_X_prime", "Gen_Error"],
+    "standard": ["Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"],
+    "full": ["Q_Y", "Q_W", "Q_X", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"],
     "minimal": ["Q_Y"],
     "raw": ["Q_W", "Q_X"],
-    "normalized": ["Q_W_prime", "Q_X_prime"],
+    "gram_root": ["Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"],
 }
 
 
@@ -36,7 +36,7 @@ METRIC_GROUPS = {
     name="Combined Output",
     description="Flexible plotting and storage configuration",
     default_params={
-        "metrics_to_plot": ["Q_Y", "Q_W_prime", "Q_X_prime"],
+        "metrics_to_plot": ["Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"],
         "storage_format": "json",
         "show_error_bars": True,
     },

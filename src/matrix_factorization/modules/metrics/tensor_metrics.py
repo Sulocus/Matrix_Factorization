@@ -184,3 +184,38 @@ def compute_tensor_physical_overlap(
         return 0.0
 
     return inner / norm_teacher_sq
+
+
+def compute_tensor_projection_abs(
+    teacher_factors: List[torch.Tensor],
+    student_factors: List[torch.Tensor],
+) -> float:
+    """Formal tensor measurement projection: |<student, teacher>| / <teacher, teacher>."""
+    return compute_tensor_physical_overlap(
+        teacher_factors=teacher_factors,
+        student_factors=student_factors,
+        absolute=True,
+    )
+
+
+def compute_factor_projection_abs(student: torch.Tensor, teacher: torch.Tensor) -> float:
+    """Absolute coordinate projection for one tensor factor/mode."""
+    student_flat = student.float().flatten()
+    teacher_flat = teacher.float().flatten()
+    norm_teacher_sq = (teacher_flat ** 2).sum()
+    if float(norm_teacher_sq.abs().item()) < 1e-12:
+        return 0.0
+    return float((student_flat * teacher_flat).sum().abs() / (norm_teacher_sq + 1e-12))
+
+
+def compute_tensor_factor_projection_overlaps(
+    teacher_factors: List[torch.Tensor],
+    student_factors: List[torch.Tensor],
+) -> List[float]:
+    """Per-mode Q_N projection overlaps for tensor latent factors."""
+    if len(teacher_factors) != len(student_factors):
+        raise ValueError("Tensor orders must match")
+    return [
+        compute_factor_projection_abs(student_factors[d], teacher_factors[d])
+        for d in range(len(teacher_factors))
+    ]

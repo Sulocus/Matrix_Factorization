@@ -227,26 +227,61 @@ Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如
 
 ## 同名不同义风险
 
-- `Q_Y_mean`：
-  - matrix full dense output cosine；
-  - tensor full CP tensor cosine；
-  - serial tensor observed reconstruction-quality diagnostic。
-- `Q_Y_observed_mean`：
-  - dense matrix masked observed cosine；
-  - spreading F-aware graph observed metric；
-  - tensor observed reconstruction-quality diagnostic。
-- `physical_overlap_Y_mean`：
-  - matrix output projection；
-  - tensor output projection。
-
-这些 key 在 `metrics.json` 中必须通过 `metric_schema.flat_key_index` 解释。
+- schema v3 之后，active `Q_Y_mean` 统一解释为 measurement absolute projection。
+- 旧 schema 的 `Q_Y_mean` 仍可能是 cosine 或 reconstruction-quality diagnostic，不能和 schema v3 的 `Q_Y_mean` 混合比较。
+- `metrics.json.metric_schema.compatibility.legacy_q_y_cosine_not_comparable=true` 用来提醒这一点。
 
 ## 同义不同名风险
 
-- `MSE` 和 legacy `Gen_Error` 都指向 reconstruction error class，但主链路正式 key 是 `MSE`。
-- `Q_W_prime / Q_X_prime` 是 factor Gram overlap 的 baseline-corrected variant，不应和 raw `Q_W / Q_X` 静默合并。
+- `physical_overlap_Y/W/X` 是旧 projection 名，schema v3 的正式名是 `Q_Y/Q_W/Q_X`。
+- `Q_W_prime / Q_X_prime` 是旧 baseline-corrected Gram 名，schema v3 的正式 diagnostic 是 `Q_W_GRAM_ROOT / Q_X_GRAM_ROOT`。
+- `MSE` 和 legacy `Gen_Error` 不再是 formal result metric；只能作为 algorithm 内部 loss/debug 或 legacy result 解释。
 - `overlap_matrix_metric=Q_Y` 指的是 heatmap cell 的选择，不等价于 scalar `Q_Y_mean`。
 
 ## 暂定命名
 
 当前 canonical 名称是机器语义名，不是最终论文图例名。需要用户最终选择显示名称的内容集中记录在 `docs/semantic_review_queue.md`。
+
+## Projection Metric Migration v3
+
+从 schema v3 开始，active formal metrics 使用 projection-first 定义。旧 cosine / reconstruction / physical_overlap key 只作为 legacy 解释存在，不能和新 run 的同名 flat key 直接比较。
+
+```text
+measurement.full.teacher_student.Q_Y_projection
+  aliases: Q_Y_mean, Q_Y_std
+  formula: abs(<Y_s, Y_t>) / <Y_t, Y_t>
+  normalization: teacher_norm_squared, clipped=false
+  scope: full configured measurement set
+
+measurement.observed.teacher_student.Q_Y_projection
+  aliases: Q_Y_observed_mean, Q_Y_observed_std
+  formula: abs(<Y_s, Y_t>) / <Y_t, Y_t>
+  scope: observed/training measurements
+
+measurement.unobserved.teacher_student.Q_Y_projection
+  aliases: Q_Y_unobserved_mean, Q_Y_unobserved_std
+  formula: abs(<Y_s, Y_t>) / <Y_t, Y_t>
+  scope: heldout or unobserved measurements
+
+latent.W.teacher_student.Q_W_projection
+  aliases: Q_W_mean, Q_W_std
+  formula: abs(<W_s, W_t>) / <W_t, W_t>
+
+latent.X.teacher_student.Q_X_projection
+  aliases: Q_X_mean, Q_X_std
+  formula: abs(<X_s, X_t>) / <X_t, X_t>
+
+latent.W.teacher_student.Q_W_GRAM_ROOT
+  aliases: Q_W_GRAM_ROOT_mean, Q_W_GRAM_ROOT_std
+  formula: sqrt(max(baseline_corrected_gram_overlap, 0))
+  role: gauge/rotation-insensitive diagnostic
+
+latent.X.teacher_student.Q_X_GRAM_ROOT
+  aliases: Q_X_GRAM_ROOT_mean, Q_X_GRAM_ROOT_std
+  formula: sqrt(max(baseline_corrected_gram_overlap, 0))
+  role: gauge/rotation-insensitive diagnostic
+
+latent.N.teacher_student.Q_N_projection
+  aliases: Q_N_mean, Q_N_std, Q_N_mode*_mean, Q_N_mode*_std
+  formula: mean over tensor modes of abs(<N_s^(d), N_t^(d)>)/<N_t^(d), N_t^(d)>
+```

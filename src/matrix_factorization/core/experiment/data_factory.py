@@ -299,6 +299,7 @@ class DataFactory:
             alpha_values=torch.tensor(alpha_values, device=self.device),
             W_teacher=W_teacher,
             X_teacher=X_teacher,
+            f_distribution=f_distribution,
         )
     
     def create_spreading_data_for_steps_scan(

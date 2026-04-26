@@ -80,3 +80,15 @@
 | `MSE_mean` | tensor single-alpha diagnostic | 当前 tensor parallel 的主 schema 使用 `Q_Y_mean` / `physical_overlap_Y_mean` / heatmap artifact；`MSE_mean` 需要后续 tensor result schema 统一时再决定。 |
 | `factor_cosine` | descriptive helper name | 当前正式 flat key 是 `Q_W_mean/Q_X_mean` 及 prime variants。 |
 
+## Projection Metric Migration v3: approved active names
+
+| canonical_key | active aliases | display | decision status | 备注 |
+| --- | --- | --- | --- | --- |
+| `measurement.full.teacher_student.Q_Y_projection` | `Q_Y_mean`, `Q_Y_std` | Q_Y | approved | measurement/output absolute projection，full scope。 |
+| `measurement.observed.teacher_student.Q_Y_projection` | `Q_Y_observed_mean`, `Q_Y_observed_std` | Q_Y observed | approved | observed/training measurement projection。 |
+| `measurement.unobserved.teacher_student.Q_Y_projection` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement projection。 |
+| `latent.W.teacher_student.Q_W_projection` | `Q_W_mean`, `Q_W_std` | Q_W | approved | matrix W latent coordinate projection。 |
+| `latent.X.teacher_student.Q_X_projection` | `Q_X_mean`, `Q_X_std` | Q_X | approved | matrix X latent coordinate projection。 |
+| `latent.W.teacher_student.Q_W_GRAM_ROOT` | `Q_W_GRAM_ROOT_mean`, `Q_W_GRAM_ROOT_std` | Q_W Gram root | approved | sqrt baseline-corrected Gram diagnostic。 |
+| `latent.X.teacher_student.Q_X_GRAM_ROOT` | `Q_X_GRAM_ROOT_mean`, `Q_X_GRAM_ROOT_std` | Q_X Gram root | approved | sqrt baseline-corrected Gram diagnostic。 |
+| `latent.N.teacher_student.Q_N_projection` | `Q_N_mean`, `Q_N_std`, `Q_N_mode*_mean`, `Q_N_mode*_std` | Q_N | approved | tensor latent node/spin/factor projection。 |

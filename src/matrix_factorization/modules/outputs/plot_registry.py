@@ -6,11 +6,9 @@ Plot Registry - 绘图指标映射表
   - 不加 :R = 教师-学生
 
 类别:
-  A: Cosine Similarity (Q_Y, Q_W, Q_X)
-  B: Normalized Overlap (Q_W', Q_X')
+  A: Projection metrics (Q_Y, Q_W, Q_X)
+  B: Gram-root diagnostics (Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
   C: Observed Split (Q_Y_observed, Q_Y_unobserved)
-  D: Physical Overlap (physical_Y, physical_W, physical_X)
-  E: Other (Gen_Error)
 
 用法:
     plots:
@@ -27,34 +25,28 @@ logger = logging.getLogger(__name__)
 
 # 指标映射表: (类别, 指标代码) -> 内部 metric 名称
 METRIC_MAP: Dict[Tuple[str, str], str] = {
-    # A: Cosine Similarity
+    # A: Projection metrics
     ('A', 'y'): 'Q_Y',
     ('A', 'w'): 'Q_W',
     ('A', 'x'): 'Q_X',
     
-    # B: Normalized Overlap
-    ('B', 'w'): 'Q_W_prime',
-    ('B', 'x'): 'Q_X_prime',
+    # B: Gram-root diagnostics
+    ('B', 'w'): 'Q_W_GRAM_ROOT',
+    ('B', 'x'): 'Q_X_GRAM_ROOT',
     
     # C: Observed Split
     ('C', 'o'): 'Q_Y_observed',
     ('C', 'u'): 'Q_Y_unobserved',
     
-    # D: Physical Overlap
-    ('D', 'y'): 'physical_overlap_Y',
-    ('D', 'w'): 'physical_overlap_W',
-    ('D', 'x'): 'physical_overlap_X',
-    
-    # E: Other
-    ('E', 'e'): 'Gen_Error',
+    # N: Tensor latent factor projection
+    ('N', 'n'): 'Q_N',
 }
 
 # 支持 replica 的指标
 REPLICA_SUPPORTED = {
     'Q_Y', 'Q_W', 'Q_X',
-    'Q_W_prime', 'Q_X_prime',
+    'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT',
     'Q_Y_observed', 'Q_Y_unobserved',
-    'physical_overlap_Y', 'physical_overlap_W', 'physical_overlap_X',
 }
 
 

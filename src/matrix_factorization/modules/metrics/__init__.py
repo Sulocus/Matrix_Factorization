@@ -3,7 +3,7 @@ Evaluation metrics module.
 
 Available metrics:
 - overlap: Q_Y, Q_W, Q_X overlap metrics
-- gram: Gram matrix overlap (Q_W', Q_X')
+- gram: Gram-root diagnostics (Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
 - qy_unobserved: Q_Y computed only on unobserved positions
 - spreading: Metrics for random spreading model
 - combined: Flexible metric selection
@@ -12,7 +12,9 @@ Available metrics:
 from .overlap import (
     compute_cosine_similarity,
     compute_physical_overlap,
+    projection_abs,
     gram_overlap_normalized,
+    gram_overlap_root,
     compute_qy,
     compute_all_metrics,
     compute_generalization_error,
@@ -55,7 +57,9 @@ from .replica import (
 __all__ = [
     'compute_cosine_similarity',
     'compute_physical_overlap',
+    'projection_abs',
     'gram_overlap_normalized',
+    'gram_overlap_root',
     'compute_qy',
     'compute_all_metrics',
     'compute_generalization_error',

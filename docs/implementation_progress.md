@@ -2,6 +2,8 @@
 
 这份文档记录硬接口化之后的连续施工状态，避免把阶段性 commit/push 误认为整个长期任务完成。
 
+最新总交接文档见 `docs/project_handoff_2026-04-27.md`。该文档汇总了本轮从 hard-interface、trial、canonical scan、resource planning 到 projection metric 迁移的已完成项、未完成项和下一轮接手顺序。
+
 ## 已完成并 push
 
 - Hard interface baseline：parameter / algorithm / metric / output / intervention / probe / analyzer / source inventory contract。

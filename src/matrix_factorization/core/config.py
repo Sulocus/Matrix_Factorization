@@ -77,7 +77,7 @@ class ExecutionConfig:
     """
     # Metrics to compute during evaluation
     metrics_to_compute: List[str] = field(
-        default_factory=lambda: ['Q_Y', 'Q_W', 'Q_X', 'Q_W_prime', 'Q_X_prime', 'Gen_Error']
+        default_factory=lambda: ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']
     )
 
     # Plot configurations (each dict has: type, metrics, filename)
@@ -89,7 +89,7 @@ class ExecutionConfig:
     # Whether to generate the default Q_Y-only plot
     include_qy_plot: bool = True
 
-    # Matrix metric for replica analysis ("gram_overlap_normalized" | "physical_overlap" | "cosine_similarity")
+    # Matrix metric for replica analysis ("gram_overlap_normalized" | "projection_abs" | "cosine_similarity")
     matrix_metric: str = "gram_overlap_normalized"
 
     # Heatmap configuration
@@ -140,7 +140,7 @@ class Config:
         exec_data = data.get('execution', {})
         execution = ExecutionConfig(
             metrics_to_compute=exec_data.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_prime', 'Q_X_prime', 'Gen_Error']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),

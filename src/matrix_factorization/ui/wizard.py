@@ -627,7 +627,7 @@ class ConfigWizard:
         exec_params = result.execution_params or {}
         execution = ExecutionConfig(
             metrics_to_compute=exec_params.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_prime', 'Q_X_prime', 'Gen_Error']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
             plots=exec_params.get('plots', []),
             include_summary_plot=exec_params.get('include_summary_plot', True),
             include_qy_plot=exec_params.get('include_qy_plot', True),
