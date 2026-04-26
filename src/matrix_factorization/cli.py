@@ -624,6 +624,10 @@ def _handle_calibrate_command(argv):
         print(f"  estimated_total_with_runtime_gb: {record.get('estimated_total_with_runtime_gb', 0.0):.6f}")
         if record.get("formula_abs_error_pct") is not None:
             print(f"  formula_abs_error_pct: {record['formula_abs_error_pct']:.2f}")
+        if record.get("device_abs_error_pct") is not None:
+            print(f"  device_abs_error_pct: {record['device_abs_error_pct']:.2f}")
+        if record.get("calibration_status"):
+            print(f"  calibration_status: {record['calibration_status']}")
         if record.get("reason"):
             print(f"  reason: {record['reason']}")
         sys.exit(0 if record.get("status") != "aborted_by_memory_guard" else 2)
@@ -663,6 +667,12 @@ def _handle_calibrate_command(argv):
         print(f"  formula_abs_error_pct: {record['formula_abs_error_pct']:.2f}")
     if record.get("formula_status"):
         print(f"  formula_status: {record['formula_status']}")
+    if record.get("device_abs_error_pct") is not None:
+        print(f"  device_abs_error_pct: {record['device_abs_error_pct']:.2f}")
+    if record.get("device_status"):
+        print(f"  device_status: {record['device_status']}")
+    if record.get("calibration_status"):
+        print(f"  calibration_status: {record['calibration_status']}")
     sys.exit(0)
 
 

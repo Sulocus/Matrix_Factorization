@@ -636,19 +636,11 @@ def _run_memory_calibration_profile(
     cuda_delta_peak_gb = float(
         sampler_summary.get("delta_peak_cuda_device_used_gb", 0.0)
     )
-    raw_error_ratio = (
-        (raw_estimate_gb - actual_delta_peak_gb) / actual_delta_peak_gb
-        if actual_delta_peak_gb > 0 else None
-    )
-    formula_abs_error_pct = abs(raw_error_ratio) * 100 if raw_error_ratio is not None else None
-    formula_status = (
-        "within_tolerance"
-        if formula_abs_error_pct is not None and formula_abs_error_pct <= 10.0
-        else "formula_mismatch"
-    )
-    total_error_ratio = (
-        (estimate.total_gb - actual_peak_gb) / actual_peak_gb
-        if actual_peak_gb > 0 else None
+    error_status = _memory_error_statuses(
+        raw_estimate_gb=raw_estimate_gb,
+        estimated_total_gb=estimate.total_gb,
+        actual_tensor_allocated_gb=actual_delta_peak_gb,
+        actual_device_used_gb=cuda_delta_peak_gb,
     )
 
     record = {
@@ -681,12 +673,20 @@ def _run_memory_calibration_profile(
             "summary": sampler_summary,
             "write_error": timeline_write_error,
         },
-        "error_ratio": raw_error_ratio,
-        "error_pct": raw_error_ratio * 100 if raw_error_ratio is not None else None,
-        "formula_abs_error_pct": formula_abs_error_pct,
-        "formula_status": formula_status,
-        "total_error_ratio": total_error_ratio,
-        "total_error_pct": total_error_ratio * 100 if total_error_ratio is not None else None,
+        "error_ratio": error_status["formula_error_ratio"],
+        "error_pct": error_status["formula_error_pct"],
+        "formula_abs_error_pct": error_status["formula_abs_error_pct"],
+        "formula_status": error_status["formula_status"],
+        "device_error_ratio": error_status["device_error_ratio"],
+        "device_error_pct": error_status["device_error_pct"],
+        "device_abs_error_pct": error_status["device_abs_error_pct"],
+        "device_status": error_status["device_status"],
+        "calibration_status": error_status["calibration_status"],
+        # Backward-compatible aliases. Older manifests used total_error_* for a
+        # mixed raw-vs-device comparison; new records make it the actual device
+        # estimate error.
+        "total_error_ratio": error_status["device_error_ratio"],
+        "total_error_pct": error_status["device_error_pct"],
         "output_dir": str(output_dir),
     }
     _write_json_with_retry(output_dir / "manifest.json", record)
@@ -695,6 +695,61 @@ def _run_memory_calibration_profile(
     if run_exception is not None:
         raise run_exception
     return record
+
+
+def _memory_error_statuses(
+    *,
+    raw_estimate_gb: float,
+    estimated_total_gb: float,
+    actual_tensor_allocated_gb: float,
+    actual_device_used_gb: float,
+) -> Dict[str, Any]:
+    """Compute the two calibration criteria used by memory profiles."""
+    formula_error_ratio = (
+        (raw_estimate_gb - actual_tensor_allocated_gb) / actual_tensor_allocated_gb
+        if actual_tensor_allocated_gb > 0 else None
+    )
+    formula_abs_error_pct = (
+        abs(formula_error_ratio) * 100 if formula_error_ratio is not None else None
+    )
+    formula_status = (
+        "within_tolerance"
+        if formula_abs_error_pct is not None and formula_abs_error_pct <= 10.0
+        else "formula_mismatch"
+    )
+
+    device_error_ratio = (
+        (estimated_total_gb - actual_device_used_gb) / actual_device_used_gb
+        if actual_device_used_gb > 0 else None
+    )
+    device_abs_error_pct = (
+        abs(device_error_ratio) * 100 if device_error_ratio is not None else None
+    )
+    device_status = (
+        "within_tolerance"
+        if device_abs_error_pct is not None and device_abs_error_pct <= 15.0
+        else "device_mismatch"
+    )
+
+    return {
+        "formula_error_ratio": formula_error_ratio,
+        "formula_error_pct": (
+            formula_error_ratio * 100 if formula_error_ratio is not None else None
+        ),
+        "formula_abs_error_pct": formula_abs_error_pct,
+        "formula_status": formula_status,
+        "device_error_ratio": device_error_ratio,
+        "device_error_pct": (
+            device_error_ratio * 100 if device_error_ratio is not None else None
+        ),
+        "device_abs_error_pct": device_abs_error_pct,
+        "device_status": device_status,
+        "calibration_status": (
+            "within_tolerance"
+            if formula_status == "within_tolerance" and device_status == "within_tolerance"
+            else "calibration_mismatch"
+        ),
+    }
 
 
 def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
@@ -820,6 +875,7 @@ def _update_local_calibration_coefficients(record: Dict[str, Any]) -> None:
         and actual_tensor_delta_gb >= 1.0
         and bool(algorithm_key)
         and record.get("formula_status") == "within_tolerance"
+        and record.get("device_status") == "within_tolerance"
     )
     ratio = actual_tensor_delta_gb / raw_gb if raw_gb > 0 else None
     failure_margin = 1.25 if status_failed_lower_bound else 1.10
@@ -830,6 +886,8 @@ def _update_local_calibration_coefficients(record: Dict[str, Any]) -> None:
     factor = conservative_factor if valid_for_planner else previous_factor
     if record.get("formula_status") == "formula_mismatch":
         status = "formula_mismatch"
+    elif record.get("device_status") == "device_mismatch":
+        status = "device_mismatch"
     elif status_failed_lower_bound and valid_for_planner:
         status = "failed_lower_bound_active"
     elif valid_for_planner:

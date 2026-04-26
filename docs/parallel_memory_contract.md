@@ -388,24 +388,29 @@ mf calibrate memory run matrix_bigamp_target_10gb
 - `reserved_peak_memory_gb`、`allocated_after_gb`、`reserved_after_gb`。
 - `memory_timeline.path`：完整 VRAM 时间线，默认 `memory_timeline.jsonl`。
 
-当 raw 估计和实际 delta 都超过 1GB 且 `formula_abs_error_pct <= 10` 时，校准命令会更新本地 `runs/calibration/memory/latest_coefficients.json`。如果误差超过 10%，记录会标记为 `formula_mismatch`，不会自动把大 factor 写成长期 planner 方案。
+校准有两条独立验收线：
+
+- `formula_abs_error_pct <= 10`：`theoretical_estimate_gb` 对齐 `actual_delta_peak_tensor_allocated_gb`。
+- `device_abs_error_pct <= 15`：`estimated_total_with_runtime_gb` 对齐 `actual_delta_peak_cuda_device_used_gb`。
+
+只有两条都通过时，`calibration_status=within_tolerance`，校准命令才会更新本地 `runs/calibration/memory/latest_coefficients.json` 为 active planner 系数。否则记录会标记为 `formula_mismatch` 或 `device_mismatch`，不会自动把大 factor 写成长期 planner 方案。
 
 ### 2026-04-26 本地 RTX 5090 校准记录
 
 这组记录是实际本地运行，不是 smoke，也不是只看代码估算。raw artifact 在 ignored 的 `runs/calibration/memory/`，下面只记录轻量摘要：
 
-| algorithm | profile | raw estimate GB | actual max allocated GB | device used delta GB | formula error |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `bigamp` | `matrix_bigamp_target_10gb` | 10.005 | 9.618 | 10.535 | 4.02% |
-| `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 16.805 | 3.78% |
-| `agd` | `matrix_agd_target_10gb` | 13.075 | 13.051 | 15.283 | 0.18% |
-| `agd` | `matrix_agd_target_16gb` | 15.998 | 16.004 | 18.703 | 0.03% |
-| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 10.003 | 10.067 | 12.723 | 0.64% |
-| `bigamp_spreading` | `spreading_bigamp_target_16gb` | 15.996 | 16.124 | 20.400 | 0.79% |
-| `bigamp_tensor` | `tensor_serial_target_6gb` | 6.001 | 5.984 | 6.414 | 0.29% |
-| `bigamp_tensor` | `tensor_serial_target_10gb` | 10.006 | 10.183 | 10.395 | 1.74% |
-| `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 6.005 | 6.002 | 6.432 | 0.06% |
-| `bigamp_tensor_parallel` | `tensor_parallel_target_10gb` | 9.993 | 9.988 | 10.574 | 0.05% |
+| algorithm | profile | raw estimate GB | actual allocated GB | formula error | device estimate GB | device used delta GB | device error |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `bigamp` | `matrix_bigamp_target_10gb` | 10.005 | 9.618 | 4.02% | 10.606 | 10.535 | 0.67% |
+| `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 3.78% | 16.940 | 16.805 | 0.81% |
+| `agd` | `matrix_agd_target_10gb` | 13.075 | 13.051 | 0.18% | 15.298 | 15.283 | 0.10% |
+| `agd` | `matrix_agd_target_16gb` | 15.998 | 16.004 | 0.03% | 18.718 | 18.703 | 0.08% |
+| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 10.003 | 10.067 | 0.64% | 12.704 | 12.723 | 0.15% |
+| `bigamp_spreading` | `spreading_bigamp_target_16gb` | 15.996 | 16.124 | 0.79% | 20.315 | 20.400 | 0.42% |
+| `bigamp_tensor` | `tensor_serial_target_6gb` | 6.001 | 5.984 | 0.29% | 6.601 | 6.414 | 2.92% |
+| `bigamp_tensor` | `tensor_serial_target_10gb` | 10.006 | 10.183 | 1.74% | 10.606 | 10.395 | 2.04% |
+| `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 6.005 | 6.002 | 0.06% | 6.605 | 6.432 | 2.70% |
+| `bigamp_tensor_parallel` | `tensor_parallel_target_10gb` | 9.993 | 9.988 | 0.05% | 10.593 | 10.574 | 0.18% |
 
 结论：
 

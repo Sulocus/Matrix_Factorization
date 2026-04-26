@@ -4,6 +4,8 @@ import sys
 import pytest
 
 from matrix_factorization.core.memory_calibration import (
+    _memory_error_statuses,
+    _update_local_calibration_coefficients,
     build_calibration_config,
     get_memory_calibration_profiles,
 )
@@ -71,6 +73,40 @@ def test_memory_calibration_cli_tune_refuses_over_hard_stop():
 
     assert tuned.returncode == 2
     assert "aborted_by_memory_guard" in tuned.stdout
+
+
+def test_memory_calibration_error_statuses_check_allocated_and_device():
+    status = _memory_error_statuses(
+        raw_estimate_gb=10.0,
+        estimated_total_gb=13.0,
+        actual_tensor_allocated_gb=10.5,
+        actual_device_used_gb=20.0,
+    )
+
+    assert status["formula_status"] == "within_tolerance"
+    assert status["device_status"] == "device_mismatch"
+    assert status["calibration_status"] == "calibration_mismatch"
+    assert status["formula_abs_error_pct"] == pytest.approx(4.7619, rel=1e-4)
+    assert status["device_abs_error_pct"] == pytest.approx(35.0)
+
+
+def test_memory_calibration_coefficients_reject_device_mismatch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _update_local_calibration_coefficients({
+        "profile": {"key": "unit_profile", "algorithm_key": "bigamp"},
+        "status": "success",
+        "theoretical_estimate_gb": 10.0,
+        "actual_delta_peak_tensor_allocated_gb": 10.0,
+        "actual_delta_peak_cuda_device_used_gb": 20.0,
+        "formula_status": "within_tolerance",
+        "device_status": "device_mismatch",
+        "output_dir": "runs/calibration/memory/unit_profile/now",
+    })
+
+    coeff_path = tmp_path / "runs" / "calibration" / "memory" / "latest_coefficients.json"
+    payload = __import__("json").loads(coeff_path.read_text(encoding="utf-8"))
+    assert payload["algorithms"]["bigamp"]["latest_status"] == "device_mismatch"
+    assert payload["algorithms"]["bigamp"]["factor"] == 1.0
 
 
 def test_memory_estimator_applies_local_calibration_coefficients(tmp_path, monkeypatch):
