@@ -1445,6 +1445,13 @@ def get_metric_schema(algorithm_key: str, metric_keys: Optional[List[str]] = Non
             "projection_metric_migration": True,
             "legacy_q_y_cosine_not_comparable": True,
         },
+        "projection_policy": {
+            "formula": "absolute_projection",
+            "normalization": "teacher_norm_squared",
+            "teacher_norm_epsilon": 1e-12,
+            "degenerate_teacher_norm": "return_zero",
+            "clipped": False,
+        },
         "semantic_classes": semantic_classes,
         "flat_key_index": flat_key_index,
         "review_required": review_required,

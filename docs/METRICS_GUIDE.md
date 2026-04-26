@@ -16,6 +16,7 @@ Q_Y = abs(<Y_student, Y_teacher>) / <Y_teacher, Y_teacher>
 
 - 不做 cosine normalization。
 - 不裁切，大于 1 的值保留。
+- 若 teacher norm 小于 `1e-12`，projection 返回 `0.0`，并通过 metric schema / metric contract 的 `projection_policy.degenerate_teacher_norm = return_zero` 记录该约定。
 - `Q_Y_mean / Q_Y_std` 的 `mean/std` 只是 sample 或 replica 统计后缀。
 - `Q_Y_observed` 表示 observed/training measurement set。
 - `Q_Y_unobserved` 表示 heldout 或 unobserved measurement set。
@@ -71,6 +72,10 @@ Q_X_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
 ```text
 compatibility.projection_metric_migration = true
 compatibility.legacy_q_y_cosine_not_comparable = true
+projection_policy.formula = absolute_projection
+projection_policy.normalization = teacher_norm_squared
+projection_policy.clipped = false
+projection_policy.degenerate_teacher_norm = return_zero
 ```
 
 因此旧 schema 中的 `Q_Y_mean` 不应被重解释成新 projection `Q_Y_mean`。

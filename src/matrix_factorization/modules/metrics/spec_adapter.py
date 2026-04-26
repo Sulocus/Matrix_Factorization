@@ -42,6 +42,13 @@ class MetricPayloadCheck:
             "metric_specs": list(self.metric_specs),
             "semantic_keys": dict(self.semantic_keys),
             "unexpected_keys": list(self.unexpected_keys),
+            "projection_policy": {
+                "formula": "absolute_projection",
+                "normalization": "teacher_norm_squared",
+                "teacher_norm_epsilon": 1e-12,
+                "degenerate_teacher_norm": "return_zero",
+                "clipped": False,
+            },
         }
 
 

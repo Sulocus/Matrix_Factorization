@@ -116,6 +116,12 @@ def compute_tensor_reconstruction_q(
     student_factors: List[torch.Tensor]
 ) -> float:
     """
+    Legacy/internal tensor reconstruction diagnostic.
+
+    New formal schema v3 uses Q_Y projection for measurements and Q_N for
+    tensor latent factors; this normalized-MSE quantity must not be emitted as
+    formal Q_Y in new runs.
+
     Compute Tensor Reconstruction Quality Q using normalized MSE.
 
     Q = 1 - ||T_teacher - T_student||² / ||T_teacher||²
@@ -158,6 +164,11 @@ def compute_tensor_physical_overlap(
     absolute: bool = False,
 ) -> float:
     """
+    Legacy/debug tensor projection helper.
+
+    New formal schema v3 should call compute_tensor_projection_abs() and emit
+    Q_Y/Q_N names instead of physical_overlap_* flat keys.
+
     Compute Physical Overlap (Projection) for high-order tensors.
 
     Overlap = <S, T> / <T, T>

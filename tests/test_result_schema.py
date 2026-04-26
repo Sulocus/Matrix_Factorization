@@ -97,6 +97,13 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["metric_schema"]["schema_version"] == 3
     assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
     assert metrics["metric_schema"]["compatibility"]["projection_metric_migration"] is True
+    assert metrics["metric_schema"]["projection_policy"] == {
+        "formula": "absolute_projection",
+        "normalization": "teacher_norm_squared",
+        "teacher_norm_epsilon": 1e-12,
+        "degenerate_teacher_norm": "return_zero",
+        "clipped": False,
+    }
     assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
     assert metrics["metric_schema"]["flat_key_index"]["Q_W_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_GRAM_ROOT"
     assert "measurement.full.teacher_student.Q_Y_projection" in metrics["metric_schema"]["semantic_classes"]
@@ -106,6 +113,7 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["metrics"]["0.5"]["Q_Y_mean"] == 0.8
     assert "MSE" not in metrics["results"]["0.5"]["metrics"]
     assert metrics["results"]["0.5"]["metric_contract"]["algorithm_key"] == "bigamp"
+    assert metrics["results"]["0.5"]["metric_contract"]["projection_policy"]["degenerate_teacher_norm"] == "return_zero"
     assert metrics["factor_payload_contract"]["matrix_factors"] == {
         "W_students": False,
         "X_students": False,

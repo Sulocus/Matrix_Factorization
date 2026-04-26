@@ -15,6 +15,21 @@ import json
 import torch
 
 
+PROJECTION_METRIC_POLICY = {
+    "formula": "absolute_projection",
+    "normalization": "teacher_norm_squared",
+    "teacher_norm_epsilon": 1e-12,
+    "degenerate_teacher_norm": "return_zero",
+    "clipped": False,
+}
+
+
+def _with_projection_policy(contract: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(contract or {})
+    payload.setdefault("projection_policy", dict(PROJECTION_METRIC_POLICY))
+    return payload
+
+
 @dataclass
 class Checkpoint:
     """
@@ -109,7 +124,7 @@ class SingleRunResult:
         if self.history:
             d['history'] = self.history
         if self.metric_contract:
-            d['metric_contract'] = self.metric_contract
+            d['metric_contract'] = _with_projection_policy(self.metric_contract)
         if include_tensors and self.W_students is not None:
             d['has_tensors'] = True
         return d
@@ -367,7 +382,7 @@ class ExperimentResult:
                     f"result metrics for scan value {scan_value!r} failed MetricSpec validation"
                 ) from exc
             if result.metric_contract:
-                contracts[str(scan_value)] = result.metric_contract
+                contracts[str(scan_value)] = _with_projection_policy(result.metric_contract)
                 continue
             contracts[str(scan_value)] = validation.to_dict()
         return contracts
@@ -981,6 +996,20 @@ class ExperimentResult:
             scan_values=scan_values,
             metadata=metadata,
         )
+        loaded_schema_version = int(metrics_payload.get("schema_version", 0) or 0) if metrics_payload else 0
+        if loaded_schema_version < 3:
+            result.metadata.contract.setdefault("metric_schema_compatibility", {
+                "loaded_schema_version": loaded_schema_version,
+                "q_y_mean_interpretation": "legacy_cosine_or_reconstruction_proxy",
+                "new_schema_q_y_mean_interpretation": "absolute_projection",
+                "new_old_q_y_mean_not_comparable": True,
+            })
+        else:
+            result.metadata.contract.setdefault("metric_schema_compatibility", {
+                "loaded_schema_version": loaded_schema_version,
+                "q_y_mean_interpretation": "absolute_projection",
+                "new_old_q_y_mean_not_comparable": True,
+            })
         cube_payload = metrics_payload.get("result_cube", {}) if isinstance(metrics_payload, dict) else {}
         if cube_payload:
             result.result_cube = ResultCube(

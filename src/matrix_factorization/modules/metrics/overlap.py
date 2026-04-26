@@ -2,13 +2,16 @@
 Overlap metrics for evaluating student-teacher similarity.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
 
+PROJECTION_NORM_EPS = 1e-12
+
+
 @torch.no_grad()
-def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = 1e-12) -> float:
+def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = PROJECTION_NORM_EPS) -> float:
     """
     Absolute projection overlap used by the formal projection-first metrics.
 
@@ -24,6 +27,26 @@ def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = 1e
         return 0.0
     dot = (student_flat * teacher_flat).sum().abs()
     return float(dot / (norm_teacher_sq + eps))
+
+
+@torch.no_grad()
+def projection_abs_diagnostics(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    eps: float = PROJECTION_NORM_EPS,
+) -> Dict[str, Any]:
+    """Return projection value plus the degenerate-teacher-norm flag."""
+    teacher_flat = teacher.flatten()
+    norm_teacher_sq = (teacher_flat ** 2).sum()
+    degenerate = float(norm_teacher_sq.abs().item()) < eps
+    return {
+        "value": projection_abs(student, teacher, eps=eps),
+        "teacher_norm_squared": float(norm_teacher_sq.item()),
+        "teacher_norm_epsilon": float(eps),
+        "degenerate_teacher_norm": bool(degenerate),
+        "clipped": False,
+        "formula": "absolute_projection_teacher_norm_squared",
+    }
 
 
 @torch.no_grad()
@@ -60,6 +83,11 @@ def compute_cosine_similarity(A: torch.Tensor, B: torch.Tensor, use_left: bool =
 @torch.no_grad()
 def compute_physical_overlap(pred: torch.Tensor, true: torch.Tensor, absolute: bool = False) -> float:
     """
+    Legacy projection helper kept for debug and old result interpretation.
+
+    New formal schema v3 metrics should use projection_abs() and Q_Y/Q_W/Q_X
+    names instead of physical_overlap_* flat keys.
+
     Compute physical overlap (Projection of Student on Teacher).
     Overlap = <Pred, True> / <True, True>
 
@@ -143,7 +171,7 @@ def compute_qy(Y_student: torch.Tensor, Y_teacher: torch.Tensor) -> float:
 
 @torch.no_grad()
 def compute_generalization_error(Y_student: torch.Tensor, Y_teacher: torch.Tensor) -> float:
-    """Compute mean squared error between Y matrices."""
+    """Legacy/internal debug MSE; not a formal schema v3 metric."""
     return float(torch.mean((Y_teacher - Y_student) ** 2))
 
 

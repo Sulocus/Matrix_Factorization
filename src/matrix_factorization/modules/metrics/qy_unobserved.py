@@ -90,6 +90,10 @@ def compute_physical_overlap_unobserved(
     mask: torch.Tensor,
 ) -> float:
     """
+    Legacy/debug name for unobserved Q_Y projection.
+
+    New formal schema v3 emits Q_Y_unobserved instead of physical_overlap_*.
+
     Compute Physical Overlap on unobserved positions.
     Overlap = <Y_s, Y_t> / <Y_t, Y_t>
     """
@@ -112,6 +116,10 @@ def compute_physical_overlap_observed(
     mask: torch.Tensor,
 ) -> float:
     """
+    Legacy/debug name for observed Q_Y projection.
+
+    New formal schema v3 emits Q_Y_observed instead of physical_overlap_*.
+
     Compute Physical Overlap on observed positions.
     """
     obs_mask = mask.float()

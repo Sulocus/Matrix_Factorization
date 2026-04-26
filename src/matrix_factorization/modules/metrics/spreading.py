@@ -143,6 +143,11 @@ def compute_physical_overlap_spreading(
     spreading_data: SpreadingData,
 ) -> float:
     """
+    Legacy/debug name for spreading measurement projection.
+
+    New formal schema v3 emits Q_Y/Q_Y_observed/Q_Y_unobserved instead of
+    physical_overlap_* keys.
+
     Compute Physical Overlap for random spreading model.
     Overlap = <Y_s, Y_t> / <Y_t, Y_t>
     """
@@ -175,6 +180,9 @@ def compute_mse_spreading(
 ) -> float:
     """
     Compute MSE (Mean Squared Error) for random spreading model.
+
+    This is an internal/legacy debug loss helper.  It is not emitted as a
+    formal schema v3 result metric.
 
     MSE = mean((Y_student - Y_teacher)^2) at observed positions.
 

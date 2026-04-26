@@ -12,7 +12,9 @@ Available metrics:
 from .overlap import (
     compute_cosine_similarity,
     compute_physical_overlap,
+    PROJECTION_NORM_EPS,
     projection_abs,
+    projection_abs_diagnostics,
     gram_overlap_normalized,
     gram_overlap_root,
     compute_qy,
@@ -57,7 +59,9 @@ from .replica import (
 __all__ = [
     'compute_cosine_similarity',
     'compute_physical_overlap',
+    'PROJECTION_NORM_EPS',
     'projection_abs',
+    'projection_abs_diagnostics',
     'gram_overlap_normalized',
     'gram_overlap_root',
     'compute_qy',
