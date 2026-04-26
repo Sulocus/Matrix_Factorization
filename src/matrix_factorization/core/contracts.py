@@ -80,7 +80,13 @@ class BatchingSpec:
     planner_layers: List[str] = field(default_factory=list)
     alpha_batching: str = "none"
     sample_batching: str = "none"
+    student_batching: str = "none"
+    scan_axis_batching: str = "none"
+    steps_reuse: str = "none"
     chunking: str = "none"
+    foldable_axes: List[str] = field(default_factory=list)
+    random_sensitive_axes: List[str] = field(default_factory=list)
+    internal_batcher: str = "none"
     seed_partition_sensitive: bool = False
     sample_range_honored: bool = True
     metadata_only: bool = True
@@ -585,14 +591,90 @@ def get_resource_specs() -> Dict[str, ResourceSpec]:
 
 def get_batching_specs() -> Dict[str, BatchingSpec]:
     specs = [
-        BatchingSpec("agd", ["runner.ParallelCoordinator"], "runner alpha batches", "samples inside algorithm tensor", "none", False, False, notes="Runner plans batches; sample_range is not a formal algorithm input."),
-        BatchingSpec("bigamp", ["runner.ParallelCoordinator"], "runner alpha batches", "samples parallel in W/X tensors", "none", False, False),
-        BatchingSpec("bigamp_spreading", ["runner.ParallelCoordinator", "algorithm per-batch supergraph"], "runner alpha batches", "disjoint-union sample parallel", "spreading.chunk_size edge streaming", True, False, notes="Batch seed offsets and per-batch graph creation must be treated as random-path sensitive."),
-        BatchingSpec("bigamp_tensor", ["algorithm loop"], "serial alpha loop", "serial sample loop", "none", True, True, notes="sample_seed depends on sample index and alpha value."),
-        BatchingSpec("bigamp_tensor_parallel", ["runner.ParallelCoordinator", "algorithm internal probe batches"], "probe-based internal alpha batches", "TensorSuperGraph sample parallel", "none", True, False, notes="Algorithm sorts alphas internally and uses seed + batch_idx."),
-        BatchingSpec("agd_tensor", ["algorithm private"], "experimental", "experimental", "none", True, True),
-        BatchingSpec("agd_spreading", ["legacy private"], "legacy", "legacy", "none", True, True),
-        BatchingSpec("combined", [], "none", "none", "none", False, True),
+        BatchingSpec(
+            "agd",
+            ["runner.ParallelCoordinator"],
+            "runner alpha batches",
+            "samples inside algorithm tensor",
+            student_batching="none",
+            scan_axis_batching="none",
+            steps_reuse="checkpointed steps scan",
+            chunking="none",
+            foldable_axes=["alpha", "sample"],
+            random_sensitive_axes=["student_init"],
+            seed_partition_sensitive=False,
+            sample_range_honored=False,
+            metadata_only=False,
+            notes="Runner plans alpha batches; sample_range is not a formal algorithm input yet.",
+        ),
+        BatchingSpec(
+            "bigamp",
+            ["runner.ParallelCoordinator"],
+            "runner alpha batches",
+            "samples parallel in W/X tensors",
+            student_batching="none",
+            scan_axis_batching="none",
+            steps_reuse="none",
+            chunking="none",
+            foldable_axes=["alpha", "sample"],
+            random_sensitive_axes=["student_init"],
+            seed_partition_sensitive=False,
+            sample_range_honored=False,
+            metadata_only=False,
+        ),
+        BatchingSpec(
+            "bigamp_spreading",
+            ["runner.ParallelCoordinator", "algorithm per-batch supergraph"],
+            "runner alpha batches",
+            "disjoint-union sample parallel",
+            student_batching="none",
+            scan_axis_batching="none",
+            steps_reuse="none",
+            chunking="spreading.chunk_size edge streaming",
+            foldable_axes=["alpha", "sample"],
+            random_sensitive_axes=["graph", "F", "student_init", "restart_noise"],
+            internal_batcher="per-batch supergraph builder",
+            seed_partition_sensitive=True,
+            sample_range_honored=False,
+            metadata_only=False,
+            notes="Graph/F creation and restart noise are random-path sensitive unless partition_invariant seed policy is selected.",
+        ),
+        BatchingSpec(
+            "bigamp_tensor",
+            ["algorithm loop"],
+            "serial alpha loop",
+            "serial sample loop",
+            student_batching="none",
+            scan_axis_batching="none",
+            steps_reuse="none",
+            chunking="none",
+            foldable_axes=[],
+            random_sensitive_axes=["alpha", "sample"],
+            seed_partition_sensitive=True,
+            sample_range_honored=True,
+            metadata_only=True,
+            notes="Serial/reference tensor path; no forced smart parallelism.",
+        ),
+        BatchingSpec(
+            "bigamp_tensor_parallel",
+            ["runner.ParallelCoordinator", "algorithm internal probe batches"],
+            "probe-based internal alpha batches",
+            "TensorSuperGraph sample parallel",
+            student_batching="none",
+            scan_axis_batching="none",
+            steps_reuse="none",
+            chunking="none",
+            foldable_axes=["alpha", "sample"],
+            random_sensitive_axes=["tensor_supergraph", "F_tensor", "student_init"],
+            internal_batcher="tensor_supergraph_probe_alpha_batching",
+            seed_partition_sensitive=True,
+            sample_range_honored=False,
+            metadata_only=True,
+            notes="Algorithm sorts alphas internally; legacy seed policy is batch-partition sensitive.",
+        ),
+        BatchingSpec("agd_tensor", ["algorithm private"], "experimental", "experimental", "none", "none", "none", "none", [], ["experimental"], "experimental", True, True),
+        BatchingSpec("agd_spreading", ["legacy private"], "legacy", "legacy", "none", "none", "none", "none", [], ["legacy"], "legacy", True, True),
+        BatchingSpec("combined", [], "none", "none", "none", "none", "none", "none", [], [], "none", False, True),
     ]
     return {spec.algorithm_key: spec for spec in specs}
 
@@ -1575,6 +1657,9 @@ def get_auxiliary_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("src/matrix_factorization/export/__init__.py", "export_support", status="support_module"),
         SourceInventorySpec("src/matrix_factorization/export/__main__.py", "export_support", status="support_module"),
         SourceInventorySpec("src/matrix_factorization/export/bundler.py", "export_support", status="support_module"),
+        SourceInventorySpec("src/matrix_factorization/core/memory_calibration.py", "local_gpu_calibration_cli", status="active_path"),
+        SourceInventorySpec("src/matrix_factorization/core/scan_planning.py", "scan_plan_contract", status="active_path"),
+        SourceInventorySpec("src/matrix_factorization/core/parallel/resource_execution.py", "resource_execution_plan_contract", status="active_path"),
         SourceInventorySpec("tests/debug/analyze_qy_drop.py", "debug_only", status="debug_only"),
         SourceInventorySpec("tests/debug/debug_alpha3.py", "debug_only", status="debug_only"),
         SourceInventorySpec("tests/debug/debug_variance.py", "debug_only", status="debug_only"),

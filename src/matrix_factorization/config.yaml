@@ -132,7 +132,7 @@ algorithm_params:
   max_bad_steps: 10
   
   # --- Adaptive Warm Restart ---
-  adaptive_restart: true
+  adaptive_restart: false
   restart_patience: 50
   restart_noise: 0.1
   

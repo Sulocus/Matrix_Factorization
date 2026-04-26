@@ -25,6 +25,7 @@ from .execution_modes import (
     ExecutionPlan,
 )
 from .memory_estimator import MemoryEstimator
+from .resource_execution import build_resource_execution_plan
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,27 @@ class ParallelCoordinator:
                 raise MemoryError(error_msg)
         
         return linear_plan
+
+    def plan_resource_execution(self, scan_plan, params: EstimationParams, batching_spec=None):
+        """Build a WorkItem-level resource plan from the current batch plan.
+
+        This is the strict scan/resource bridge.  It wraps the existing
+        ExecutionPlan without changing algorithm math, and it records whether
+        planned sample ranges are actually honored by the runner/algorithm.
+        """
+        execution_plan = self.plan_execution(params)
+        sample_range_honored = bool(getattr(batching_spec, "sample_range_honored", False))
+        metadata_only = bool(getattr(batching_spec, "metadata_only", True))
+        return execution_plan, build_resource_execution_plan(
+            scan_plan=scan_plan,
+            execution_plan=execution_plan,
+            algorithm_key=params.algorithm_key,
+            samples_per_alpha=params.S,
+            seed_partition_policy=getattr(execution_plan, "seed_partition_policy", "legacy"),
+            sample_range_honored=sample_range_honored,
+            metadata_only=metadata_only,
+            calibration_source=self._calibration_source(params),
+        )
     
     def execute(
         self,
@@ -410,6 +432,13 @@ class ParallelCoordinator:
                 return None
         
         return batches if batches else None
+
+    def _calibration_source(self, params: EstimationParams) -> str:
+        calibration = getattr(self.estimator, "_calibration_data", {})
+        gpu_model = getattr(self.estimator, "gpu_model", "cpu")
+        if gpu_model in calibration and params.algorithm_key in calibration[gpu_model]:
+            return f"calibrated:{gpu_model}"
+        return "theory_unchecked"
     
     def _create_linear_plan(
         self, 

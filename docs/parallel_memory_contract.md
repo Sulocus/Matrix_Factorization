@@ -9,6 +9,8 @@
 - `MemoryModelSpec`：algorithm 的 memory estimator 入口、公式依据、主要 live tensor component、calibration/probe 状态。
 - `ExperimentPlan.resource_plan`：`mf explain-config` / `mf validate --json` 中的静态 resource summary。
 - `runtime_resource_plan`：run metadata 中的 runner-level execution plan。
+- `ScanPlan`：把 `alpha/steps/nested/hysteresis` 展开为统一 scan point 和 plot grouping。
+- `ResourceExecutionPlan` / `WorkItem`：把 runner batch 映射到显式 work items，记录 alpha/sample/scan-axis 折叠情况。
 
 ## 当前策略
 
@@ -37,7 +39,7 @@ compile fallback: algorithm_params.compile_fallback_policy
 tf32: controlled by algorithm_params.use_tf32
 ```
 
-这是 matrix dense path。当前显存 metadata 只记录 runner-level plan，不驱动新的 batch 行为。
+这是 matrix dense path。当前 `ResourceExecutionPlan` 会把 runner alpha batch 映射成 `WorkItem`；sample_range 仍未作为正式 algorithm 输入传入。
 
 ### BiGAMP Spreading
 
@@ -158,6 +160,12 @@ resource / batching contract
 `mf validate --json` 会包含：
 
 ```text
+scan_plan
+  scan_kind
+  axes
+  points
+  grouping
+  execution_constraints
 resource_spec
 batching_spec
 resource_plan
@@ -206,8 +214,14 @@ contract.runtime_resource_plan
     replan_implemented
     estimation_params
     replan_provenance
-  batches
-  metadata_only
+	  batches
+	    batch_axes
+	    calibration_source
+	    work_items
+	  resource_execution_plan
+	    batches
+	    plot_grouping
+	  metadata_only
 ```
 
 tensor serial/parallel 的 `AlgorithmResult.metadata` 还会包含：
@@ -248,7 +262,33 @@ internal_alpha_batch_plan
   metadata_only
 ```
 
-这两块 metadata 只记录实际执行选择和内部分批；runner OOM 路径不做自动 retry，不在同一进程里自动改变 batch partition。
+这两块 metadata 记录实际执行选择和内部分批；runner OOM 路径仍默认 checkpoint/exit，不在 seed-sensitive 路径里自动改变 batch partition。
+
+## 本地 GPU 校准
+
+`mf calibrate memory` 是本地 GPU 显存校准入口：
+
+```bash
+mf calibrate memory list
+mf calibrate memory explain matrix_bigamp_small
+mf calibrate memory run matrix_bigamp_small
+```
+
+当前内置 quick profiles：
+
+- `matrix_bigamp_small`
+- `matrix_agd_small`
+- `spreading_bigamp_small`
+- `tensor_parallel_small`
+
+校准 raw 记录写入被 ignore 的 `runs/calibration/memory/<profile>/<timestamp>/manifest.json`。记录同时保存：
+
+- `theoretical_estimate_gb`：纯 tensor 公式估计，不含 CUDA context。
+- `estimated_total_with_runtime_gb`：`MemoryEstimator.estimate()` 的运行时总估计，含 context/fragmentation 估算。
+- `actual_peak_memory_gb`：`torch.cuda.max_memory_allocated()` 记录的实际 peak allocated。
+- `reserved_peak_memory_gb`、`allocated_after_gb`、`reserved_after_gb`。
+
+小尺寸 quick profile 的误差通常会被 CUDA/PyTorch 固定开销主导；它的作用是验证记录链路和发现数量级问题，不代表中大型实验的最终安全系数。
 
 `algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为，目前接入 `bigamp`、`bigamp_spreading` 和 `bigamp_tensor_parallel`：
 
@@ -296,13 +336,13 @@ metadata_only
 
 `bigamp_tensor_parallel.train_batch_result()` 是主 runner 使用的正式路径。它现在直接走 metrics-only 执行，不再分配 legacy `W_all/X_all` placeholder。旧 `train_batch_alphas()` 仍保留 tuple API，并在执行完 metrics 后返回 placeholder tensor，以兼容旧调用方。
 
-## 不在本阶段做的事
+## 仍未完成的事
 
-- 不根据 ResourceSpec 自动改 batch size。
+- 不用中大型校准 profile 自动回写 memory coefficient。
 - 不在 OOM 后自动切换 dtype；普通 BF16 不可用只按 `dtype_fallback_policy` 处理。
 - 不在 OOM 后自动关闭 compile；普通 `torch.compile` 初始化失败只按 `compile_fallback_policy` 处理。
-- 不在 OOM 后自动重试。
-- 不改变 seed 与 batch partition 的关系。
+- seed-sensitive 路径不在 OOM 后自动重分批。
+- `nested/hysteresis` 仍由 legacy handler 执行；`ScanPlan` 先作为硬 contract 和 plot grouping 来源。
 - 不把 tensor serial/parallel 合并。
 
 这些都进入 `docs/parallel_memory_review_queue.md`。

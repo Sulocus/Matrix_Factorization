@@ -452,7 +452,7 @@ class ExperimentResult:
         )
         self._write_json(path / 'metadata.json', self.metadata.to_dict())
 
-        # Canonical lightweight artifacts for Codex web and post-hoc analysis.
+        # Canonical local artifacts for display and post-hoc analysis.
         metrics_dict = self.to_metrics_dict()
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]

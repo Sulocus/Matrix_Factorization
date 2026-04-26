@@ -132,6 +132,9 @@ class BatchConfig:
     estimated_memory_gb: float
     alpha_values: List[float] = field(default_factory=list)
     memory_breakdown: Dict[str, float] = field(default_factory=dict)
+    work_items: List[Any] = field(default_factory=list)
+    batch_axes: List[str] = field(default_factory=list)
+    calibration_source: str = "theory_unchecked"
     
     @property
     def num_samples(self) -> int:

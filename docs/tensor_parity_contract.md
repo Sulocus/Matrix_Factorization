@@ -62,7 +62,7 @@ batching semantics
 - 两者的 `MetricSpec` 能区分 full/observed tensor metrics。
 - 两者的 result metadata 记录 graph kind、tensor order、dims、batching source、alpha execution order。
 - 小尺寸 parity test 至少验证输出 shape、metric key、result contract 一致。
-- 物理数值 parity 需要单独本地 GPU 或长跑验证，不应由轻量测试承担。
+- 物理数值 parity 需要单独本地 GPU 或长跑验证，不应由普通 contract 测试承担。
 
 ## 机器可读 contract
 

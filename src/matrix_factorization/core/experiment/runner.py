@@ -364,12 +364,29 @@ class ExperimentRunner:
         total_points = len(scan_values)
         
         params = self._estimation_params_for_config(config, scan_values)
-        
-        # Get execution plan from ParallelCoordinator
-        plan = self.parallel_coordinator.plan_execution(params)
+
+        # Get execution plan from ParallelCoordinator.  If the scan planner is
+        # available, also attach WorkItem-level metadata so alpha/sample/scan
+        # folding decisions are explicit before deeper runner refactors.
+        resource_execution_plan = None
+        try:
+            from matrix_factorization.core.contracts import get_batching_specs
+            from matrix_factorization.core.scan_planning import build_scan_plan
+
+            scan_plan = build_scan_plan(config)
+            batching_spec = get_batching_specs().get(config.algorithm_key)
+            plan, resource_execution_plan = self.parallel_coordinator.plan_resource_execution(
+                scan_plan,
+                params,
+                batching_spec=batching_spec,
+            )
+        except Exception as exc:
+            logger.warning("Falling back to alpha-only execution plan: %s", exc)
+            plan = self.parallel_coordinator.plan_execution(params)
         result.metadata.contract["runtime_resource_plan"] = self._runtime_resource_plan_report(
             config,
             plan,
+            resource_execution_plan=resource_execution_plan,
         )
         
         # Phase 3 Tensor Parallel: Let all alphas be processed in single batch
@@ -432,7 +449,7 @@ class ExperimentRunner:
         
         for batch_idx, batch in enumerate(plan.batches):
             batch_start_time = time.time()
-            planned_batch_alpha_values = batch.alpha_values
+            planned_batch_alpha_values = self._batch_alpha_values(batch)
             
             # Skip if all alphas in this batch are already completed (resume mode)
             remaining_alphas = [a for a in planned_batch_alpha_values if a not in completed_alphas]
@@ -812,7 +829,12 @@ class ExperimentRunner:
             seed_partition_policy=config.algorithm_params.seed_partition_policy,
         )
 
-    def _runtime_resource_plan_report(self, config: ExperimentConfig, plan: Any) -> Dict[str, Any]:
+    def _runtime_resource_plan_report(
+        self,
+        config: ExperimentConfig,
+        plan: Any,
+        resource_execution_plan: Any = None,
+    ) -> Dict[str, Any]:
         """Serialize the actual runner-level execution plan as metadata only."""
         allocation = getattr(plan, "allocation_config", None)
         algorithm_params = getattr(config, "algorithm_params", None)
@@ -860,7 +882,13 @@ class ExperimentRunner:
                     "sample_range": list(batch.sample_range),
                     "sample_range_honored_by_runner": False,
                     "alpha_range": list(batch.alpha_range),
-                    "alpha_values": [float(value) for value in batch.alpha_values],
+                    "alpha_values": [float(value) for value in self._batch_alpha_values(batch)],
+                    "batch_axes": list(getattr(batch, "batch_axes", []) or []),
+                    "calibration_source": getattr(batch, "calibration_source", "theory_unchecked"),
+                    "work_items": [
+                        item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                        for item in (getattr(batch, "work_items", []) or [])
+                    ],
                     "estimated_memory_gb": float(batch.estimated_memory_gb),
                     "memory_breakdown": {
                         str(key): float(value)
@@ -869,9 +897,24 @@ class ExperimentRunner:
                 }
                 for idx, batch in enumerate(getattr(plan, "batches", []) or [])
             ],
+            "resource_execution_plan": (
+                resource_execution_plan.to_dict() if resource_execution_plan is not None else None
+            ),
             "metadata_only": True,
-            "notes": "Runner-level resource metadata; it does not drive execution or change batching.",
+            "notes": "Runner-level resource metadata; WorkItems drive alpha selection for alpha scans but do not change algorithm formulas.",
         }
+
+    @staticmethod
+    def _batch_alpha_values(batch: Any) -> List[float]:
+        work_items = getattr(batch, "work_items", None) or []
+        values = []
+        for item in work_items:
+            alpha = getattr(item, "alpha", None)
+            if alpha is not None and float(alpha) not in values:
+                values.append(float(alpha))
+        if values:
+            return values
+        return [float(value) for value in getattr(batch, "alpha_values", []) or []]
 
     @staticmethod
     def _effective_runtime_seed_policy(config: ExperimentConfig) -> Dict[str, Any]:

@@ -630,6 +630,63 @@ def _handle_trial_command(argv):
     sys.exit(0)
 
 
+def _handle_calibrate_command(argv):
+    from matrix_factorization.core.memory_calibration import (
+        explain_memory_profile,
+        get_memory_calibration_profiles,
+        run_memory_calibration,
+    )
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print("Usage: mf calibrate memory [list|explain|run] <profile_key>")
+        sys.exit(0 if argv else 1)
+    if argv[0] != "memory":
+        print(f"❌ Unknown calibrate target: {argv[0]}")
+        sys.exit(1)
+    if len(argv) < 2:
+        print("Usage: mf calibrate memory [list|explain|run] <profile_key>")
+        sys.exit(1)
+
+    command = argv[1]
+    profile_key = argv[2] if len(argv) > 2 else None
+    profiles = get_memory_calibration_profiles()
+
+    if command == "list":
+        print("memory calibration profiles")
+        for key, profile in sorted(profiles.items()):
+            print(
+                f"  - {key}: algorithm={profile.algorithm_key}, "
+                f"runtime_class={profile.runtime_class}, matrix={profile.matrix}"
+            )
+        sys.exit(0)
+
+    if command not in {"explain", "run"}:
+        print(f"❌ Unknown memory calibration command: {command}")
+        sys.exit(1)
+    if not profile_key:
+        print(f"❌ memory calibration {command} requires a profile key")
+        sys.exit(1)
+    if profile_key not in profiles:
+        print(f"❌ Unknown memory calibration profile: {profile_key}")
+        print(f"Available: {', '.join(sorted(profiles))}")
+        sys.exit(1)
+
+    if command == "explain":
+        print(explain_memory_profile(profile_key))
+        sys.exit(0)
+
+    record = run_memory_calibration(profile_key)
+    print("memory calibration complete")
+    print(f"  key: {profile_key}")
+    print(f"  output: {record['output_dir']}")
+    print(f"  theoretical_tensor_estimate_gb: {record['theoretical_estimate_gb']:.6f}")
+    print(f"  estimated_total_with_runtime_gb: {record['estimated_total_with_runtime_gb']:.6f}")
+    print(f"  actual_peak_memory_gb: {record['actual_peak_memory_gb']:.6f}")
+    if record.get("error_pct") is not None:
+        print(f"  error_pct: {record['error_pct']:.2f}")
+    sys.exit(0)
+
+
 def _print_plan_warnings(plan):
     if not plan or not plan.warnings:
         return
@@ -922,6 +979,9 @@ def main():
             return
         elif sys.argv[1] == 'trial':
             _handle_trial_command(sys.argv[2:])
+            return
+        elif sys.argv[1] == 'calibrate':
+            _handle_calibrate_command(sys.argv[2:])
             return
 
     # 2. 解析参数

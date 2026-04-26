@@ -7,7 +7,7 @@
 - 当前 active package 是 `src/matrix_factorization`。
 - 当前开发分支是 `dev`；`main` 不是开发目标。
 - 生成的实验输出不进入源码管理，应保留在被 ignore 的 `runs/`、`results/`、`artifacts/` 或 `src/matrix_factorization/Replica_results/`。
-- 轻量检查属于普通测试，不再维护单独的 smoke 运行结构。高显存实验仍以本地 GPU 验证为准。
+- 快速检查属于普通本地测试；小规模真实试跑使用 quick trial。高显存实验以本地 GPU 验证为准。
 - 任何算法改动都必须显式记录 latent scaling、alpha normalization、damping 语义、Onsager handling，以及每个 `Q_Y` variant 的准确含义。
 
 ## 顶层结构
@@ -44,6 +44,7 @@ src/matrix_factorization/
 │  │  └─ runner.py                   主 ExperimentRunner
 │  └─ parallel/
 │     ├─ parallel_coordinator.py     alpha batch 规划
+│     ├─ resource_execution.py       WorkItem / ResourceExecutionPlan 显式调度地图
 │     ├─ memory_estimator.py         显存估计
 │     ├─ memory_guard.py             运行时显存监控
 │     ├─ batch_checkpoint.py         batch checkpoint
@@ -73,7 +74,9 @@ YAML
       -> preflight validation / explain-config
     -> core.experiment.config.ExperimentConfig
       -> core.experiment.runner.ExperimentRunner.run()
+        -> core.scan_planning.ScanPlan
         -> core.parallel.ParallelCoordinator.plan_execution()
+        -> core.parallel.ResourceExecutionPlan / WorkItem metadata
         -> core.experiment.data_factory.DataFactory.create()
           -> create_teacher()
           -> create_masks() or create_spreading_data()
@@ -169,9 +172,9 @@ run_dir/
 
 ## 已知控制风险
 
-- `nested_scan` 和 `hysteresis_scan` 仍是 dict config 特例，虽然 CLI 已避免在分派前访问 `config.experiment_name`，但它们还没有完全进入统一 `ExperimentPlan` schema。
+- `ScanPlan` 已能把 `alpha/steps/nested/hysteresis` 表达成统一点集；`nested_scan` 和 `hysteresis_scan` 的实际执行仍暂时走 legacy handler，后续需要迁移到统一 runner。
 - `teacher.init_distribution` 已进入 `DataFactory.create_teacher()` 和 saved teacher 逻辑；后续仍需要本地结果确认不同 teacher 分布下的历史曲线可比性。
-- `ParallelCoordinator` 可以规划 sample splitting，但 runner 实际执行时只把 alpha batch 传给算法。
+- `ResourceExecutionPlan` 已把 alpha batch 映射成 `WorkItem` metadata；sample splitting 仍受 `BatchingSpec.sample_range_honored` 约束，未声明支持的 algorithm 不能假装支持。
 - Tensor parallel 在主 coordinator 之外还有内部 alpha batching。
 - Teacher 和 graph registry 存在，但主 `DataFactory` 只使用了其中一部分。
 - `Q_Y_mean` 在 dense、spreading、serial tensor、parallel tensor 中含义不同。

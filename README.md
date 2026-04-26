@@ -9,7 +9,7 @@ implementations of AGD, BiG-AMP, matrix spreading, and tensor spreading variants
 pip install -e ".[dev]"
 ```
 
-## Fast Validation
+## Local Validation
 
 ```bash
 python -m pytest -q tests/test_tensor_metrics.py tests/test_plotting_compat.py tests/test_registry_imports.py
@@ -54,9 +54,9 @@ directories are not source code. Keep them in ignored `runs/`, `results/`,
 `artifacts/`, or `src/matrix_factorization/Replica_results/`, and record
 externally stored data in `docs/artifacts_manifest.md` when needed.
 
-Use this repository for code review, lightweight tests, and versioned changes.
-High-memory scientific validation should run on the local GPU.
+Use this repository for code review, contract tests, quick trials, and versioned
+changes. High-memory scientific validation should run as local GPU validation.
 
 ## More
 
-See `docs/CODEX_WEB.md` for the Codex web workflow and run artifact schema.
+See `docs/local_workflow.md` for the local workflow and run artifact schema.

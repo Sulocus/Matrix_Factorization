@@ -4,7 +4,7 @@ Work from the `dev` branch. The active Python package is
 `src/matrix_factorization`, not the older `MF/` or `Wang/` layout mentioned in
 historical notes.
 
-Use these commands for lightweight local checks:
+Use these commands for quick local checks:
 
 ```bash
 pip install -e ".[dev]"
@@ -12,8 +12,7 @@ python -m pytest -q tests/test_contract_parameter_specs.py tests/test_config_con
 python -m pytest -q tests/test_trial_contract.py tests/test_trial_cli.py
 ```
 
-Before committing structural hard-interface work, run the default lightweight
-suite:
+Before committing structural hard-interface work, run the default local suite:
 
 ```bash
 python -m pytest -q

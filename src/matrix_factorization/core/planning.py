@@ -37,6 +37,7 @@ from .contracts import (
     get_teacher_specs,
     get_tensor_parity_report,
 )
+from .scan_planning import ScanPlan, build_scan_plan
 
 
 @dataclass
@@ -75,6 +76,7 @@ class ExperimentPlan:
     memory_model_spec: Optional[MemoryModelSpec] = None
     seed_policy_spec: Optional[SeedPolicySpec] = None
     resource_plan: Dict[str, Any] = field(default_factory=dict)
+    scan_plan: Optional[ScanPlan] = None
     metric_specs: List[MetricSpec] = field(default_factory=list)
     output_specs: List[OutputSpec] = field(default_factory=list)
     output_plan: OutputPlan = field(default_factory=OutputPlan)
@@ -126,7 +128,13 @@ class ExperimentPlan:
                 "planner_layers": list(self.batching_spec.planner_layers),
                 "alpha_batching": self.batching_spec.alpha_batching,
                 "sample_batching": self.batching_spec.sample_batching,
+                "student_batching": self.batching_spec.student_batching,
+                "scan_axis_batching": self.batching_spec.scan_axis_batching,
+                "steps_reuse": self.batching_spec.steps_reuse,
                 "chunking": self.batching_spec.chunking,
+                "foldable_axes": list(self.batching_spec.foldable_axes),
+                "random_sensitive_axes": list(self.batching_spec.random_sensitive_axes),
+                "internal_batcher": self.batching_spec.internal_batcher,
                 "seed_partition_sensitive": self.batching_spec.seed_partition_sensitive,
                 "sample_range_honored": self.batching_spec.sample_range_honored,
                 "metadata_only": self.batching_spec.metadata_only,
@@ -152,6 +160,7 @@ class ExperimentPlan:
                 "notes": self.seed_policy_spec.notes,
             } if self.seed_policy_spec else None,
             "resource_plan": dict(self.resource_plan),
+            "scan_plan": self.scan_plan.to_dict() if self.scan_plan else None,
             "tensor_parity_report": dict(self.tensor_parity_report or {}),
             "metrics": [spec.key for spec in self.metric_specs],
             "available_metric_keys": _available_metric_keys(self),
@@ -229,6 +238,19 @@ class ExperimentPlan:
             lines.append(f"teacher status: {self.teacher_spec.status}")
             if self.teacher_spec.scale_convention:
                 lines.append(f"teacher scale: {self.teacher_spec.scale_convention}")
+        if self.scan_plan:
+            lines.append("")
+            lines.append("scan plan:")
+            lines.append(f"  kind: {self.scan_plan.scan_kind}")
+            lines.append(f"  points: {self.scan_plan.num_points}")
+            lines.append(
+                "  axes: "
+                f"{', '.join(axis.key for axis in self.scan_plan.axes) or 'none'}"
+            )
+            lines.append(
+                "  grouping: "
+                f"{', '.join(group.group_id for group in self.scan_plan.grouping) or 'none'}"
+            )
         if self.resource_plan:
             lines.append("")
             lines.append("resource / batching contract:")
@@ -422,6 +444,12 @@ def build_experiment_plan(
 
     algorithm_key = getattr(config, "algorithm_key", None)
     plan.effective_parameters.update(_effective_parameter_summary(config, output_options, raw_config))
+    try:
+        plan.scan_plan = build_scan_plan(config, raw_config)
+        plan.effective_parameters["scan_plan.kind"] = plan.scan_plan.scan_kind
+        plan.effective_parameters["scan_plan.num_points"] = plan.scan_plan.num_points
+    except Exception as exc:
+        plan.errors.append(f"ScanPlan 构造失败: {exc}")
     if algorithm_key in algorithm_specs:
         plan.algorithm_spec = algorithm_specs[algorithm_key]
     else:
@@ -869,7 +897,13 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
         "planner_layers": list(plan.batching_spec.planner_layers),
         "alpha_batching": plan.batching_spec.alpha_batching,
         "sample_batching": plan.batching_spec.sample_batching,
+        "student_batching": plan.batching_spec.student_batching,
+        "scan_axis_batching": plan.batching_spec.scan_axis_batching,
+        "steps_reuse": plan.batching_spec.steps_reuse,
         "chunking": plan.batching_spec.chunking,
+        "foldable_axes": list(plan.batching_spec.foldable_axes),
+        "random_sensitive_axes": list(plan.batching_spec.random_sensitive_axes),
+        "internal_batcher": plan.batching_spec.internal_batcher,
         "seed_partition_sensitive": plan.batching_spec.seed_partition_sensitive,
         "sample_range_honored": plan.batching_spec.sample_range_honored,
         "metadata_only": plan.batching_spec.metadata_only,
@@ -883,6 +917,10 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
         },
         "seed_policy": seed_policy_summary,
+        "scan_plan": plan.scan_plan.to_dict() if plan.scan_plan else None,
+        "scan_execution_constraints": (
+            plan.scan_plan.execution_constraints.to_dict() if plan.scan_plan else {}
+        ),
         "replan_safety": {
             "automatic_rebatch_allowed": seed_policy_summary["automatic_rebatch_allowed"],
             "replan_implemented": False,
