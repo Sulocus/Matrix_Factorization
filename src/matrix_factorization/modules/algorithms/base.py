@@ -252,6 +252,7 @@ class AlgorithmBase(ABC):
         metadata = {
             "algorithm_key": algorithm_key,
             "result_contract": spec.result_contract,
+            "result_source": "legacy_algorithm_result_adapter",
         }
         execution_metadata = getattr(self, "_contract_execution_metadata", None)
         if isinstance(execution_metadata, dict):
@@ -263,7 +264,11 @@ class AlgorithmBase(ABC):
             return AlgorithmResult.from_metrics_only(
                 metrics_by_alpha=metrics_by_alpha,
                 artifacts=artifacts,
-                metadata=metadata,
+                metadata=dict(
+                    metadata,
+                    result_source="legacy_tensor_metrics_only_adapter",
+                    matrix_factors_available=False,
+                ),
             )
 
         if W_students is None or X_students is None:
@@ -276,7 +281,12 @@ class AlgorithmBase(ABC):
         return AlgorithmResult(
             metrics_by_alpha=metrics_by_alpha,
             matrix_factors={"W_students": W_students, "X_students": X_students},
-            metadata=dict(metadata, result_kind="matrix_factors"),
+            metadata=dict(
+                metadata,
+                result_kind="matrix_factors",
+                result_source="legacy_matrix_adapter",
+                matrix_factors_available=True,
+            ),
         )
 
     def _filter_train_batch_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:

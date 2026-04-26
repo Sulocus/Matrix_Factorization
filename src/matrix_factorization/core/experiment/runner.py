@@ -1195,6 +1195,7 @@ class ExperimentRunner:
         metadata = {
             "algorithm_key": config.algorithm_key,
             "result_contract": spec.result_contract,
+            "result_source": "legacy_runner_algorithm_result_adapter",
         }
         if spec.result_contract == "legacy_tensor_metrics_only":
             artifacts = {}
@@ -1203,7 +1204,11 @@ class ExperimentRunner:
             return AlgorithmResult.from_metrics_only(
                 metrics_by_alpha=metrics_by_alpha,
                 artifacts=artifacts,
-                metadata=metadata,
+                metadata=dict(
+                    metadata,
+                    result_source="legacy_tensor_metrics_only_runner_adapter",
+                    matrix_factors_available=False,
+                ),
             )
 
         if W_students is None or X_students is None:
@@ -1216,7 +1221,12 @@ class ExperimentRunner:
         return AlgorithmResult(
             metrics_by_alpha=metrics_by_alpha,
             matrix_factors={"W_students": W_students, "X_students": X_students},
-            metadata=dict(metadata, result_kind="matrix_factors"),
+            metadata=dict(
+                metadata,
+                result_kind="matrix_factors",
+                result_source="legacy_matrix_runner_adapter",
+                matrix_factors_available=True,
+            ),
         )
 
     def _run_algorithm_with_checkpoint_result(

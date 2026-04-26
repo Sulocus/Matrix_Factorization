@@ -685,6 +685,58 @@ def test_algorithm_base_train_batch_result_filters_unsupported_legacy_kwargs():
     )
 
     assert result.matrix_factors["W_students"].shape == (1, 1, 2, 1)
+    assert result.metadata["result_source"] == "legacy_matrix_adapter"
+    assert result.metadata["matrix_factors_available"] is True
+
+
+def test_runner_alpha_path_uses_formal_train_batch_result_contract():
+    class FormalAlphaAlgorithm:
+        def train_batch_result(
+            self,
+            *,
+            algorithm_key,
+            W_teacher,
+            X_teacher,
+            Y_teacher,
+            masks,
+            alpha_values,
+            seed,
+            progress_callback=None,
+            step_callback=None,
+            **kwargs,
+        ):
+            A = len(alpha_values)
+            return AlgorithmResult(
+                metrics_by_alpha={float(alpha): {"Q_Y_mean": 0.5, "Q_W_mean": 0.4} for alpha in alpha_values},
+                matrix_factors={
+                    "W_students": torch.zeros(A, 1, 2, 1),
+                    "X_students": torch.zeros(A, 1, 1, 2),
+                },
+                metadata={"algorithm_key": algorithm_key, "result_kind": "matrix_factors"},
+            )
+
+        def train_batch_alphas(self, *args, **kwargs):
+            raise AssertionError("runner should use train_batch_result for alpha scans")
+
+    config = _tiny_config()
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    data = ExperimentData(
+        W_teacher=torch.zeros(2, 1),
+        X_teacher=torch.zeros(1, 2),
+        Y_teacher=torch.zeros(2, 2),
+        masks=torch.ones(1, 2, 2),
+        alpha_values=[0.5],
+    )
+
+    result = runner._run_algorithm_result(
+        algorithm=FormalAlphaAlgorithm(),
+        config=config,
+        data=data,
+        step_callback=None,
+    )
+
+    assert result.metrics_by_alpha[0.5]["Q_Y_mean"] == 0.5
+    assert result.matrix_factors["W_students"].shape == (1, 1, 2, 1)
 
 
 @pytest.mark.parametrize(
