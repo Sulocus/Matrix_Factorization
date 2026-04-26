@@ -42,6 +42,45 @@ output:
     )
 
 
+def _write_plot_query_config(path):
+    path.write_text(
+        """
+tensor_order: 2
+algorithm: 1
+teacher: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 1
+scan:
+  axes:
+    damping:
+      path: algorithm_params.damping
+      values: [0.4, 0.6]
+    alpha:
+      path: alpha
+      values: [0.0, 0.1]
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  use_compile: false
+  use_bf16: false
+output:
+  enable_heatmap: false
+  save_tensors: false
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      series_by: [damping]
+      filename: qy_by_damping.png
+""",
+        encoding="utf-8",
+    )
+
+
 def test_validate_command_reports_contract_status(tmp_path):
     config_path = tmp_path / "config.yaml"
     _write_min_config(config_path)
@@ -83,6 +122,24 @@ def test_explain_config_command_reports_effective_route(tmp_path):
     assert "automatic_rebatch_allowed: False" in result.stdout
     assert "tensor serial/parallel parity:" in result.stdout
     assert "serial_missing_parallel_metrics: tensor.full.Q_Y, tensor.observed.Q_Y, tensor.unobserved.Q_Y" in result.stdout
+
+
+def test_explain_config_reports_plot_query_point_selection(tmp_path):
+    config_path = tmp_path / "plot_query_config.yaml"
+    _write_plot_query_config(config_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "matrix_factorization.cli", "explain-config", str(config_path)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert "plot queries:" in result.stdout
+    assert "Q_Y_mean: x=alpha, series=2, points=4" in result.stdout
+    assert "damping=0.4: p0000, p0001" in result.stdout
+    assert "damping=0.6: p0002, p0003" in result.stdout
 
 
 def test_validate_command_supports_json_output(tmp_path):

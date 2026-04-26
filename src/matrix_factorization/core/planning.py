@@ -323,6 +323,21 @@ class ExperimentPlan:
             lines.append(f"  required_metrics: {', '.join(self.output_plan.required_metrics) or 'none'}")
             lines.append(f"  required_artifacts: {', '.join(self.output_plan.required_artifacts) or 'none'}")
             lines.append(f"  output_files: {', '.join(self.output_plan.output_files) or 'none'}")
+            if self.output_plan.plot_semantics:
+                lines.append("  plot queries:")
+                for key, semantics in self.output_plan.plot_semantics.items():
+                    preview = semantics.get("selection_preview") or {}
+                    query = semantics.get("query") or {}
+                    lines.append(
+                        f"    - {key}: x={query.get('x')}, "
+                        f"series={preview.get('series_count', 0)}, "
+                        f"points={preview.get('selected_point_count', 0)}"
+                    )
+                    for series in preview.get("series", [])[:5]:
+                        lines.append(
+                            f"      {series.get('label')}: "
+                            f"{', '.join(series.get('point_ids') or [])}"
+                        )
         available_metrics = _available_metric_keys(self)
         if available_metrics:
             lines.append("")
@@ -1118,11 +1133,13 @@ def _build_output_plan(plan: ExperimentPlan) -> None:
     for plot_config in plan.output_options.get("plots") or []:
         if "y" in plot_config:
             metric_key = str(plot_config["y"])
+            preview, _ = _plot_query_selection_preview(plan, plot_config)
             required_metrics.add(metric_key)
             plot_semantics[metric_key] = {
                 "metric_key": metric_key,
                 "semantic_candidates": _semantic_candidates_for_flat_key(plan, metric_key),
                 "query": {key: value for key, value in plot_config.items() if key in {"x", "y", "where", "compare", "series_by"}},
+                "selection_preview": preview,
             }
             continue
         for curve_code in plot_config.get("curves", []):
@@ -1231,6 +1248,9 @@ def _validate_custom_plot_metrics(plan: ExperimentPlan) -> None:
                     f"但 algorithm '{plan.algorithm_spec.key}' 的 MetricSpec 未声明该 flat key。"
                 )
             _validate_plot_query_axes(plan, plot_idx, plot_config)
+            _, preview_errors = _plot_query_selection_preview(plan, plot_config)
+            for error in preview_errors:
+                plan.errors.append(f"output.plots[{plot_idx}] {error}")
             continue
         for curve_code in plot_config.get("curves", []):
             try:
@@ -1274,6 +1294,89 @@ def _validate_plot_query_axes(plan: ExperimentPlan, plot_idx: int, plot_config: 
         for axis in item:
             if axis not in axis_keys:
                 plan.errors.append(f"output.plots[{plot_idx}].compare[{compare_idx}] 引用了不存在的 scan axis: {axis}")
+
+
+def _plot_query_selection_preview(plan: ExperimentPlan, plot_config: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
+    if not plan.scan_plan or "x" not in plot_config or "y" not in plot_config:
+        return {}, []
+    axis_keys = {axis.key for axis in plan.scan_plan.axes}
+    x_axis = plot_config.get("x")
+    metric_key = str(plot_config.get("y"))
+    errors: List[str] = []
+    if x_axis not in axis_keys:
+        return {}, [f"PlotQuery x axis '{x_axis}' 不存在"]
+
+    def validate_axes(payload: Any, context: str) -> None:
+        axes = payload if isinstance(payload, list) else list((payload or {}).keys())
+        for axis in axes:
+            if axis not in axis_keys:
+                errors.append(f"PlotQuery {context} 引用了不存在的 scan axis: {axis}")
+
+    where = dict(plot_config.get("where") or {})
+    validate_axes(where, "where")
+    selected = [
+        point for point in plan.scan_plan.points
+        if all(point.coordinates.get(axis) == value for axis, value in where.items())
+    ]
+    if not selected:
+        errors.append(f"PlotQuery where 没有选中任何 scan point: {where}")
+
+    compare = list(plot_config.get("compare") or [])
+    series_by = list(plot_config.get("series_by") or [])
+    if compare:
+        series_specs = []
+        for compare_idx, item in enumerate(compare):
+            if not isinstance(item, dict):
+                errors.append(f"PlotQuery compare[{compare_idx}] 必须是 mapping")
+                continue
+            validate_axes(item, f"compare[{compare_idx}]")
+            series_specs.append(dict(item))
+    elif series_by:
+        validate_axes(series_by, "series_by")
+        seen = []
+        for point in selected:
+            key = tuple((axis, point.coordinates.get(axis)) for axis in series_by)
+            if key not in seen:
+                seen.append(key)
+        series_specs = [{axis: value for axis, value in key} for key in seen]
+    else:
+        series_specs = [{}]
+
+    series_preview = []
+    for series_spec in series_specs:
+        points = [
+            point for point in selected
+            if all(point.coordinates.get(axis) == value for axis, value in series_spec.items())
+        ]
+        if not points:
+            errors.append(f"PlotQuery series {series_spec} 没有选中任何 scan point")
+            continue
+        point_ids = [point.point_id for point in points]
+        x_values = [point.coordinates.get(x_axis) for point in points]
+        seen_x: Dict[Any, str] = {}
+        for point in points:
+            x_value = point.coordinates.get(x_axis)
+            if x_value in seen_x:
+                errors.append(
+                    f"PlotQuery series {series_spec} 在 x={x_value!r} 上选中了多个点: "
+                    f"{seen_x[x_value]} 和 {point.point_id}；请收紧 where/compare 或增加 series_by"
+                )
+            seen_x[x_value] = point.point_id
+        series_preview.append({
+            "label": ", ".join(f"{key}={value}" for key, value in series_spec.items()) or metric_key,
+            "coordinates": dict(series_spec),
+            "point_ids": point_ids,
+            "x_values": x_values,
+        })
+
+    return {
+        "x": x_axis,
+        "y": metric_key,
+        "where": where,
+        "selected_point_count": len(selected),
+        "series_count": len(series_preview),
+        "series": series_preview,
+    }, errors
 
 
 def _curve_code_to_metric_key(curve_code: str) -> str:

@@ -211,6 +211,103 @@ class ResultCube:
             "metric_semantics": dict(self.metric_semantics),
         }
 
+    def resolve_plot_query(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Resolve a PlotQuery into concrete point ids and curve values.
+
+        This is the hard query boundary used by plotting and tests. It fails
+        when a query is ambiguous, references missing coordinates/metrics, or
+        would silently merge multiple points with the same x value.
+        """
+        x_axis = query.get("x")
+        metric_key = query.get("y")
+        if not x_axis or not metric_key:
+            raise ValueError("PlotQuery requires x and y")
+        if x_axis not in self.axes:
+            raise ValueError(f"PlotQuery x axis '{x_axis}' is not in ResultCube axes")
+
+        where = dict(query.get("where") or {})
+        selected = self._select_points(where)
+        compare = list(query.get("compare") or [])
+        series_by = list(query.get("series_by") or [])
+
+        if compare:
+            series_specs = [dict(item) for item in compare]
+        elif series_by:
+            self._validate_axes(series_by, "series_by")
+            seen = []
+            for point in selected:
+                key = tuple((axis, point.coordinates.get(axis)) for axis in series_by)
+                if key not in seen:
+                    seen.append(key)
+            series_specs = [{axis: value for axis, value in key} for key in seen]
+        else:
+            series_specs = [{}]
+
+        resolved = []
+        for series_spec in series_specs:
+            self._validate_axes(series_spec, "series")
+            points = [
+                point for point in selected
+                if all(point.coordinates.get(key) == value for key, value in series_spec.items())
+            ]
+            points = sorted(points, key=lambda point: self._sort_key(point.coordinates.get(x_axis)))
+            if not points:
+                raise ValueError(f"PlotQuery selected no points for series {series_spec}")
+
+            x_values = []
+            y_values = []
+            point_ids = []
+            seen_x = {}
+            for point in points:
+                if x_axis not in point.coordinates:
+                    raise ValueError(f"PlotQuery x axis '{x_axis}' not found in point {point.point_id}")
+                metrics = self.metrics.get(point.point_id, {})
+                if metric_key not in metrics:
+                    raise ValueError(f"PlotQuery metric '{metric_key}' missing for point {point.point_id}")
+                x_value = point.coordinates[x_axis]
+                if x_value in seen_x:
+                    raise ValueError(
+                        f"PlotQuery series {series_spec} has duplicate x={x_value!r} "
+                        f"for points {seen_x[x_value]!r} and {point.point_id!r}; "
+                        "constrain where/compare or add series_by axes."
+                    )
+                seen_x[x_value] = point.point_id
+                point_ids.append(point.point_id)
+                x_values.append(float(x_value))
+                y_values.append(float(metrics[metric_key]))
+
+            label = ", ".join(f"{key}={value}" for key, value in series_spec.items()) or str(metric_key)
+            resolved.append({
+                "label": label,
+                "coordinates": dict(series_spec),
+                "point_ids": point_ids,
+                "x_values": x_values,
+                "y_values": y_values,
+            })
+        return resolved
+
+    def _select_points(self, where: Dict[str, Any]) -> List[ResultCubePoint]:
+        self._validate_axes(where, "where")
+        points = list(self.points.values())
+        for axis, value in where.items():
+            points = [point for point in points if point.coordinates.get(axis) == value]
+        if not points:
+            raise ValueError(f"PlotQuery where selected no points: {where}")
+        return points
+
+    def _validate_axes(self, payload: Any, context: str) -> None:
+        axes = payload if isinstance(payload, list) else list((payload or {}).keys())
+        for axis in axes:
+            if axis not in self.axes:
+                raise ValueError(f"PlotQuery {context} references unknown axis '{axis}'")
+
+    @staticmethod
+    def _sort_key(value: Any):
+        try:
+            return (0, float(value))
+        except (TypeError, ValueError):
+            return (1, str(value))
+
 
 @dataclass
 class ExperimentMetadata:
@@ -826,44 +923,18 @@ class ExperimentResult:
                 continue
             x_axis = query["x"]
             metric_key = query["y"]
-            where = dict(query.get("where") or {})
-            compare = list(query.get("compare") or [])
-            series_by = list(query.get("series_by") or [])
             filename = query.get("filename") or f"plot_query_{idx + 1}.png"
-            selected = self._select_cube_points(where)
-            if compare:
-                series_specs = [dict(item) for item in compare]
-            elif series_by:
-                seen = []
-                for point in selected:
-                    key = tuple((axis, point.coordinates.get(axis)) for axis in series_by)
-                    if key not in seen:
-                        seen.append(key)
-                series_specs = [{axis: value for axis, value in key} for key in seen]
-            else:
-                series_specs = [{}]
+            resolved_series = self.result_cube.resolve_plot_query(query)
 
             fig, ax = plt.subplots(figsize=(10, 6))
-            for series_spec in series_specs:
-                points = [
-                    point for point in selected
-                    if all(point.coordinates.get(k) == v for k, v in series_spec.items())
-                ]
-                points = sorted(points, key=lambda point: self._sort_key(point.coordinates.get(x_axis)))
-                if not points:
-                    raise ValueError(f"PlotQuery selected no points for series {series_spec}")
-                x_values = []
-                y_values = []
-                for point in points:
-                    if x_axis not in point.coordinates:
-                        raise ValueError(f"PlotQuery x axis '{x_axis}' not found in point {point.point_id}")
-                    metrics = self.result_cube.metrics.get(point.point_id, {})
-                    if metric_key not in metrics:
-                        raise ValueError(f"PlotQuery metric '{metric_key}' missing for point {point.point_id}")
-                    x_values.append(float(point.coordinates[x_axis]))
-                    y_values.append(float(metrics[metric_key]))
-                label = ", ".join(f"{k}={v}" for k, v in series_spec.items()) or metric_key
-                ax.plot(x_values, y_values, marker="o", linewidth=2, label=label)
+            for series in resolved_series:
+                ax.plot(
+                    series["x_values"],
+                    series["y_values"],
+                    marker="o",
+                    linewidth=2,
+                    label=series["label"],
+                )
             ax.set_xlabel(str(x_axis))
             ax.set_ylabel(str(metric_key))
             ax.grid(True, alpha=0.3)
