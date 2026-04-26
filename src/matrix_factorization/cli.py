@@ -17,7 +17,9 @@ MF Experiment CLI - 简洁版
 """
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 import os
 from dataclasses import fields
@@ -138,6 +140,7 @@ def load_yaml_config(yaml_path: Path):
     # 输出选项 (完整解析)
     output_cfg = cfg.get('output', {})
     output_options = {
+        'name': output_cfg.get('name', ''),
         'rsb_ordering': output_cfg.get('rsb_ordering', False),
         'save_tensors': output_cfg.get('save_tensors', True),
         'uniform_colormap': output_cfg.get('uniform_colormap', False),
@@ -293,6 +296,7 @@ def handle_resume(output_dir=None):
         cfg = yaml.safe_load(raw_yaml)
         output_cfg = cfg.get('output', {})
         output_options = {
+            'name': output_cfg.get('name', ''),
             'rsb_ordering': output_cfg.get('rsb_ordering', False),
             'save_tensors': output_cfg.get('save_tensors', True),
             'uniform_colormap': output_cfg.get('uniform_colormap', False),
@@ -546,9 +550,11 @@ def _handle_trial_command(argv):
 
     runner = ExperimentRunner(verbose=False)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = plan.output_root / f"{timestamp}_{config.experiment_name}"
+    run_dir_name = _build_run_directory_name(timestamp, config, output_options, raw_yaml)
+    output_path = plan.output_root / run_dir_name
     output_path.mkdir(parents=True, exist_ok=True)
     output_options["checkpoint_path"] = str(output_path / "checkpoints" / "latest.pt")
+    output_options["run_directory_name"] = run_dir_name
 
     result = runner.run(config, output_options=output_options, raw_yaml=raw_yaml)
     result.metadata.contract["trial"] = plan.to_dict()
@@ -688,6 +694,99 @@ def _cli_float_option(argv, name, default):
         raise SystemExit(f"{name} requires a numeric value") from exc
 
 
+def _slugify_run_token(value: str, *, fallback: str = "") -> str:
+    token = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-_")
+    token = re.sub(r"-{2,}", "-", token)
+    return token[:40] or fallback
+
+
+def _algorithm_alias(algorithm_key: str) -> str:
+    aliases = {
+        "bigamp": "bg",
+        "bigamp_spreading": "bgs",
+        "agd": "agd",
+        "bigamp_tensor": "bt",
+        "bigamp_tensor_parallel": "btp",
+    }
+    return aliases.get(algorithm_key, _slugify_run_token(algorithm_key, fallback="alg")[:8])
+
+
+def _shape_token(config: ExperimentConfig) -> str:
+    if config.matrix.N1 == config.matrix.N2:
+        return f"N{config.matrix.N1}_M{config.matrix.M}"
+    return f"N{config.matrix.N1}x{config.matrix.N2}_M{config.matrix.M}"
+
+
+def _short_axis_name(axis_name: str) -> str:
+    aliases = {
+        "alpha": "a",
+        "max_steps": "st",
+        "steps": "st",
+        "damping": "dmp",
+        "init": "init",
+        "size": "sz",
+        "onsager": "ons",
+    }
+    return aliases.get(axis_name, _slugify_run_token(axis_name, fallback="ax")[:4])
+
+
+def _scan_summary_token(config: ExperimentConfig) -> str:
+    scan_spec = config.scan_spec if isinstance(config.scan_spec, dict) else None
+    axes = scan_spec.get("axes", {}) if scan_spec else {}
+    if not axes:
+        return f"{_short_axis_name(config.scan.dimension)}{len(config.scan.values)}"
+
+    tokens = []
+    for axis_name, axis_spec in axes.items():
+        short_name = _short_axis_name(axis_name)
+        if isinstance(axis_spec, dict):
+            values = axis_spec.get("values", [])
+            if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
+                count = len(_canonical_axis_values(axis_spec))
+            elif isinstance(values, dict):
+                count = len(values)
+            elif isinstance(values, list):
+                count = len(values)
+            else:
+                count = 1
+        else:
+            count = 1
+        tokens.append(f"{short_name}{count}")
+
+    return "-".join(tokens[:4]) or "scan1"
+
+
+def _config_hash_token(config: ExperimentConfig, raw_yaml: str = "") -> str:
+    payload = raw_yaml
+    if not payload:
+        payload = json.dumps(config.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:6]
+
+
+def _build_run_directory_name(
+    timestamp: str,
+    config: ExperimentConfig,
+    output_options: dict | None = None,
+    raw_yaml: str = "",
+) -> str:
+    """Compact run directory name.
+
+    Directory names are for quick navigation only. Full reproducibility stays in
+    config.json, metadata.json, metrics.json, and manifest.json.
+    """
+    output_options = output_options or {}
+    user_label = _slugify_run_token(output_options.get("name", ""), fallback="")
+    parts = [
+        timestamp,
+        user_label,
+        _algorithm_alias(config.algorithm_key),
+        _shape_token(config),
+        _scan_summary_token(config),
+        _config_hash_token(config, raw_yaml),
+    ]
+    return "_".join(part for part in parts if part)
+
+
 def _print_plan_warnings(plan):
     if not plan or not plan.warnings:
         return
@@ -710,9 +809,11 @@ def _handle_single_run(config, args, timestamp, runner, bridge, output_options, 
     print(f"  Steps:      {config.training.max_steps}")
     print()
 
-    output_path = Path(args.output_dir) / f"{timestamp}_{config.experiment_name}"
+    run_dir_name = _build_run_directory_name(timestamp, config, output_options, raw_yaml)
+    output_path = Path(args.output_dir) / run_dir_name
     output_options = dict(output_options or {})
     output_options['checkpoint_path'] = str(output_path / "checkpoints" / "latest.pt")
+    output_options['run_directory_name'] = run_dir_name
 
     # 运行 - 传递 output_options 和 raw_yaml 以便 checkpoint 系统保存
     result = runner.run(config, observer=bridge.on_event, output_options=output_options, raw_yaml=raw_yaml)
@@ -813,7 +914,7 @@ def main():
     # 5. 初始化环境
     runner = ExperimentRunner(verbose=False)
     bridge = ProgressBridge(use_rich=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # Explicitly print configuration status to ensure visibility
     print("\n" + "="*60)

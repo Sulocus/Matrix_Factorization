@@ -386,7 +386,7 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("spreading.seed", "int", 12345, "seed", ["SpreadingConfig"], True),
         ParameterSpec("spreading.chunk_size", "int", 131072, "algorithm", ["BiGAMPSpreading"], False),
         ParameterSpec("spreading.tensor_order", "int", 2, "model", ["SpreadingConfig"], True, "parsed_only"),
-        ParameterSpec("output.name", "str", "", "output", [], False, "parsed_only"),
+        ParameterSpec("output.name", "str", "", "output", ["cli.run_directory_name"], False),
         ParameterSpec("output.storage_mode", "str", "full", "output", ["ExperimentResult.save"], False, "parsed_only"),
         ParameterSpec("output.save_tensors", "bool", True, "output", ["ExperimentResult.save"], False),
         ParameterSpec("output.enable_heatmap", "bool", True, "output", ["heatmap"], False),
