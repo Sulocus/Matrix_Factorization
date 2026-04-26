@@ -1,107 +1,123 @@
 # Implementation Progress
 
-这份文档记录硬接口化之后的连续施工状态，避免把阶段性 commit/push 误认为整个长期任务完成。
+这份文档记录当前硬接口化施工状态。它只写已经进入代码、测试和提交的内容；没有完成的部分明确标成 limitation 或 next work。
 
-最新总交接文档见 `docs/project_handoff_2026-04-27.md`。该文档汇总了本轮从 hard-interface、trial、canonical scan、resource planning 到 projection metric 迁移的已完成项、未完成项和下一轮接手顺序。
+最新接手说明见 `docs/project_handoff_2026-04-27.md`。
 
-## 已完成并 push
+## 当前 checkpoint
 
-- Hard interface baseline：parameter / algorithm / metric / output / intervention / probe / analyzer / source inventory contract。
-- Trial workflow v1：`mf trial list/explain/validate/run`，quick trial 真实运行，输出隔离到 ignored workspace。
-- Metric semantic class v1：`Q_Y_mean` 等旧 flat key 已能通过 algorithm context 映射到 canonical semantic class。
-- Result schema metadata：`metrics.json` 写入 `metric_schema`，保留旧 flat keys。
-- Output semantic metadata：custom plots 和 heatmap artifact 写入 semantic metadata。
-- Tensor parity contract：记录 teacher scale、alpha normalization、seed partition、dtype/compile、batching 等风险。
-- Resource/Batching contract：`ResourceSpec`、`BatchingSpec`、`mf explain-config` resource summary、run metadata `runtime_resource_plan`。
-- Parallel memory docs：记录当前并行/显存 contract 和高风险 review queue。
-- Tensor execution metadata：tensor serial/parallel result metadata 记录 dtype/compile、internal alpha batch plan、probe 状态。
-- Tensor parallel metrics-only 主路径：`train_batch_result()` 不再分配 legacy placeholder `W_all/X_all`，旧 tuple API 仍保留。
-- Parallel memory contract tests：`tests/test_parallel_memory_contract.py` 强制检查 metadata-only、seed partition review、tensor batch metadata schema。
-- Memory model contract：`MemoryModelSpec` 记录每个 algorithm 的 estimator 入口、公式依据、component、probe/calibration 状态；进入 `ExperimentPlan.resource_plan.memory_model`。
-- Seed policy contract：`SeedPolicySpec` 记录每个 algorithm 当前随机流、是否 partition invariant、是否允许自动重分批；进入 `mf explain-config`、`mf validate --json` 和 run metadata。
-- Tensor memory estimator 参数链路：`EstimationParams` 现在显式携带 `tensor_order/tensor_dims`，tensor memory estimator 不再隐式默认三阶张量。
-- Pytest collection boundary：默认 `python -m pytest` 只收集 `tests/`，legacy/local-GPU/debug 测试模块显式 skip，当前全量默认测试为 `181 passed, 9 skipped`。
-- Legacy pytest inventory：`get_legacy_pytest_inventory()` 和 `tests/test_source_inventory.py` 强制这些 legacy/local-GPU 测试必须登记并模块级 skip。
-- Source inventory expansion：根目录表面文件、`experiments/`、`scripts/analysis|debug|experiments|maintenance|verification/`、`tests/debug|verification/`、`trials/`、config 入口、teacher/graph/metric/output/runtime-extension 源文件都已进入机器清点测试。
-- Runtime probe report：runner-level `batch_summary` probe 现在写入轻量 `probe_reports` payload，记录 batch/alpha/metric/output metadata，不进入算法 step。
-- Runtime probe metadata keys：`batch_summary` 还会记录 `AlgorithmResult.metadata`、`execution_metadata`、`tensor_execution`、`internal_alpha_batch_plan` 的 key/summary，以及 result contract/kind/source、batching source 和 `metrics_by_alpha` 摘要；只暴露轻量索引，不复制 factor/tensor payload。
-- Metric schema coverage gate：active algorithm 声明的每个 legacy flat metric key 都必须被 `get_metric_schema()` 索引；新增 metric 如果没有 semantic class / flat-key 映射，contract 测试会失败。
-- Result-save metric gate：`ExperimentResult.save()` 现在会重新校验每个 scan point 的 metric payload；手工塞入未声明 metric/artifact 也会在落盘前失败。
-- Probe wiring hardening：未接入实际 runtime hook 的 `state_slice/tensor_state_slice/variance_slice` 标记为 `declared_only`，YAML 请求会 preflight error，而不是静默无产物。
-- Algorithm config trace：runner algorithm cache 已按 effective config signature 分区，run metadata 写入 `algorithm_config_trace`，防止同 key 不同参数复用旧 algorithm 实例。
-- Tensor parallel dead-path cleanup：删除 `bigamp_tensor_parallel` 中 `_compute_alpha_batches()` 返回后的不可达 legacy memory-estimate 残片；当前显存估计入口以 `MemoryModelSpec`、runner estimator 和 tensor probe metadata 为准。
-- Runtime batch timing metadata：runner 的 `BATCH_END` 事件记录真实 elapsed duration，不再写固定 `0.0` 占位值。
-- OOM replan gate：`ParallelCoordinator.replan_with_safety()` 不再返回当前 plan 伪装成缩 batch；legacy/batch-sensitive seed policy 会明确拒绝，partition-invariant 且带 provenance 的 plan 可以生成更保守的新 `ExecutionPlan`。runner OOM 路径仍是 abort/checkpoint handoff。
-- Compile status metadata：tensor parallel 的 `tensor_execution` 区分 `requested_use_compile` 和实际 super-step compile 是否生效，并记录 `compile_status/compile_attempts`。
-- Spreading chunk metadata：`bigamp_spreading` 的 `AlgorithmResult.metadata.execution_metadata` 记录 `chunk_size/chunk_policy/dynamic_batches`，说明当前是手动 chunk 配置，不做 auto tuning。
-- Memory breakdown reporting：`MemoryEstimator.estimate()` 现在会返回按组件拆分的 `breakdown`，覆盖 AGD、dense BiGAMP、spreading BiGAMP 和 tensor spreading；每个 runner batch 的 `runtime_resource_plan.batches[*].memory_breakdown` 会保存这份 metadata。这只暴露已有估计公式，不改变训练或 batching 行为。
-- Tensor parity report in plan：tensor serial/parallel gap report 已接入 `ExperimentPlan`、`mf explain-config` 和 `mf validate --json`，tensor 配置会直接显示 shared/missing metrics 与 result contract 差异。
-- Intervention contract detail：`ExperimentPlan.to_dict()` 现在输出 `intervention_contracts`，记录 trigger、requires_state、modifies_state 和 physical_sensitive；后续新增 intervention 不会只在名字层面接入。
-- Trial regression：`mf trial validate/run matrix_bigamp_quick` 已在 result-save hard gate 后重新验证，quick trial 输出仍隔离在 ignored `runs/trials/`，并写出 metric schema 与 batch memory breakdown。
-- Compile fallback policy：新增 `algorithm_params.compile_fallback_policy`，默认 `allow` 保持旧 eager fallback；设为 `error` 时 dense BigAMP/spreading/tensor parallel 的 `torch.compile` 失败会在初始化阶段报错。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
-- DType fallback policy：新增 `algorithm_params.dtype_fallback_policy`，默认 `allow` 保持 BF16 不可用时回到 FP32 的旧行为；设为 `error` 时 AGD/spreading/tensor parallel 请求 BF16 但不可用会初始化失败。该字段进入 `ParameterSpec`、parameter chain、resource plan、algorithm config trace 和 execution metadata。
-- TF32 policy：新增 `algorithm_params.use_tf32`，默认 `true` 保持旧的全局 TF32 开启行为；AGD、dense BigAMP、spreading 和 tensor parallel 初始化时会按该字段设置 torch backend，并写入 execution metadata。
-- Resource parameter route narrowing：`algorithm_params.use_compile/use_bf16` 的 `ParameterSpec` 和 active-route 判断已收窄到真实消费它们的 algorithm；例如 dense `bigamp` 下写 `use_bf16` 会显示 inactive，AGD 下写 `use_compile` 会显示 inactive。
-- Seed partition policy：`algorithm_params.seed_partition_policy` 默认 `legacy` 保持旧随机流；`partition_invariant` 已覆盖 tensor parallel、spreading、AGD 和 dense BigAMP。tensor parallel 按 alpha/sample/dimension/role 分流 graph/F/student initialization；spreading 按 alpha/sample/role 分流 student initialization，并让 adaptive restart noise 按 alpha/sample/step/role 分流，同时去掉 opt-in 路径中的 internal `batch_idx` seed 偏移；AGD/dense BigAMP 按 alpha/sample/role 分流 student initialization。resource plan 与 runtime metadata 会标记 `automatic_rebatch_allowed=true`。
-- Runtime seed policy metadata：run metadata 的 `runtime_resource_plan.seed_policy` 现在使用 effective seed policy；显式 `partition_invariant` 不会出现 plan 与 run metadata 一个说 invariant、一个说 legacy 的断裂。
-- Parameter value validation：`ExperimentPlan` 现在会按 `ParameterSpec.type` 检查 raw YAML 中的 enum/bool/int/float/list 基础类型；非法枚举值会在 validate 阶段报 `INVALID_PARAMETER_VALUE`，不再等到 algorithm 初始化。
-- Metric naming decisions：新增 `docs/metric_naming_decisions.md`，把所有 `MetricSemanticClass.canonical_key` 按 equivalent class 列成命名决策表。contract test 会检查 `metrics_semantics.md` 和命名表覆盖所有 canonical metric class，避免后续新增 metric 只改代码不改语义文档。
-- Result schema map：`docs/result_schema_contract.md` 新增 run directory/result/latest 的层级地图，明确 `config.json`、`metadata.json`、`metrics.json`、`output_contract.json`、`events.jsonl`、`manifest.json`、`artifacts/results.pt`、`plots/` 和 `results/latest` 的角色。测试会检查文档覆盖 canonical result files。
-- Algorithm integration map：新增 `docs/algorithm_integration_contract.md`，把 `agd/bigamp/bigamp_spreading/bigamp_tensor/bigamp_tensor_parallel/agd_tensor/agd_spreading/combined` 的主链路状态、result contract 和去重策略列成硬文档。测试会检查所有 `AlgorithmSpec.key` 都被文档覆盖。
-- Tensor parity seed status：tensor parity contract 现在区分 parallel 默认 legacy batch-sensitive seed 与 opt-in `partition_invariant`，避免把“parallel 内部分批稳定”误读成“serial/parallel 物理 parity 已完成”。
-- Replan safety metadata：effective seed policy 现在集中由 `get_effective_seed_policy_summary()` 生成，并进入 `ExperimentPlan.resource_plan`、runtime `runtime_resource_plan` 和 `ExecutionPlan`；初始 plan 仍标记 `replan_implemented=false`，通过 `replan_with_safety()` 生成的新 plan 会记录 `replan_implemented=true`、`parent_plan_id` 和 replan provenance。
-- Checkpoint flush contract：`CheckpointManager.save()` 保持异步，但新增 `flush()` 暴露后台写入失败；OOM abort 退出前和成功清理 checkpoint 前都会等待 flush，避免把“save 已排队”误认为“checkpoint 已落盘”。
-- ExecutionPlan provenance：parallel planner 现在给每个 `ExecutionPlan` 写入 `plan_id`、原始 `EstimationParams` 快照和轻量 `replan_provenance.batch_summary`；runtime metadata 会带上这些字段，为未来真实 OOM rebatch 提供可追踪输入。
-- CUDA OOM contract：runner 现在把 cooperative `MemoryAbortException` 和直接 `torch.cuda.OutOfMemoryError` 统一到 checkpoint/flush/exit 路径，避免真实 allocation OOM 绕过 checkpoint。
-- Partial resume contract：runner 现在在一个 planned batch 只有部分 alpha 已完成时只运行剩余 alpha，并用 `completed_alphas` 覆盖全 scan 作为 checkpoint cleanup 条件，为未来 batch retry/replan 打基础。
+- 分支：`dev`
+- 最近阶段提交：
+  - `e0e8b31 Complete projection metric contract fixtures`
+  - `256ce69 Harden AlgorithmResult active paths`
+  - `7733425 Calibrate scan-aware memory estimator`
+  - `8da8fb5 Wire first step-level runtime probe`
+  - `d78e43c Complete ResultCube plot query flow`
+- 最近全量测试：`python -m pytest -q` -> `295 passed, 9 skipped`
+- 最近正式配置校验：`mf validate src/matrix_factorization/config.yaml` -> no errors，只有 parsed-only / inactive-route warnings。
 
-## 本轮继续推进
+## Completed
 
-- Flat-key 级 metric semantic 拆分（已完成并 push）：
-  - `Q_W_mean` 与 `Q_W_prime_mean` 拆开。
-  - `Q_X_mean` 与 `Q_X_prime_mean` 拆开。
-  - `physical_overlap_W/X/Y` 拆开。
-  - replica raw / prime 拆开。
-- 并行/显存 hardening：
-  - execution metadata 已接入 tensor result。
-  - internal alpha batch plan 已接入 tensor result。
-  - metrics-only tensor path 已避免无用 placeholder factor 分配。
-  - tensor parallel 不再保留不可达的旧 `_estimate_batch_memory` 残片。
-  - batch end progress event 已记录真实 elapsed duration。
-  - seed policy 已机器可读化；当前 partition-sensitive 算法禁止把自动重分批当成等价行为。
-  - tensor parallel 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 tensor supergraph index 前缀和 student init 随机流不依赖 internal alpha batch 的 C_max。
-  - AGD 与 dense BigAMP 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后同一个 alpha/sample 的 student initialization 不依赖 alpha batch 分组。
-  - spreading 新增 opt-in `seed_partition_policy=partition_invariant`；默认 legacy 不变，开启后 graph/F 使用稳定 base seed，cold/warm start 初始化按 alpha/sample/role 分流，adaptive restart noise 按 alpha/sample/step/role 分流。
-  - planner 层 OOM replan 已 hard-gate：只有 partition-invariant 且带原始 estimation snapshot 的 plan 能生成更保守的新 plan；runner 当前策略仍是 checkpoint/resume，不自动同进程 retry。
-  - replan safety 已进入静态 plan、runtime metadata 和 `ExecutionPlan`；`partition_invariant` policy 会打开 `automatic_rebatch_allowed`，但 `replan_implemented=false` 会阻止程序把未来功能误报为已实现。
-  - tensor parallel compile fallback 已进入 metadata；`effective_use_compile` 不再把 “super step fallback eager” 误写成生效。
-  - dense `bigamp` compile fallback 已进入 metadata；compile 失败时不再只靠 console print 暴露。
-  - `bigamp_spreading` compile fallback 已进入 metadata；`requested_use_compile/effective_use_compile` 不再混用同一个字段。
-  - spreading chunk_size 已进入 algorithm result metadata；当前仍是手动配置而不是自动调参。
-  - `agd` 已消费 `algorithm_params.use_bf16=false`，不会再只根据 CUDA device 自动打开 autocast。
-  - `bigamp_spreading` 已消费 `algorithm_params.use_bf16=false`，不会再在用户显式关闭 BF16 时根据硬件自动打开。
-  - `algorithm_params.use_tf32` 已接入 AGD、dense BigAMP、spreading 和 tensor parallel，默认保持旧行为，显式关闭会写入 metadata。
-  - Resource/Batching 与 tensor parity 的显存约束已加入测试。
+### Hard-interface baseline
 
-## 尚未完成
+- `ParameterSpec / AlgorithmSpec / TeacherSpec / GraphSpec / MetricSpec / OutputSpec / InterventionSpec / ProbeSpec / AnalyzerSpec / SourceInventorySpec / TrialSpec / ResourceSpec / BatchingSpec / MemoryModelSpec / SeedPolicySpec` 已进入 `src/matrix_factorization/core/contracts.py`。
+- registry 已 spec-gated：新增 algorithm/teacher/graph/metric/output 没有 matching spec 会 import/test fail。
+- `ExperimentPlan`、`mf validate`、`mf explain-config`、`--json`、`--strict` 已接入。
+- `parameter_chain` 会记录 YAML path、effective value、consumer、当前 route 是否 active、物理敏感性。
 
-- runner OOM 后同进程自动 retry（planner 已能为安全 seed policy 重建更保守 plan，但 runner 仍 checkpoint/exit）。
-- TF32 OOM fallback 的用户策略选择（`use_tf32` 已可显式控制，但 OOM 后不自动切换）。
-- spreading chunk size auto tuning 的真实实现（当前已记录执行 metadata，但不自动调参）。
-- tensor serial/parallel 训练 loop 合并。
-- tensor serial/parallel teacher scale、alpha graph、damping 语义统一。
-- per-algorithm memory formula 的数值校准与真实 probe 对照。
-- runtime probe/intervention 真正接入算法内部 step state（当前未接线 probe 已 hard error）。
-- metric/review queue 的最终命名选择需要人工确认。
+### Trial workflow
 
-## 暂不自动改的高风险项
+- `trials/active/<trial_key>/config.yaml` 是 quick/debug trial 的唯一受控参数入口。
+- `mf trial list/explain/validate/run` 已实现。
+- `mf trial run` 只自动运行 `runtime_class: quick`，输出进入 ignored `runs/trials/`，不刷新 `results/latest`。
+- 已有 quick trials：`matrix_bigamp_quick`、`scan_alpha_quick`、`scan_steps_quick`、`scan_size_quick`、`scan_init_quick`、`scan_mixed_axes_quick`。
 
-这些项可能改变数值路径或物理含义，只能先建测试、metadata、review queue：
+### Projection metric schema v3
 
-- teacher/student scale。
-- alpha normalization。
-- damping update direction。
-- Onsager / `prev_s`。
-- seed 与 batch partition 的关系。
-- BF16/TF32/torch.compile OOM 后自动切换。
-- OOM 后自动重试并继续跑。
+- Formal metric 已迁移到 projection-first：
+  - `Q_Y`：absolute projection，teacher norm squared normalization，不 clip。
+  - `Q_W/Q_X`：matrix latent coordinate projection。
+  - `Q_N`：tensor latent node/spin/factor projection。
+  - `Q_W_GRAM_ROOT/Q_X_GRAM_ROOT`：Gram diagnostic，不是 coordinate projection。
+- Formal schema 不再把 `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime` 当 active metric。
+- 旧 result schema `<3` 的 `Q_Y_mean` 会标记为 legacy cosine/proxy；schema `3` 的 `Q_Y_mean` 标记为 absolute projection。
+- `projection_policy` 记录 degenerate teacher norm 约定：teacher norm 过小时返回 0。
+- 手算 fixture 已覆盖 projection helper、matrix observed/unobserved/full、Gram-root 分离、spreading observed perfect teacher、tensor observed/Q_N。
+
+### AlgorithmResult active path
+
+- runner active path 优先消费 `AlgorithmResult.metrics_by_alpha`。
+- metrics-only tensor route 不再保存 dummy zero `W/X` 当真实 factor。
+- active tensor route 缺 metric 时 runner 不再从私有 `_batch_metrics` 补救。
+- matrix algorithms 仍通过 legacy adapter 包装 `(W, X)`，但 metadata 写明 `result_source=legacy_matrix_adapter` 或 runner adapter。
+
+### Canonical scan + ResultCube + PlotQuery
+
+- 旧 `scan_mode / alpha_scan / steps_scan / nested_scan / hysteresis_scan` 已被 canonical `scan.axes` 主入口替代。
+- `ScanPlan` 展开 `ScanPoint`，每个点有 coordinates、overrides、effective_config_hash、group_id。
+- canonical scan 结果写入 `ResultCube`。
+- `ResultCube.resolve_plot_query()` 已成为查询硬边界：
+  - `where / series_by / compare / x / y` 引用不存在坐标会 error。
+  - 缺 metric 会 error。
+  - 同一条曲线选中重复 x 值会 error，要求收紧 `where/compare` 或增加 `series_by`。
+- `mf explain-config` 会预览 PlotQuery 选择的 series 和 point_id。
+- `scan_mixed_axes_quick` 已真实生成 `plots/qy_mixed_axes.png`。
+
+### Scan-aware memory / resource planning
+
+- `ResourceExecutionPlan` 已按 canonical scan 的 non-alpha group 分组。
+- 当前真实自动 folding 维度只有 `alpha`；`sample/student` folding 仍被 contract 禁用。
+- `size/init/damping/onsager/max_steps` 默认不跨 group folding。
+- planner 会把 memory estimate、dominant stage、calibration source、seed policy 写入 plan/runtime metadata。
+- GB 级本地 calibration 已闭环，当前 profile raw formula vs allocated peak 都在目标内：
+  - `matrix_bigamp_target_10gb / 16gb`
+  - `matrix_agd_target_10gb / 16gb`
+  - `spreading_bigamp_target_10gb / 16gb`
+  - `tensor_serial_target_6gb / 10gb`
+  - `tensor_parallel_target_6gb / 10gb`
+- spreading 大尺寸 graph fallback 已改成 sparse unique edge sampling，避免 `randperm(N1*N2)` 的巨大临时 allocation。
+
+### Runtime extensions
+
+- `batch_summary` probe 是 runner-level `after_batch` active probe。
+- `state_slice` 已成为 AGD 的真实 `after_step` active probe：
+  - AGD 每步暴露 `AlgorithmStateView`。
+  - executor 只记录轻量 JSON summary：factor shape/dtype/device/mean/norm、step_index、loss。
+  - 不复制大 tensor，不修改 W/X，不改变训练数值。
+- `tensor_state_slice` 和 `variance_slice` 仍是 `declared_only`；请求它们会 preflight error。
+- warm/cold/adaptive restart 仍主要是 metadata/spec 映射；未迁移成真正独立 intervention executor。
+
+## Active but limited
+
+- Matrix algorithms 还不是原生 `AlgorithmResult` 实现；目前通过 adapter。
+- OOM 后同进程自动 retry 还未实现；runner 仍 checkpoint/flush/exit。
+- `partition_invariant` seed policy 已打开 planner 层安全 rebatch 可能性，但 runner 默认不会自动改 batch 并继续跑。
+- `spreading.chunk_size` 只记录 metadata，不做 auto tuning。
+- `MetricSpec` 已接入 semantic/validation，但 metric compute 仍包住现有公式实现，不是每个 MetricSpec 都有独立 compute class。
+- PlotQuery 已有硬查询和绘图，但没有交互式 result browser/UI。
+
+## Not started / future work
+
+- tensor serial/parallel 物理合并。
+- tensor serial/parallel 数值 parity 长跑验证。
+- sample/student folding 的真实执行接入：
+  - runner 传 `sample_range/sample_offset`
+  - algorithm 使用 global sample index
+  - metrics 合并 sample batch
+- 真正会改变训练轨迹的 intervention，例如 Metropolis-like kick。
+- medium/gpu-heavy trial 的自动执行策略和 promotion CLI。
+
+## Verification commands
+
+常规修改后至少运行：
+
+```bash
+python -m pytest -q
+mf validate src/matrix_factorization/config.yaml
+mf trial validate matrix_bigamp_quick
+mf trial run matrix_bigamp_quick
+mf trial run scan_mixed_axes_quick
+git diff --check
+```
+
+显存公式或 planner 修改后还需要重新跑 `docs/parallel_memory_contract.md` 中列出的 GB calibration profiles。

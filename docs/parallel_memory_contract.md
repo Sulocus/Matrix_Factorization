@@ -393,11 +393,11 @@ mf calibrate memory run matrix_bigamp_target_10gb
 - `formula_abs_error_pct <= 10`：`theoretical_estimate_gb` 对齐 `actual_delta_peak_tensor_allocated_gb`。
 - `device_abs_error_pct <= 15`：`estimated_total_with_runtime_gb` 对齐 `actual_delta_peak_cuda_device_used_gb`。
 
-只有两条都通过时，`calibration_status=within_tolerance`，校准命令才会更新本地 `runs/calibration/memory/latest_coefficients.json` 为 active planner 系数。否则记录会标记为 `formula_mismatch` 或 `device_mismatch`，不会自动把大 factor 写成长期 planner 方案。
+只有两条都通过时，`calibration_status=within_tolerance`，该 profile 才能作为 planner 可信校准依据。否则记录会标记为 `formula_mismatch` 或 `device_mismatch`，不会自动把大 factor 写成长期 planner 方案。
 
 ### 2026-04-26 本地 RTX 5090 校准记录
 
-这组记录是实际本地运行，不是 smoke，也不是只看代码估算。raw artifact 在 ignored 的 `runs/calibration/memory/`，下面只记录轻量摘要：
+这组记录是实际本地运行，不是只看代码估算，也不是 quick trial。raw artifact 在 ignored 的 `runs/calibration/memory/`，下面只记录轻量摘要：
 
 | algorithm | profile | raw estimate GB | actual allocated GB | formula error | device estimate GB | device used delta GB | device error |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -482,11 +482,12 @@ metadata_only
 
 ## 仍未完成的事
 
-- 不用中大型校准 profile 自动回写 memory coefficient。
 - 不在 OOM 后自动切换 dtype；普通 BF16 不可用只按 `dtype_fallback_policy` 处理。
 - 不在 OOM 后自动关闭 compile；普通 `torch.compile` 初始化失败只按 `compile_fallback_policy` 处理。
+- runner OOM 后同进程自动 retry 尚未实现；当前仍是 checkpoint/flush/exit。
 - seed-sensitive 路径不在 OOM 后自动重分批。
-- `nested/hysteresis` 仍由 legacy handler 执行；`ScanPlan` 先作为硬 contract 和 plot grouping 来源。
+- `sample/student` folding 尚未真实接入 runner/algorithm，只能作为 contract 中被拒绝的 future capability。
+- `steps_reuse` 的增量继续训练语义还未重新整合到 canonical scan executor。
 - 不把 tensor serial/parallel 合并。
 
 这些都进入 `docs/parallel_memory_review_queue.md`。

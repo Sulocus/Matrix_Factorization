@@ -103,8 +103,10 @@ deprecated
 - `algorithm_params.seed_partition_policy` 提供 opt-in 新路径：默认 `legacy` 保持旧数值；`partition_invariant` 会让 tensor parallel 的 tensor supergraph/F/student initialization 按 alpha/sample/dimension/role 分流，让 spreading 的 graph/F/student initialization 与 adaptive restart noise 不依赖 internal batch seed，让 AGD 与 dense BigAMP 的 student initialization 按 alpha/sample/role 分流。`resource_plan.seed_policy` 和 runtime metadata 会显示 `partition_invariant=true` 与 `automatic_rebatch_allowed=true`。
 - `parameter_chain` 会按当前 algorithm/scan 路由标记 inactive 字段。例如 AGD 路由下写入 `algorithm_params.damping` 或 `spreading.seed`，会显示 `inactive_current_route`，避免把“被 dataclass 接住”误读成“算法实际消费”。
 - resource/optimization 参数也按真实 consumer 标记。例如 dense `bigamp` 当前不消费 `algorithm_params.use_bf16`，AGD 当前不消费 `algorithm_params.use_compile`；这些字段如果出现在 YAML 中，会在普通 validate 中 warning、在 strict mode 中 error。
-- runtime hooks 已先接入低风险 runner-level `after_batch`：`batch_summary` probe 会在 `runtime_extension_report.probe_reports.batch_summary` 里记录 batch index、alpha values、metric keys、AlgorithmResult 可用输出、result contract/kind/source、batching source、`metrics_by_alpha` 摘要，以及 `AlgorithmResult.metadata` / `execution_metadata` / `tensor_execution` / `internal_alpha_batch_plan` 的轻量 key/summary。它不进入算法 step loop，也不复制 factor/tensor payload，因此不改变训练状态、随机数或数值行为。
-- `state_slice`、`tensor_state_slice`、`variance_slice` 目前标记为 `declared_only`。如果用户在 YAML 中请求这些尚未接入 algorithm step hook 的 probe，`mf validate` 会报 `PROBE_DECLARED_ONLY`，避免“配置看似生效但运行时没有产物”。
+- runtime hooks 已接入两个低风险 probe：
+  - runner-level `after_batch`：`batch_summary` probe 会在 `runtime_extension_report.probe_reports.batch_summary` 里记录 batch index、alpha values、metric keys、AlgorithmResult 可用输出、result contract/kind/source、batching source、`metrics_by_alpha` 摘要，以及 `AlgorithmResult.metadata` / `execution_metadata` / `tensor_execution` / `internal_alpha_batch_plan` 的轻量 key/summary。它不进入算法 step loop，也不复制 factor/tensor payload。
+  - AGD `after_step`：`state_slice` probe 通过 `AlgorithmStateView` 暴露 `step_index`、`student_factors`、`teacher_factors` 和轻量 loss summary。executor 只写 shape/dtype/device/mean/norm 等 JSON 摘要，不复制完整 tensor，不修改 W/X。
+- `tensor_state_slice`、`variance_slice` 仍标记为 `declared_only`。如果用户在 YAML 中请求这些尚未接入 algorithm step hook 的 probe，`mf validate` 会报 `PROBE_DECLARED_ONLY`，避免“配置看似生效但运行时没有产物”。
 - runtime extension 触发时会检查实际 `AlgorithmStateView` 是否包含 spec 声明的 `requires_state`；如果 algorithm spec 声明了能力但运行时没有传出对应 state，会直接报错。
 - analyzer 在 run 后执行前会检查实际 `ExperimentResult` 是否包含 `AnalyzerSpec.requires` 里的输入；如果理论 contract 说能产出、实际结果缺失，会直接报错。
 - 每个 scan point 的 result 会保存 `metric_contract`，`metrics.json` 顶层也会保存 `metric_contracts`，用于追踪 flat metrics 对应哪些 `MetricSpec` 以及来源是 `algorithm_result`、runner matrix 计算还是 runner spreading 计算。
@@ -119,7 +121,7 @@ deprecated
 - `results/latest` 只接受同时具有 `config.json` 和 `metadata.json` 的 run；半成品目录不会进入 display schema。
 - runner 会构造 `RuntimeExtensionExecutor`，在高层 `before_initialize` / `after_run` hook 记录 runtime extension report；当前 executor 不进入算法 step，也不改变 warm start / restart 行为。
 
-当前默认 `src/matrix_factorization/config.yaml` 会触发一个有意保留的 hard-interface error：`tensor_order=3` 路由到 `bigamp_tensor_parallel`，但 YAML 中 `algorithm_params.adaptive_restart: true` 只声明兼容 `bigamp_spreading`。这不是本轮自动修复对象，而是 validator 正确暴露出的“参数写了但当前算法未声明消费”的断点。
+当前默认 `src/matrix_factorization/config.yaml` 的 `mf validate` 不应有 errors；仍会显示 parsed-only 字段、inactive-current-route 字段以及 `tensor_order=3` 强制路由到 `bigamp_tensor_parallel` 的 warnings。这些 warning 是 hard-interface 正确暴露出的“字段存在但当前 route 不消费”或“YAML algorithm 被 tensor route 覆盖”的信息。
 
 ## 垂直扩展入口
 
@@ -139,7 +141,7 @@ analyzers:
   - key: tensor_heatmap_summary
 ```
 
-如果 probe 需要的 state 没有被当前 algorithm 声明为 `state_capabilities`，`mf validate` 会失败。若后续代码真正触发 hook 但没有把对应 state 放进 `AlgorithmStateView`，runtime executor 也会失败。当前 runtime executor 会记录 probe/analyzer 的调度报告；真正的 per-step state slice 还需要后续 algorithm 暴露 `AlgorithmStateView` 后接入。
+如果 probe 需要的 state 没有被当前 algorithm 声明为 `state_capabilities`，`mf validate` 会失败。若后续代码真正触发 hook 但没有把对应 state 放进 `AlgorithmStateView`，runtime executor 也会失败。当前 `state_slice` 只对 AGD 标记为 runtime active；tensor 或 variance state 的 per-step probe 仍需后续 algorithm 显式暴露状态。
 
 ## 仍未完成的后续阶段
 
@@ -147,5 +149,5 @@ analyzers:
 - `MetricSpec` 已接入 plan validation、result semantic metadata、per-point metric contract 和 registry gate；runner 仍复用旧公式实现，后续可把公式计算进一步拆到 MetricSpec compute adapter 中。
 - `OutputSpec` 已用于 preflight、保存前依赖检查和 `output_contract.json`，但具体绘图函数仍在 `ExperimentResult.save()` 中调度，后续可继续拆成独立 OutputPlan executor。
 - `InterventionSpec` 已定义并有 no-op executor；现有 warm start / adaptive restart 还没有完全迁移成 intervention module。
-- `ProbeSpec` / `AnalyzerSpec` 已定义并可 preflight，高层 runtime executor 已接入；per-step probe 和完整 analyzer executor 仍需后续 algorithm state 暴露。
+- `ProbeSpec` / `AnalyzerSpec` 已定义并可 preflight；AGD `state_slice` 是第一个真正 step-level probe。后续仍需把 BigAMP/spreading/tensor 的 state view 逐步接入。
 - `bigamp_tensor` 与 `bigamp_tensor_parallel` 已有机器可读 parity contract 和 gap report；数值 parity、teacher scale、alpha normalization 等物理一致性仍需本地验证后才能合并。

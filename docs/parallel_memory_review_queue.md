@@ -2,6 +2,8 @@
 
 这份文档记录并行与显存优化中不能直接自动修改的高风险项。它们可能改变随机样本、数值路径、dtype 行为或物理解释，因此需要单独审查。
 
+当前状态：GB 级本地 calibration profile 已经对齐到目标误差内，但这只覆盖当前 RTX 5090、当前 dtype/compile/internal batching 和已登记 profile。换 GPU、tensor order、batching 实现或 dtype/compile 策略后必须重新校准，不能沿用旧结论。
+
 ## Seed Partition Invariant
 
 当前风险：

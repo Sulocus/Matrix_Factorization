@@ -79,3 +79,10 @@ projection_policy.degenerate_teacher_norm = return_zero
 ```
 
 因此旧 schema 中的 `Q_Y_mean` 不应被重解释成新 projection `Q_Y_mean`。
+
+## Current Implementation Status
+
+- Projection helper、matrix observed/unobserved/full fixture、spreading observed fixture、tensor observed/Q_N fixture 已进入测试。
+- `MetricSpec` 和 `metric_schema` 使用 projection-first semantic metadata。
+- `ExperimentResult.load()` 会给旧 schema `<3` 的 `Q_Y_mean` 添加 legacy interpretation metadata。
+- 新 run 不应在 formal metric surface 中产出 `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime`；这些只能作为 legacy/debug/internal 解释存在。
