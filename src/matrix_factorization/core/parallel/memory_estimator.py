@@ -762,11 +762,19 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     B = params.batch_size  # Alpha batch size
     alpha_max = params.alpha_max
     
-    # Compute derived dimensions
-    # C_max = max edges per sample = ceil(alpha * N1 * N2 / M)
-    # NOTE: Formula FIXED - was incorrectly using alpha_max * M * N1, causing 12.5x overestimation
+    # Compute derived dimensions.
+    #
+    # Must match modules/graphs/supergraph.py:create_supergraph exactly:
+    #   C_alpha = floor(alpha * M * N1), capped by N1*N2.
+    #
+    # This is intentionally not alpha * N1 * N2 / M.  The spreading runner
+    # constructs F/Y/indices from the supergraph formula above, and the step
+    # kernel gathers tensors of shape (B, S*C_max, M).  Underestimating C_max
+    # here lets the planner alpha-fold unsafe batches and can surface as a
+    # low-level CUDA driver error during advanced indexing.
     import math
-    C_max = max(1, int(math.ceil(alpha_max * N1 * N2 / M)))  # Correct formula
+    C_max = int(math.floor(alpha_max * M * N1))
+    C_max = max(1, min(C_max, N1 * N2))
     SC = S * C_max  # Total edges
     SN1 = S * N1  # Flattened row dim
     SN2 = S * N2  # Flattened col dim
@@ -969,15 +977,88 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     
     persistent_gb = student_params.gb + supergraph.gb
     edge_workspace_gb = _tensor_gb((B, SC, M), storage_dtype)
+    edge_scalar_gb = _tensor_gb((B, SC), storage_dtype)
+    f_compute_gb = _tensor_gb((SC, M), storage_dtype)
     scatter_state_gb = _tensor_gb((B, scatter_dim, M), storage_dtype, count=2)
+    state_update_gb = _tensor_gb((B, S * N1, M), storage_dtype, count=8)
+    if N2 != N1:
+        state_update_gb = (
+            _tensor_gb((B, S * N1, M), storage_dtype, count=4)
+            + _tensor_gb((B, S * N2, M), storage_dtype, count=4)
+        )
+
+    # create_supergraph() can allocate a batched random-noise matrix on CUDA
+    # before the algorithm step starts.  This peak is independent of alpha
+    # batching but is part of the run-level torch.cuda.max_memory_allocated().
+    total_edges = N1 * N2
+    graph_noise_gb = 0.0
+    graph_topk_partition_gb = 0.0
+    graph_topk_selection_gb = 0.0
+    if S * total_edges * DType.FLOAT16.bytes / (1024**3) < 4.0:
+        graph_noise_gb = _tensor_gb((S, total_edges), DType.FLOAT16)
+        # torch.topk(noise, k=C_max, dim=1) is not just the returned
+        # (values, indices).  On CUDA it uses full-row partition work buffers.
+        # Model those buffers explicitly by shape instead of hiding them in a
+        # global calibration multiplier.
+        graph_topk_partition_gb = _tensor_gb((S, total_edges), DType.FLOAT16)
+        graph_topk_selection_gb = _tensor_gb((S, max(1, total_edges // 2)), DType.FLOAT16)
+    graph_topk_gb = (
+        _tensor_gb((S, C_max), DType.FLOAT16)  # topk values
+        + _tensor_gb((S, C_max), DType.INT64)  # topk indices
+    )
+
+    # Explicit live-tensor model for bigamp_step_disjoint_union_flat():
+    # - four advanced-index gather copies are retained until the function exits
+    # - W update contribution tensors remain live while X update starts
+    # - elementwise chains create full edge-shaped temporaries
+    # - scatter_add_ may materialize the expanded int64 index view internally
+    gather_selected_gb = _tensor_gb((B, SC, M), storage_dtype, count=4)
+    forward_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+    variance_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=4)
+    retained_w_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+    current_x_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+    elementwise_chain_scratch_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+    scatter_index_workspace_gb = _tensor_gb((B, SC, M), DType.INT64)
+    scalar_edge_workspace_gb = edge_scalar_gb * 8
+
+    forward_peak_gb = (
+        persistent_gb
+        + gather_selected_gb
+        + f_compute_gb
+        + forward_expression_gb
+        + scalar_edge_workspace_gb
+    )
+    variance_peak_gb = (
+        persistent_gb
+        + gather_selected_gb
+        + f_compute_gb
+        + variance_expression_gb
+        + scalar_edge_workspace_gb
+    )
+    scatter_x_peak_gb = (
+        persistent_gb
+        + gather_selected_gb
+        + f_compute_gb
+        + retained_w_contrib_gb
+        + current_x_contrib_gb
+        + elementwise_chain_scratch_gb
+        + scatter_index_workspace_gb
+        + scalar_edge_workspace_gb
+        + state_update_gb
+    )
+
     stages = {
         "spreading_persistent_state": persistent_gb,
-        # Gather/forward/scatter edge workspaces are sequential in the current
-        # chunked spreading implementation.  GB calibration on RTX 5090 shows
-        # the allocated peak tracks persistent state plus about 1.23 live
-        # edge-workspace equivalents; summing all gather/forward components
-        # overestimates target profiles by more than 160%.
-        "spreading_edge_update_peak": persistent_gb + 1.23 * edge_workspace_gb,
+        "spreading_graph_generation_peak": (
+            supergraph.gb
+            + graph_noise_gb
+            + graph_topk_partition_gb
+            + graph_topk_selection_gb
+            + graph_topk_gb
+        ),
+        "spreading_forward_peak": forward_peak_gb,
+        "spreading_variance_peak": variance_peak_gb,
+        "spreading_edge_update_peak": scatter_x_peak_gb,
         "spreading_scatter_peak": persistent_gb + edge_workspace_gb + scatter_state_gb,
     }
     if params.adaptive_damping:

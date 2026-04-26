@@ -70,3 +70,23 @@ def test_underestimated_historical_profiles_are_stage_model_regressions(name, pa
     raw = MemoryEstimator(apply_calibration=False).estimate_raw(params)
 
     assert raw == pytest.approx(recorded_peak_gb, rel=0.10), name
+
+
+def test_spreading_estimator_uses_supergraph_edge_count_for_alpha_folding():
+    params = EstimationParams(
+        N1=200,
+        N2=200,
+        M=50,
+        S=100,
+        alpha_values=[round(0.1 * i, 1) for i in range(41)],
+        algorithm_key="bigamp_spreading",
+        use_compile=False,
+        use_bf16=True,
+        f_distribution="rademacher",
+    )
+
+    estimate = MemoryEstimator(apply_calibration=False).estimate(params)
+
+    assert estimate.dominant_stage == "spreading_edge_update_peak"
+    assert estimate.raw_peak_allocated_gb > 70.0
+    assert estimate.stage_breakdown["spreading_edge_update_peak"] > 70.0

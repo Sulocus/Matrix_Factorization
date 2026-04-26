@@ -363,13 +363,11 @@ def build_resource_execution_plan(
                 work_items.append(_work_item_from_point(point, sample_range, algorithm_key))
 
         batch_axes = _batch_axes(work_items)
-        resource_batch = ResourceBatch(
+        resource_batch = _resource_batch_from_template(
             batch_index=batch_idx,
+            group_id="default",
+            template=batch,
             work_items=work_items,
-            batch_axes=batch_axes,
-            memory_estimate_gb=float(getattr(batch, "estimated_memory_gb", 0.0) or 0.0),
-            memory_breakdown=dict(getattr(batch, "memory_breakdown", {}) or {}),
-            calibration_source=calibration_source,
             seed_partition_policy=seed_partition_policy,
         )
         batches.append(resource_batch)
@@ -442,13 +440,11 @@ def _grouped_alpha_resource_plan(
                     work_items.append(_work_item_from_point(point, sample_range, algorithm_key))
             if not work_items:
                 continue
-            batches.append(ResourceBatch(
+            batches.append(_resource_batch_from_template(
                 batch_index=batch_index,
+                group_id=group_id,
+                template=batch,
                 work_items=work_items,
-                batch_axes=_batch_axes(work_items),
-                memory_estimate_gb=float(getattr(batch, "estimated_memory_gb", 0.0) or 0.0),
-                memory_breakdown=dict(getattr(batch, "memory_breakdown", {}) or {}),
-                calibration_source=calibration_source,
                 seed_partition_policy=seed_partition_policy,
             ))
             batch_index += 1
@@ -485,13 +481,11 @@ def _single_point_resource_plan(
     template = template_batches[0] if template_batches else None
     sample_range = tuple(getattr(template, "sample_range", (0, samples_per_alpha))) if template else (0, samples_per_alpha)
     batches = [
-        ResourceBatch(
+        _resource_batch_from_template(
             batch_index=idx,
+            group_id="default",
+            template=template,
             work_items=[_work_item_from_point(point, sample_range, algorithm_key)],
-            batch_axes=["point"],
-            memory_estimate_gb=float(getattr(template, "estimated_memory_gb", 0.0) or 0.0),
-            memory_breakdown=dict(getattr(template, "memory_breakdown", {}) or {}),
-            calibration_source=calibration_source,
             seed_partition_policy=seed_partition_policy,
         )
         for idx, point in enumerate(scan_plan.points)

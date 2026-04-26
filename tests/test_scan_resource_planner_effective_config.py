@@ -93,3 +93,36 @@ def test_max_steps_axis_is_isolated_from_alpha_folding():
     assert resource_plan.num_batches == 3
     assert all(batch.batch_axes == ["point"] for batch in resource_plan.batches)
     assert [batch.work_items[0].axis_values["max_steps"] for batch in resource_plan.batches] == [1, 2, 3]
+
+
+def test_spreading_large_sample_alpha_scan_is_not_full_alpha_folded():
+    alpha_values = [round(0.1 * i, 1) for i in range(41)]
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=200, N2=200, M=50),
+        training=TrainingParams(samples_per_alpha=100, max_steps=2, max_epochs=2),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=alpha_values),
+        algorithm_params=AlgorithmParams(use_compile=False, use_bf16=True),
+        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=262144),
+        scan_spec={
+            "axes": {
+                "alpha": {
+                    "path": "alpha",
+                    "values": {"start": 0.0, "stop": 4.0, "step": 0.1},
+                },
+            }
+        },
+    )
+
+    resource_plan = build_scan_resource_execution_plan(
+        scan_plan=build_scan_plan(config),
+        base_config=config,
+        coordinator=ParallelCoordinator(estimator=MemoryEstimator(apply_calibration=False)),
+        batching_spec=get_batching_specs()[config.algorithm_key],
+    )
+
+    assert resource_plan.preflight_errors == []
+    assert resource_plan.num_batches > 1
+    assert resource_plan.num_work_items == 41
+    assert max(len(batch.work_items) for batch in resource_plan.batches) < 41
+    assert resource_plan.max_estimated_device_gb < 24.0
