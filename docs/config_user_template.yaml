@@ -1,0 +1,420 @@
+# =============================================================================
+# Matrix_Factorization 用户手填配置模板
+# =============================================================================
+# 这个文件是“给人手动改参数”的模板：
+#   - 数字选项仍然可用，例如 algorithm: 1。
+#   - 不想扫描时，用单点 alpha scan，而不是写 scan.enabled: false。
+#   - 只想试跑参数时，请复制到 trials/active/<trial_key>/config.yaml。
+#   - 正式默认配置才改 src/matrix_factorization/config.yaml。
+#
+# 跑之前建议：
+#   mf validate <你的配置.yaml>
+#   mf explain-config <你的配置.yaml>
+# =============================================================================
+
+
+# =============================================================================
+# 1. 模型阶数 / 图结构
+# =============================================================================
+# tensor_order:
+#   1 = 一般图 general graph
+#       - 自动允许 intra connection
+#       - 通常配合 algorithm: 2，也就是 bigamp_spreading
+#
+#   2 = 矩阵分解 / 二分图 bipartite matrix factorization
+#       - W-X bipartite graph
+#       - 当前最常用
+#
+#   3 或更高 = tensor factorization
+#       - 会强制路由到 bigamp_tensor_parallel
+#       - 此时 algorithm 字段只作为 YAML 记录，不直接决定最终 algorithm
+tensor_order: 2
+
+
+# =============================================================================
+# 2. Algorithm 选择
+# =============================================================================
+# algorithm:
+#   1 | bigamp            = 标准 dense BiGAMP
+#   2 | bigamp_spreading  = spreading BiGAMP
+#   3 | agd               = 交替梯度下降 AGD
+#   4 | bigamp_tensor     = tensor AMP 入口；tensor_order>=3 时实际路由到 parallel
+#
+# 暂时不要用：
+#   5 | agd_tensor
+#     旧注释里出现过，但当前主 YAML loader 没有把它作为 active path 接通。
+#     如果要恢复，需要先补 AlgorithmSpec/registry/runner/result contract。
+algorithm: 1
+
+
+# =============================================================================
+# 3. Teacher 类型
+# =============================================================================
+# teacher:
+#   1 | orthogonal = 正交 teacher，偏理论基准
+#   2 | standard   = 标准 teacher，常用
+teacher: 2
+
+teacher_config:
+  # init_distribution:
+  #   1 | gaussian   = Gaussian teacher
+  #   2 | rademacher = ±1 teacher / Ising-like
+  init_distribution: 1
+
+
+# =============================================================================
+# 4. 尺寸参数
+# =============================================================================
+# N1, N2:
+#   matrix 两侧大小。square matrix 通常 N1=N2。
+#
+# M:
+#   rank / latent dimension。
+#
+# tensor_order>=3 时，这里的 N1/N2/M 仍会进入 tensor path 的 teacher/factor 尺度；
+# 具体物理含义请以 tensor contract 文档为准。
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+
+# =============================================================================
+# 5. Scan：现在唯一入口是 scan.axes
+# =============================================================================
+# 重要：
+#   旧字段已经不能用：
+#     scan_mode / alpha_scan / steps_scan / nested_scan / hysteresis_scan
+#
+# “关闭 scan”的写法：
+#   程序现在要求 scan.axes 存在。
+#   如果你只想跑一个点，就写单点 alpha：
+#
+#     scan:
+#       axes:
+#         alpha:
+#           path: alpha
+#           values: [1.0]
+#
+# 这样就是“不做参数扫描，只跑 alpha=1.0 一个点”。
+#
+# 当前真实自动并行折叠只支持 alpha；其他 axis 会分组单独跑。
+scan:
+  axes:
+    alpha:
+      path: alpha
+
+      # 写法 A：范围扫描
+      values:
+        start: 0.0
+        stop: 2.0
+        step: 0.1
+
+      # 写法 B：固定列表。需要时把上面的 values 注释掉，改用这一行：
+      # values: [0.0, 0.5, 1.0, 1.5, 2.0]
+
+  # 可选：显存/并行策略。不写就使用默认安全策略。
+  # execution:
+  #   max_allocated_gb: 24.0        # 目标 allocated peak 上限
+  #   target_utilization: 0.75      # 使用当前可用显存的比例
+  #   device_hard_stop_gb: 30.0     # 接近这个 device used 时应停止/报错
+  #   allowed_fold_axes: [alpha]    # 目前只建议 alpha
+  #   auto_rebatch: preflight_only
+
+
+# =============================================================================
+# 6. 常见 scan 例子
+# =============================================================================
+# 这些例子默认全部注释掉；需要时复制到上面的 scan.axes 里。
+#
+# 6.1 只跑一个点，也就是关闭 scan：
+#
+# scan:
+#   axes:
+#     alpha:
+#       path: alpha
+#       values: [1.0]
+#
+#
+# 6.2 扫描 damping：
+#
+# scan:
+#   axes:
+#     alpha:
+#       path: alpha
+#       values: [0.5, 1.0, 1.5]
+#     damping:
+#       path: algorithm_params.damping
+#       values: [0.1, 0.2, 0.5]
+#
+#
+# 6.3 扫描 max_steps：
+#
+# scan:
+#   axes:
+#     alpha:
+#       path: alpha
+#       values: [1.0]
+#     max_steps:
+#       path: training.max_steps
+#       values: [100, 500, 1000]
+#
+#
+# 6.4 冷启动/热启动对照 scan：
+#
+# scan:
+#   axes:
+#     alpha:
+#       path: alpha
+#       values: [0.5, 1.0]
+#     init:
+#       kind: composite
+#       values:
+#         cold:
+#           algorithm_params.init_mode: random
+#         warm_05:
+#           algorithm_params.init_mode: teacher
+#           algorithm_params.init_overlap: 0.5
+#         warm_09:
+#           algorithm_params.init_mode: teacher
+#           algorithm_params.init_overlap: 0.9
+#
+#
+# 6.5 size scan：
+#
+# scan:
+#   axes:
+#     alpha:
+#       path: alpha
+#       values: [0.5, 1.0]
+#     size:
+#       kind: composite
+#       values:
+#         small:
+#           matrix.N1: 100
+#           matrix.N2: 100
+#           matrix.M: 20
+#         large:
+#           matrix.N1: 400
+#           matrix.N2: 400
+#           matrix.M: 80
+
+
+# =============================================================================
+# 7. 训练参数
+# =============================================================================
+training:
+  # samples_per_alpha:
+  #   每个 alpha 点的 replica/sample 数。
+  #   增大后统计更稳，但显存和时间都会上升。
+  samples_per_alpha: 20
+
+  # max_steps:
+  #   BiGAMP / tensor AMP 的最大迭代步数。
+  max_steps: 2000
+
+  # max_epochs:
+  #   AGD 使用。
+  max_epochs: 20000
+
+  # num_workers:
+  #   CPU graph/data generation worker 数。
+  num_workers: 1
+
+
+# =============================================================================
+# 8. 随机种子
+# =============================================================================
+seeds:
+  # base_seed:
+  #   graph / mask / 通用随机流。
+  base_seed: 42
+
+  # teacher_seed:
+  #   teacher factor 随机流。
+  teacher_seed: 12345
+
+  # spreading_seed:
+  #   spreading F / graph 随机流。
+  spreading_seed: 99999
+
+  # student_seed:
+  #   student 初始化；0 表示沿用 base_seed。
+  student_seed: 0
+
+
+# =============================================================================
+# 9. Algorithm 参数
+# =============================================================================
+algorithm_params:
+  # damping:
+  #   BiGAMP / tensor AMP damping。
+  #   物理敏感，改它会改变算法轨迹。
+  damping: 0.2
+
+  # noise_var:
+  #   观测噪声方差。
+  noise_var: 1.0e-5
+
+  # learning_rate:
+  #   AGD 学习率；BigAMP 路径通常不消费。
+  learning_rate: 0.01
+
+  # use_compile:
+  #   true  = 尝试 torch.compile
+  #   false = 关闭 compile，更适合先调试
+  use_compile: true
+
+  # use_bf16:
+  #   true  = 尝试 BF16，省显存/加速，但要注意数值
+  #   false = FP32
+  use_bf16: true
+
+  # use_tf32:
+  #   true/false，CUDA matmul 相关。
+  use_tf32: true
+
+  # default_alpha:
+  #   当 scan 没有 alpha axis 时使用。
+  #   通常不用管；如果关闭 scan，建议还是显式写 alpha values: [x]。
+  default_alpha: 1.0
+
+  # ---------------------------------------------------------------------------
+  # 早停 / restart / adaptive 相关
+  # ---------------------------------------------------------------------------
+  use_early_stop: false
+  target_loss_threshold: 1.0e-8
+
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.05
+  step_decr: 0.5
+  step_window: 5
+  max_bad_steps: 10
+
+  adaptive_restart: false
+  restart_patience: 50
+  restart_noise: 0.1
+
+  acceptance_tolerance: 0.0
+
+  # ---------------------------------------------------------------------------
+  # 初始化：这是单次 run 的初始化，不等于 cold/warm scan
+  # ---------------------------------------------------------------------------
+  # init_mode:
+  #   random  = cold start；不使用 teacher 辅助初始化
+  #   teacher = warm start；按 init_overlap 靠近 teacher
+  #
+  # 如果你说“关闭冷热启动”，通常应该这样写：
+  #   init_mode: random
+  # 并且不要在 scan.axes 里添加 init composite axis。
+  init_mode: random
+
+  # init_overlap:
+  #   只有 init_mode: teacher 时才重要。
+  #   init_mode: random 时可以保留但不会作为 warm start 生效。
+  init_overlap: 0.5
+
+  # debug_verbose:
+  #   true 会增加额外诊断，可能明显变慢。
+  debug_verbose: false
+
+
+# =============================================================================
+# 10. Spreading / Tensor graph 参数
+# =============================================================================
+spreading:
+  # f_distribution:
+  #   1 | rademacher = ±1 F，常用
+  #   2 | gaussian   = Gaussian F
+  f_distribution: 1
+
+  # seed:
+  #   F / spreading graph seed。
+  seed: 12345
+
+  # onsager_correction:
+  #   false = 关闭 Onsager 修正
+  #   true  = 开启 Onsager 修正
+  onsager_correction: false
+
+  # chunk_size:
+  #   graph/tensor path 的分块大小。
+  #   0 = 禁用分块；大尺寸建议保留默认或按显存调整。
+  chunk_size: 262144
+
+
+# =============================================================================
+# 11. 输出设置
+# =============================================================================
+output:
+  # name:
+  #   留空自动生成 run 名。
+  name: ""
+
+  # storage_mode:
+  #   full          = 尽量保存完整内容
+  #   lightweight   = 保存轻量结果，推荐
+  #   plotting_only = 偏绘图输出
+  storage_mode: lightweight
+
+  # save_tensors:
+  #   false = 不保存大 tensor，推荐先调试时使用
+  #   true  = 保存可用 tensor artifact，可能占空间
+  save_tensors: false
+
+  # enable_heatmap:
+  #   false = 关闭 heatmap/GIF，推荐先跑主曲线时关闭
+  #   true  = 开启 heatmap；要求 algorithm/result 能提供对应 artifact
+  enable_heatmap: false
+
+  # rsb_ordering:
+  #   heatmap 聚类排序；enable_heatmap=false 时无意义。
+  rsb_ordering: true
+
+  # heatmap_metric:
+  #   Q_Y = measurement projection overlap
+  #   Q_W = factor Gram-root diagnostic
+  heatmap_metric: "Q_Y"
+
+  # uniform_colormap:
+  #   true/false，heatmap 颜色映射。
+  uniform_colormap: true
+
+  # ---------------------------------------------------------------------------
+  # plot 简写
+  # ---------------------------------------------------------------------------
+  # curves 里推荐继续用简写：
+  #
+  #   A.y = Q_Y_mean
+  #   A.w = Q_W_mean
+  #   A.x = Q_X_mean
+  #
+  #   B.w = Q_W_GRAM_ROOT_mean
+  #   B.x = Q_X_GRAM_ROOT_mean
+  #
+  #   C.o = Q_Y_observed_mean
+  #   C.u = Q_Y_unobserved_mean
+  #
+  #   N.n = Q_N_mean，tensor latent node/spin/factor projection
+  #
+  #   :R  = replica/student-student 版本，例如 A.y:R
+  #
+  # 最简单：
+  plots:
+    - curves: [A.y]
+
+  # 多条曲线：
+  # plots:
+  #   - curves: [A.y, C.o, C.u]
+  #   - curves: [A.w, A.x, B.w, B.x]
+
+  # ResultCube/PlotQuery 高级画图：
+  # plots:
+  #   - x: alpha
+  #     y: Q_Y_mean
+  #     series_by: [damping, init]
+  #     where:
+  #       size: small
+  #     filename: qy_compare.png
