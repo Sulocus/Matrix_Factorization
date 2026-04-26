@@ -117,6 +117,10 @@ class MemoryEstimate:
     per_batch_gb: float
     breakdown: Dict[str, float] = field(default_factory=dict)
     confidence: float = 0.8  # Estimation confidence (0.0-1.0)
+    raw_peak_allocated_gb: float = 0.0
+    device_peak_gb: float = 0.0
+    dominant_stage: str = ""
+    calibration_source: str = "theory_unchecked"
     
     def __repr__(self) -> str:
         return (f"MemoryEstimate(total={self.total_gb:.2f}GB, "

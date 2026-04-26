@@ -109,6 +109,31 @@ def build_resource_execution_plan(
     calibration_source: str = "theory_unchecked",
 ) -> ResourceExecutionPlan:
     """Attach explicit WorkItems to a runner-level execution plan."""
+    if scan_plan.scan_kind in {"steps", "parameter_grid"} or any(
+        getattr(point, "max_steps", None) is not None for point in scan_plan.points
+    ):
+        return _single_point_resource_plan(
+            scan_plan=scan_plan,
+            execution_plan=execution_plan,
+            algorithm_key=algorithm_key,
+            samples_per_alpha=samples_per_alpha,
+            seed_partition_policy=seed_partition_policy,
+            sample_range_honored=sample_range_honored,
+            metadata_only=metadata_only,
+            calibration_source=calibration_source,
+        )
+    if scan_plan.scan_kind in {"nested", "hysteresis"} or len(getattr(scan_plan, "grouping", []) or []) > 1:
+        return _grouped_alpha_resource_plan(
+            scan_plan=scan_plan,
+            execution_plan=execution_plan,
+            algorithm_key=algorithm_key,
+            samples_per_alpha=samples_per_alpha,
+            seed_partition_policy=seed_partition_policy,
+            sample_range_honored=sample_range_honored,
+            metadata_only=metadata_only,
+            calibration_source=calibration_source,
+        )
+
     batches: List[ResourceBatch] = []
     scan_points_by_alpha = _points_by_alpha(scan_plan)
     used_point_ids = set()
@@ -181,6 +206,104 @@ def build_resource_execution_plan(
     )
 
 
+def _grouped_alpha_resource_plan(
+    *,
+    scan_plan: ScanPlan,
+    execution_plan: Any,
+    algorithm_key: str,
+    samples_per_alpha: int,
+    seed_partition_policy: str,
+    sample_range_honored: bool,
+    metadata_only: bool,
+    calibration_source: str,
+) -> ResourceExecutionPlan:
+    """Build batches that alpha-fold only inside each scan output group."""
+    grouped_points: Dict[str, List[ScanPoint]] = {}
+    for point in scan_plan.points:
+        grouped_points.setdefault(point.output_group_id, []).append(point)
+
+    batches: List[ResourceBatch] = []
+    batch_index = 0
+    for group_id in sorted(grouped_points):
+        points_by_alpha: Dict[float, List[ScanPoint]] = {}
+        for point in grouped_points[group_id]:
+            if point.alpha is None:
+                continue
+            points_by_alpha.setdefault(float(point.alpha), []).append(point)
+        for batch in getattr(execution_plan, "batches", []) or []:
+            sample_range = tuple(getattr(batch, "sample_range", (0, samples_per_alpha)))
+            work_items: List[WorkItem] = []
+            for alpha in [float(value) for value in getattr(batch, "alpha_values", []) or []]:
+                for point in points_by_alpha.get(alpha, []):
+                    work_items.append(_work_item_from_point(point, sample_range, algorithm_key))
+            if not work_items:
+                continue
+            batches.append(ResourceBatch(
+                batch_index=batch_index,
+                work_items=work_items,
+                batch_axes=_batch_axes(work_items),
+                memory_estimate_gb=float(getattr(batch, "estimated_memory_gb", 0.0) or 0.0),
+                memory_breakdown=dict(getattr(batch, "memory_breakdown", {}) or {}),
+                calibration_source=calibration_source,
+                seed_partition_policy=seed_partition_policy,
+            ))
+            batch_index += 1
+
+    return ResourceExecutionPlan(
+        algorithm_key=algorithm_key,
+        scan_kind=scan_plan.scan_kind,
+        batches=batches,
+        plot_grouping=[group.to_dict() for group in scan_plan.grouping],
+        seed_partition_policy=seed_partition_policy,
+        sample_range_honored=sample_range_honored,
+        metadata_only=True if scan_plan.scan_kind in {"nested", "hysteresis"} else metadata_only,
+        notes=(
+            "Grouped scan resource plan. Alpha folding is allowed only inside "
+            "one output_group_id; matrix-size and initialization axes are never "
+            "folded together."
+        ),
+    )
+
+
+def _single_point_resource_plan(
+    *,
+    scan_plan: ScanPlan,
+    execution_plan: Any,
+    algorithm_key: str,
+    samples_per_alpha: int,
+    seed_partition_policy: str,
+    sample_range_honored: bool,
+    metadata_only: bool,
+    calibration_source: str,
+) -> ResourceExecutionPlan:
+    """Build one WorkItem batch per scan point for non-alpha-foldable scans."""
+    template_batches = list(getattr(execution_plan, "batches", []) or [])
+    template = template_batches[0] if template_batches else None
+    sample_range = tuple(getattr(template, "sample_range", (0, samples_per_alpha))) if template else (0, samples_per_alpha)
+    batches = [
+        ResourceBatch(
+            batch_index=idx,
+            work_items=[_work_item_from_point(point, sample_range, algorithm_key)],
+            batch_axes=["point"],
+            memory_estimate_gb=float(getattr(template, "estimated_memory_gb", 0.0) or 0.0),
+            memory_breakdown=dict(getattr(template, "memory_breakdown", {}) or {}),
+            calibration_source=calibration_source,
+            seed_partition_policy=seed_partition_policy,
+        )
+        for idx, point in enumerate(scan_plan.points)
+    ]
+    return ResourceExecutionPlan(
+        algorithm_key=algorithm_key,
+        scan_kind=scan_plan.scan_kind,
+        batches=batches,
+        plot_grouping=[group.to_dict() for group in scan_plan.grouping],
+        seed_partition_policy=seed_partition_policy,
+        sample_range_honored=sample_range_honored,
+        metadata_only=metadata_only,
+        notes="Non-alpha scan resource plan; each scan point is isolated.",
+    )
+
+
 def _points_by_alpha(scan_plan: ScanPlan) -> Dict[float, List[ScanPoint]]:
     mapping: Dict[float, List[ScanPoint]] = {}
     for point in scan_plan.points:
@@ -213,6 +336,6 @@ def _batch_axes(work_items: List[WorkItem]) -> List[str]:
     if len(output_groups) > 1:
         axes.append("scan_axis")
     sample_ranges = {item.sample_range for item in work_items}
-    if len(sample_ranges) == 1 and next(iter(sample_ranges))[1] - next(iter(sample_ranges))[0] > 1:
+    if len(sample_ranges) > 1:
         axes.append("sample")
     return axes or ["point"]

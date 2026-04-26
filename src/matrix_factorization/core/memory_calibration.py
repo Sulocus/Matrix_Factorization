@@ -262,6 +262,16 @@ def _build_target_memory_profiles() -> Dict[str, MemoryCalibrationProfile]:
             "purpose": "10GB 级 matrix spreading BiGAMP 校准；覆盖 graph/F/gather/scatter 显存。",
         },
         {
+            "key": "spreading_bigamp_target_16gb",
+            "algorithm_key": "bigamp_spreading",
+            "target_tensor_gb": 16.0,
+            "samples_per_alpha": 4,
+            "alpha_values": [0.1, 0.2, 0.3],
+            "M": 32,
+            "tensor_order": 2,
+            "purpose": "16GB 级 matrix spreading BiGAMP 校准；验证 stage peak 公式的外推误差。",
+        },
+        {
             "key": "tensor_serial_target_6gb",
             "algorithm_key": "bigamp_tensor",
             "target_tensor_gb": 6.0,
@@ -290,6 +300,16 @@ def _build_target_memory_profiles() -> Dict[str, MemoryCalibrationProfile]:
             "M": 256,
             "tensor_order": 3,
             "purpose": "10GB 级 tensor parallel 校准；覆盖 TensorSuperGraph 与内部 alpha batching。",
+        },
+        {
+            "key": "matrix_agd_target_16gb",
+            "algorithm_key": "agd",
+            "target_tensor_gb": 16.0,
+            "samples_per_alpha": 4,
+            "alpha_values": [0.0, 0.1, 0.2, 0.3],
+            "M": 32,
+            "tensor_order": 2,
+            "purpose": "16GB 级 AGD 校准；验证 dense workspace peak 公式的外推误差。",
         },
     ]
     return {spec["key"]: _make_target_profile(**spec) for spec in specs}
@@ -344,7 +364,7 @@ def _solve_square_matrix_size_for_target(
     tensor_order: int,
 ) -> int:
     """Pick N so raw estimator is close to a requested tensor footprint."""
-    estimator = MemoryEstimator()
+    estimator = MemoryEstimator(apply_calibration=False)
 
     def raw_for_n(n: int) -> float:
         profile = MemoryCalibrationProfile(
@@ -428,7 +448,7 @@ def explain_memory_profile(profile_key: str) -> str:
     profile = _get_profile(profile_key)
     config = build_calibration_config(profile)
     params = estimation_params_from_config(config)
-    estimator = MemoryEstimator()
+    estimator = MemoryEstimator(apply_calibration=False)
     estimate = estimator.estimate(params)
     raw_estimate_gb = estimator.estimate_raw(params)
     lines = ["memory calibration profile", ""]
@@ -460,7 +480,7 @@ def explain_memory_profile(profile_key: str) -> str:
 def run_memory_calibration(profile_key: str, output_root: Optional[Path] = None) -> Dict[str, Any]:
     profile = _get_profile(profile_key)
     config = build_calibration_config(profile)
-    estimator = MemoryEstimator()
+    estimator = MemoryEstimator(apply_calibration=False)
     params = estimation_params_from_config(config)
     estimate = estimator.estimate(params)
     raw_estimate_gb = estimator.estimate_raw(params)
@@ -702,7 +722,7 @@ def _update_local_calibration_coefficients(record: Dict[str, Any]) -> None:
 
     existing = algorithms.get(algorithm_key, {})
     previous_factor = float(existing.get("factor", 1.0) or 1.0)
-    factor = max(previous_factor, conservative_factor) if valid_for_planner else previous_factor
+    factor = conservative_factor if valid_for_planner else previous_factor
     if status_failed_lower_bound and valid_for_planner:
         status = "failed_lower_bound_active"
     elif valid_for_planner:

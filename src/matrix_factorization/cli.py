@@ -43,16 +43,25 @@ from matrix_factorization.modules.outputs.latest import refresh_latest_results
 
 
 def load_yaml_config(yaml_path: Path):
-    """从 YAML 文件加载配置，支持所有扫描模式。返回 (config, output_options, raw_yaml)"""
+    """从 YAML 文件加载 canonical scan 配置。返回 (config, output_options, raw_yaml)。"""
     import yaml
     with open(yaml_path, 'r') as f:
         raw_yaml = f.read()  # 保存原始 YAML 字符串用于 checkpoint
     cfg = yaml.safe_load(raw_yaml)
+    legacy_scan_keys = {"scan_mode", "alpha_scan", "steps_scan", "nested_scan", "hysteresis_scan"}
+    present_legacy = sorted(key for key in legacy_scan_keys if key in cfg)
+    if present_legacy:
+        raise ValueError(
+            "旧 scan 配置已从主链路移除，请使用 scan.axes。"
+            f" 发现旧字段: {', '.join(present_legacy)}"
+        )
+    scan_spec = cfg.get("scan")
+    if not isinstance(scan_spec, dict) or "axes" not in scan_spec:
+        raise ValueError("配置必须包含 canonical scan.axes")
 
     # 数字选项映射
     ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 4: 'bigamp_tensor', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd', 'bigamp_tensor': 'bigamp_tensor'}
     TEACHER_MAP = {1: 'orthogonal', 2: 'standard', 'orthogonal': 'orthogonal', 'standard': 'standard'}
-    SCAN_MODE_MAP = {1: 'alpha', 2: 'steps', 3: 'nested', 4: 'hysteresis', 'alpha': 'alpha', 'steps': 'steps', 'nested': 'nested', 'hysteresis': 'hysteresis'}
     F_DIST_MAP = {1: 'rademacher', 2: 'gaussian', 'rademacher': 'rademacher', 'gaussian': 'gaussian'}
 
     # ========== tensor_order 自动推断 ==========
@@ -73,7 +82,6 @@ def load_yaml_config(yaml_path: Path):
         allow_intra = False
 
     teacher_key = TEACHER_MAP.get(cfg.get('teacher', 1), 'orthogonal')
-    scan_mode = SCAN_MODE_MAP.get(cfg.get('scan_mode', 1), 'alpha')
 
     # 矩阵
     m = cfg.get('matrix', {})
@@ -139,158 +147,85 @@ def load_yaml_config(yaml_path: Path):
         'plots': output_cfg.get('plots', []),  # 新格式: [{curves: [A.y, B.w]}, ...]
     }
 
-    # 根据扫描模式创建不同的 ScanConfig
-    if scan_mode == 'alpha':
-        alpha_cfg = cfg.get('alpha_scan', {})
-        alpha_values = list(np.arange(
-            alpha_cfg.get('start', 0.0),
-            alpha_cfg.get('stop', 4.0) + 0.01,
-            alpha_cfg.get('step', 0.05)
-        ))
-        scan = ScanConfig(dimension='alpha', values=alpha_values)
-        # Tensor mode gets its own graph_mode label
-        if tensor_order >= 3:
-            graph_mode = f'tensor_n{tensor_order}'
-        else:
-            graph_mode = 'general' if allow_intra else 'bipartite'
-        name = f"{algorithm_key}_{teacher_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_{graph_mode}"
-
-        return ExperimentConfig(
-            matrix=matrix,
-            training=training,
-            algorithm_key=algorithm_key,
-            scan=scan,
-            seeds=SeedConfig(
-                base_seed=base_seed,
-                teacher_seed=teacher_seed,
-                spreading_seed=spreading_seed_from_seeds,
-                student_seed=student_seed,
-            ),
-            algorithm_params=algo_params,
-            spreading=spreading,
-            experiment_name=name,
-            teacher_key=teacher_key,
-            teacher=teacher_config, # Pass the parsed config!
-        ), output_options, raw_yaml
-
-    elif scan_mode == 'steps':
-        steps_cfg = cfg.get('steps_scan', {})
-        multiplier = steps_cfg.get('multiplier', 1)
-        fixed_alpha = steps_cfg.get('alpha', 1.5)
-
-        # 支持两种生成方式：log_space (对数均匀) 或手动 step_values
-        log_space_cfg = steps_cfg.get('log_space')
-        if log_space_cfg:
-            # 对数均匀分布: np.geomspace(start, stop, num)
-            start = log_space_cfg.get('start', 100)
-            stop = log_space_cfg.get('stop', 10000)
-            num = log_space_cfg.get('num', 10)
-            step_values = [int(v) for v in np.geomspace(start, stop, num)]
-            # 去重并排序 (因为取整可能导致重复)
-            step_values = sorted(set(step_values))
-            print(f"  Log-space steps: {step_values}")
-        else:
-            step_values = steps_cfg.get('step_values', [100, 500, 1000, 2000, 5000])
-
-        step_values = [int(v * multiplier) for v in step_values]  # Apply multiplier
-        scan = ScanConfig(dimension='steps', values=step_values)
-        graph_mode = 'general' if allow_intra else 'bipartite'
-        name = f"{algorithm_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_steps_alpha{fixed_alpha}_{graph_mode}"
-
-        # 把 fixed_alpha 存到 algorithm_params 里
-        algo_params.default_alpha = fixed_alpha
-
-        return ExperimentConfig(
-            matrix=matrix,
-            training=training,
-            algorithm_key=algorithm_key,
-            scan=scan,
-            seeds=SeedConfig(
-                base_seed=base_seed,
-                teacher_seed=teacher_seed,
-                spreading_seed=spreading_seed_from_seeds,
-                student_seed=student_seed,
-            ),
-            algorithm_params=algo_params,
-            spreading=spreading,
-            experiment_name=name,
-            teacher_key=teacher_key,
-            teacher=teacher_config, # Pass parsed config
-        ), output_options, raw_yaml
-
-    elif scan_mode == 'nested':
-        nested_cfg = cfg.get('nested_scan', {})
-        sizes = nested_cfg.get('sizes', [[200, 50], [400, 100]])
-        alpha_cfg = nested_cfg.get('alpha', {})
-        alpha_values = list(np.arange(
-            alpha_cfg.get('start', 0.0),
-            alpha_cfg.get('stop', 4.0) + 0.01,
-            alpha_cfg.get('step', 0.1)
-        ))
-
-        # 返回嵌套扫描配置（特殊格式）
-        return {
-            'mode': 'nested',
-            'sizes': [(s[0], s[0], s[1]) for s in sizes],  # (N1, N2, M)
-            'alpha_values': alpha_values,
-            'training': training,
-            'algorithm_key': algorithm_key,
-            'teacher_key': teacher_key,
-            'teacher': teacher_config, # Pass parsed config
-            'seeds': SeedConfig(
-                base_seed=base_seed,
-                teacher_seed=teacher_seed,
-                spreading_seed=spreading_seed_from_seeds,
-                student_seed=student_seed,
-            ),
-            'algorithm_params': algo_params,
-            'spreading': spreading,
-        }, output_options, raw_yaml
-
-    elif scan_mode == 'hysteresis':
-        hyst_cfg = cfg.get('hysteresis_scan', {})
-        # 默认对比: [Cold Start (0.0), Warm Start (0.95)]
-        init_overlaps = hyst_cfg.get('init_overlaps', [0.0, 0.95])
-
-        # Alpha 扫描范围
-        alpha_cfg = hyst_cfg.get('alpha', cfg.get('alpha_scan', {}))
-        alpha_values = list(np.arange(
-            alpha_cfg.get('start', 0.0),
-            alpha_cfg.get('stop', 4.0) + 0.01,
-            alpha_cfg.get('step', 0.05)
-        ))
-
-        return {
-            'mode': 'hysteresis',
-            'init_overlaps': init_overlaps,
-            'alpha_values': alpha_values,
-            'base_config': ExperimentConfig(
-                matrix=matrix,
-                training=training,
-                algorithm_key=algorithm_key,
-                scan=ScanConfig(dimension='alpha', values=alpha_values), # Placeholder
-                seeds=SeedConfig(
-                    base_seed=base_seed,
-                    teacher_seed=teacher_seed,
-                    spreading_seed=spreading_seed_from_seeds,
-                    student_seed=student_seed,
-                ),
-                algorithm_params=algo_params,
-                spreading=spreading,
-                experiment_name='hysteresis_placeholder',
-                teacher_key=teacher_key,
-                teacher=teacher_config,
-            ),
-            'output_plots': output_cfg.get('plots', []) # Pass output plots config
-        }, output_options, raw_yaml
-
+    runtime_scan = _runtime_scan_from_canonical_scan(scan_spec, algo_params)
+    if runtime_scan.dimension == "steps" and runtime_scan.values:
+        algo_params.default_alpha = _default_alpha_from_scan_spec(scan_spec, algo_params.default_alpha)
+    if tensor_order >= 3:
+        graph_mode = f'tensor_n{tensor_order}'
     else:
-        raise ValueError(f"Unknown scan_mode: {scan_mode}")
+        graph_mode = 'general' if allow_intra else 'bipartite'
+    name = f"{algorithm_key}_{teacher_key}_{matrix.N1}x{matrix.N2}_M{matrix.M}_{graph_mode}"
+
+    return ExperimentConfig(
+        matrix=matrix,
+        training=training,
+        algorithm_key=algorithm_key,
+        scan=runtime_scan,
+        seeds=SeedConfig(
+            base_seed=base_seed,
+            teacher_seed=teacher_seed,
+            spreading_seed=spreading_seed_from_seeds,
+            student_seed=student_seed,
+        ),
+        algorithm_params=algo_params,
+        spreading=spreading,
+        experiment_name=name,
+        teacher_key=teacher_key,
+        teacher=teacher_config,
+        scan_spec=scan_spec,
+    ), output_options, raw_yaml
+
+
+def _runtime_scan_from_canonical_scan(scan_spec, algo_params) -> ScanConfig:
+    axes = scan_spec.get("axes", {}) if isinstance(scan_spec, dict) else {}
+    if "alpha" in axes:
+        return ScanConfig(dimension="alpha", values=_canonical_axis_values(axes["alpha"]))
+    if "max_steps" in axes:
+        return ScanConfig(dimension="steps", values=[int(v) for v in _canonical_axis_values(axes["max_steps"])])
+    return ScanConfig(dimension="alpha", values=[float(getattr(algo_params, "default_alpha", 1.0))])
+
+
+def _default_alpha_from_scan_spec(scan_spec, default_alpha: float) -> float:
+    axes = scan_spec.get("axes", {}) if isinstance(scan_spec, dict) else {}
+    if "alpha" not in axes:
+        return float(default_alpha)
+    values = _canonical_axis_values(axes["alpha"])
+    if len(values) != 1:
+        raise ValueError("steps scan must use exactly one alpha axis value")
+    return float(values[0])
+
+
+def _canonical_axis_values(axis_spec):
+    values = axis_spec.get("values", []) if isinstance(axis_spec, dict) else []
+    if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
+        out = []
+        current = float(values["start"])
+        stop = float(values["stop"])
+        step = float(values["step"])
+        if step <= 0:
+            raise ValueError("scan range step must be positive")
+        while current <= stop + abs(step) * 1e-9:
+            out.append(round(float(current), 12))
+            current += step
+        return out
+    if isinstance(values, dict):
+        return list(values.keys())
+    if isinstance(values, list):
+        return list(values)
+    return [values]
 
 
 def build_config(args) -> ExperimentConfig:
     """从命令行参数创建配置"""
     alpha_values = list(np.arange(args.alpha_start, args.alpha_stop + 0.01, args.alpha_step))
+    scan_spec = {
+        "axes": {
+            "alpha": {
+                "path": "alpha",
+                "values": [float(value) for value in alpha_values],
+            }
+        }
+    }
 
     spreading = None
     if args.algorithm == 'bigamp_spreading':
@@ -308,6 +243,7 @@ def build_config(args) -> ExperimentConfig:
         spreading=spreading,
         experiment_name=name,
         teacher_key=args.teacher,
+        scan_spec=scan_spec,
     )
 
 
@@ -702,224 +638,6 @@ def _print_plan_warnings(plan):
         print(f"  - {warning}")
     print()
 
-
-
-def _handle_nested_mode(config, args, timestamp, bridge, output_options):
-    print()
-    print("=" * 60)
-    print("🚀 Nested Scaling Sweep")
-    print("=" * 60)
-    print(f"  Algorithm:  {config['algorithm_key']}")
-    print(f"  Teacher:    {config['teacher_key']}")
-    print(f"  Sizes:      {config['sizes']}")
-    print(f"  Alpha:      {min(config['alpha_values']):.2f} → {max(config['alpha_values']):.2f} ({len(config['alpha_values'])} points)")
-    print()
-
-    # 创建基础配置
-    base_config = ExperimentConfig(
-        matrix=MatrixParams(N1=200, N2=200, M=50),  # 会被 sizes 覆盖
-        training=config['training'],
-        algorithm_key=config['algorithm_key'],
-        scan=ScanConfig(dimension='alpha', values=config['alpha_values']),
-        seeds=config['seeds'],
-        algorithm_params=config['algorithm_params'],
-        spreading=config['spreading'],
-        teacher=config.get('teacher'),
-        experiment_name='nested_scaling_sweep',
-        teacher_key=config['teacher_key'],
-    )
-
-    # 运行嵌套扫描
-    # For nested scan, we use a single runner instance
-    runner = ExperimentRunner(verbose=False)
-    output_path = Path(args.output_dir) / f"{timestamp}_nested_sweep"
-    output_path.mkdir(parents=True, exist_ok=True)
-    results = runner.run_scaling_sweep(
-        base_config=base_config,
-        matrix_sizes=config['sizes'],
-        output_dir=output_path,
-        observer=bridge.on_event,
-        output_options=output_options,
-    )
-
-    print()
-    print("=" * 60)
-    print(f"✅ Done! {len(results)} sizes completed")
-    print(f"   Saved to: {output_path}")
-    print("=" * 60)
-
-
-def _handle_hysteresis_mode(config, args, timestamp, bridge, output_options):
-    print()
-    print("=" * 60)
-    print("🚀 Hysteresis Analysis (Cold vs Warm)")
-    print("=" * 60)
-
-    base_config = config['base_config']
-    init_overlaps = config['init_overlaps']
-    output_plots = config.get('output_plots', [])
-
-    METRIC_MAP = {
-        'A.y': 'Q_Y_mean', 'A.w': 'Q_W_mean', 'A.x': 'Q_X_mean',
-        'B.w': 'Q_W_prime_mean', 'B.x': 'Q_X_prime_mean',
-        'D.y': 'physical_overlap_Y_mean',
-        'D.w': 'physical_overlap_W_mean', 'D.x': 'physical_overlap_X_mean',
-        'E.e': 'MSE',
-        'Physical.y': 'physical_overlap_Y_mean',
-        'Physical.w': 'physical_overlap_W_mean',
-    }
-
-    # 结果容器
-    results_list = []
-    labels = []
-
-    # 创建输出目录
-    output_path = Path(args.output_dir) / f"{timestamp}_{base_config.experiment_name}_hysteresis"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    for overlap in init_overlaps:
-        # 修改配置
-        import copy
-        run_config = copy.deepcopy(base_config)
-
-        if overlap <= 1e-6:
-            mode_name = "Cold Start"
-            init_mode_val = "random"
-        else:
-            mode_name = f"Warm Start (m={overlap})"
-            init_mode_val = "teacher"
-
-        # 1. Update algorithm_params (if exists)
-        if hasattr(run_config, 'algorithm_params'):
-            run_config.algorithm_params.init_mode = init_mode_val
-            if init_mode_val == 'teacher':
-                run_config.algorithm_params.init_overlap = overlap
-
-        # 2. Update algorithm (if exists - this is often the one used by internal logic)
-        if hasattr(run_config, 'algorithm'):
-            try:
-                # Config objects might be nested or frozen, try direct attribute set
-                run_config.algorithm.init_mode = init_mode_val
-                if init_mode_val == 'teacher':
-                    run_config.algorithm.init_overlap = overlap
-            except Exception as e:
-                print(f"Warning: Could not update run_config.algorithm: {e}")
-
-        # Debug Log to confirm what we set
-        def get_val(obj, attr, default):
-            return getattr(obj, attr, default)
-
-        curr_mode = get_val(getattr(run_config, 'algorithm_params', None), 'init_mode', 'N/A')
-        curr_overlap = get_val(getattr(run_config, 'algorithm_params', None), 'init_overlap', 'N/A')
-        algo_mode = get_val(getattr(run_config, 'algorithm', None), 'init_mode', 'N/A')
-
-        print(f"▶ Running: {mode_name}")
-
-        # Instantiate fresh Runner for each iteration
-        loop_runner = ExperimentRunner(verbose=False)
-
-        # 运行实验
-        result = loop_runner.run(
-            config=run_config,
-            observer=bridge.on_event,
-            output_options=output_options,
-        )
-
-        # Clean up
-        del loop_runner
-        import gc
-        gc.collect()
-
-        # 存储结果 (Metrics are in result.metrics)
-        # ExperimentResult.results 是按 scan_value (alpha) 索引的 metrics 字典
-        # 我们需要把它展平，方便绘图
-        # plot_comparison 需要 list of dict: alpha -> metrics
-        results_dict = {}
-        for res_item in result.results.values():
-            results_dict[res_item.scan_value] = res_item.metrics
-
-        results_list.append(results_dict)
-        labels.append(mode_name)
-
-        # 单独保存这一轮的结果
-        sub_output_path = output_path / mode_name.replace(" ", "_").replace("(", "").replace(")", "").replace("=", "")
-        result.save(
-            sub_output_path,
-            save_tensors=output_options.get('save_tensors', True),
-            rsb_ordering=output_options.get('rsb_ordering', False),
-            uniform_colormap=output_options.get('uniform_colormap', False),
-            output_options=output_options,
-        )
-
-    print("\n📊 Generating Hysteresis Plots...")
-
-    # 绘制对比图
-    from matrix_factorization.modules.outputs.plotting import plot_multi_metric_comparison
-
-    # 1. 解析要绘制的图表组
-    plot_groups = []
-    if not output_plots:
-        # 默认 fallback
-        plot_groups.append({'metrics': ['Q_Y_mean'], 'filename': 'hysteresis_comparison_Q_Y_mean.png'})
-    else:
-        for idx, plot_cfg in enumerate(output_plots):
-            curves = plot_cfg.get('curves', [])
-            group_metrics = []
-            for curve in curves:
-                # 查找映射
-                metric_key = METRIC_MAP.get(curve, curve)
-                # 处理后缀 (e.g. :R) - 目前简单去除，未来可支持 Replica 曲线
-                if ':' in metric_key:
-                    metric_key = metric_key.split(':')[0]
-                group_metrics.append(metric_key)
-
-            if group_metrics:
-                # 生成文件名
-                if len(group_metrics) == 1:
-                    fname = f"hysteresis_comparison_{group_metrics[0]}.png"
-                else:
-                    # 对于组合图，使用 custom_plot_N 命名，或尝试拼接
-                    fname = f"custom_plot_{idx+1}.png"
-                plot_groups.append({'metrics': group_metrics, 'filename': fname})
-
-    # 2. 循环绘制每个组
-    for grp in plot_groups:
-        metrics = grp['metrics']
-        filename = grp['filename']
-        plot_path = output_path / filename
-
-        # 检查 metrics 是否存在 (至少一个)
-        first_results = results_list[0]
-        first_data = first_results[next(iter(first_results))]
-        valid_metrics = [m for m in metrics if m in first_data or m.replace('_mean', '') in first_data]
-
-        if not valid_metrics:
-                print(f"⚠️  No valid metrics found for plot {filename}, skipping.")
-                print(f"    Requested: {metrics}")
-                print(f"    Available: {list(first_data.keys())}")
-                continue
-
-        print(f"   Writing {filename} ({', '.join(valid_metrics)})...")
-
-        try:
-            plot_multi_metric_comparison(
-                results_list=results_list,
-                labels=labels,
-                output_path=plot_path,
-                metrics=valid_metrics,
-                legend_loc='best',
-                dpi=300
-            )
-        except Exception as e:
-            print(f"   ❌ Failed to plot {filename}: {e}")
-
-    print()
-    print("=" * 60)
-    print("✅ Hysteresis Analysis Complete!")
-    print(f"   Results saved to: {output_path}")
-    print("=" * 60)
-
-
 def _handle_single_run(config, args, timestamp, runner, bridge, output_options, raw_yaml):
     # 单一扫描模式 (alpha 或 steps)
     print()
@@ -1038,15 +756,6 @@ def main():
     runner = ExperimentRunner(verbose=False)
     bridge = ProgressBridge(use_rich=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-
-    # 6. 分发执行
-    if isinstance(config, dict) and config.get('mode') == 'nested':
-        _handle_nested_mode(config, args, timestamp, bridge, output_options)
-        return
-
-    elif isinstance(config, dict) and config.get('mode') == 'hysteresis':
-        _handle_hysteresis_mode(config, args, timestamp, bridge, output_options)
-        return
 
     # Explicitly print configuration status to ensure visibility
     print("\n" + "="*60)

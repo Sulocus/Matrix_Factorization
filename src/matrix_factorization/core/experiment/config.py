@@ -248,6 +248,7 @@ class ExperimentConfig:
     experiment_name: str = "unnamed_experiment"
     teacher_key: str = "standard"  # "standard" or "orthogonal"
     notes: str = ""
+    scan_spec: Optional[Dict[str, Any]] = None
     
     def __post_init__(self):
         # Validate algorithm key
@@ -302,7 +303,8 @@ class ExperimentConfig:
             "matrix": self.matrix.to_dict(),
             "training": self.training.to_dict(),
             "algorithm_key": self.algorithm_key,
-            "scan": self.scan.to_dict(),
+            "scan": self.scan_spec if self.scan_spec is not None else self.scan.to_dict(),
+            "runtime_scan": self.scan.to_dict(),
             "seeds": self.seeds.to_dict(),
             "algorithm_params": self.algorithm_params.to_dict(),
             "spreading": self.spreading.to_dict() if self.spreading else None,
@@ -324,12 +326,18 @@ class ExperimentConfig:
         """Load configuration from JSON file."""
         with open(path, 'r') as f:
             data = json.load(f)
+        scan_payload = data.get("scan", {})
+        runtime_scan_payload = data.get("runtime_scan")
+        if isinstance(scan_payload, dict) and "axes" in scan_payload:
+            scan_for_runtime = runtime_scan_payload or _runtime_scan_from_scan_spec(scan_payload)
+        else:
+            scan_for_runtime = scan_payload
         
         return cls(
             matrix=MatrixParams(**data["matrix"]),
             training=TrainingParams(**data["training"]),
             algorithm_key=data["algorithm_key"],
-            scan=ScanConfig(**data["scan"]),
+            scan=ScanConfig(**scan_for_runtime),
             seeds=SeedConfig(**data["seeds"]),
             algorithm_params=AlgorithmParams(**data["algorithm_params"]),
             spreading=SpreadingConfig(**data["spreading"]) if data.get("spreading") else None,
@@ -337,6 +345,7 @@ class ExperimentConfig:
             experiment_name=data.get("experiment_name", "unnamed"),
             teacher_key=data.get("teacher_key", "standard"),
             notes=data.get("notes", ""),
+            scan_spec=data.get("scan") if isinstance(data.get("scan"), dict) and "axes" in data.get("scan", {}) else None,
         )
     
     def __repr__(self) -> str:
@@ -348,3 +357,28 @@ class ExperimentConfig:
             f"  scan={self.scan.dimension}: {len(self.scan.values)} points,\n"
             f")"
         )
+
+
+def _runtime_scan_from_scan_spec(scan_spec: Dict[str, Any]) -> Dict[str, Any]:
+    axes = scan_spec.get("axes", {}) if isinstance(scan_spec, dict) else {}
+    if "alpha" in axes:
+        return {"dimension": "alpha", "values": _axis_values_for_config_load(axes["alpha"])}
+    if "max_steps" in axes:
+        return {"dimension": "steps", "values": _axis_values_for_config_load(axes["max_steps"])}
+    return {"dimension": "alpha", "values": [1.0]}
+
+
+def _axis_values_for_config_load(axis_spec: Dict[str, Any]) -> List[Any]:
+    values = axis_spec.get("values", [1.0]) if isinstance(axis_spec, dict) else [1.0]
+    if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
+        out = []
+        current = float(values["start"])
+        stop = float(values["stop"])
+        step = float(values["step"])
+        while current <= stop + abs(step) * 1e-9:
+            out.append(float(current))
+            current += step
+        return out
+    if isinstance(values, dict):
+        return list(values.keys())
+    return list(values)

@@ -32,10 +32,11 @@ Matrix_Factorization/
 src/matrix_factorization/
 ├─ cli.py                            YAML/CLI 入口
 ├─ __main__.py                       python -m matrix_factorization 入口
-├─ config.yaml                       当前默认 YAML，仍含部分历史字段
+├─ config.yaml                       当前默认 YAML，使用 canonical scan.axes
 ├─ core/
 │  ├─ contracts.py                  参数、algorithm、metric、output、intervention 的硬接口声明
 │  ├─ planning.py                   从 config 构造 ExperimentPlan 并做 preflight validation
+│  ├─ scan_planning.py              canonical scan.axes -> ScanPlan / ScanPoint / groups
 │  ├─ config.py                      旧 Config schema
 │  ├─ experiment/
 │  │  ├─ config.py                   ExperimentConfig 和 dataclass
@@ -74,7 +75,7 @@ YAML
       -> preflight validation / explain-config
     -> core.experiment.config.ExperimentConfig
       -> core.experiment.runner.ExperimentRunner.run()
-        -> core.scan_planning.ScanPlan
+        -> core.scan_planning.ScanPlan（唯一 scan.axes 参数空间）
         -> core.parallel.ParallelCoordinator.plan_execution()
         -> core.parallel.ResourceExecutionPlan / WorkItem metadata
         -> core.experiment.data_factory.DataFactory.create()
@@ -172,7 +173,7 @@ run_dir/
 
 ## 已知控制风险
 
-- `ScanPlan` 已能把 `alpha/steps/nested/hysteresis` 表达成统一点集；`nested_scan` 和 `hysteresis_scan` 的实际执行仍暂时走 legacy handler，后续需要迁移到统一 runner。
+- scan 主链路已经替换为 canonical `scan.axes`：alpha、steps、size、cold/warm init 等都通过 axis/composite axis 表达；旧 `scan_mode/alpha_scan/steps_scan/nested_scan/hysteresis_scan` 会在 loader/preflight 阶段报错。
 - `teacher.init_distribution` 已进入 `DataFactory.create_teacher()` 和 saved teacher 逻辑；后续仍需要本地结果确认不同 teacher 分布下的历史曲线可比性。
 - `ResourceExecutionPlan` 已把 alpha batch 映射成 `WorkItem` metadata；sample splitting 仍受 `BatchingSpec.sample_range_honored` 约束，未声明支持的 algorithm 不能假装支持。
 - Tensor parallel 在主 coordinator 之外还有内部 alpha batching。

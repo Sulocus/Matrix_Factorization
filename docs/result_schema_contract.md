@@ -45,6 +45,7 @@ ExperimentResult
 │       ├─ metric_semantics
 │       ├─ metric_contracts
 │       ├─ factor_payload_contract
+│       ├─ result_cube
 │       ├─ metrics
 │       └─ results
 ├─ output contract
@@ -106,6 +107,13 @@ metrics.json
 ├─ factor_payload_contract
 ├─ scan_dimension
 ├─ scan_values
+├─ result_cube
+│  ├─ axes
+│  ├─ points
+│  ├─ metrics
+│  ├─ artifacts
+│  ├─ groups
+│  └─ metric_semantics
 ├─ available_metric_keys
 ├─ metric_schema
 ├─ metric_semantics
@@ -121,6 +129,7 @@ metrics.json
 - `metric_semantics`：当前 algorithm 可能产生的 metric 语义表。
 - `metric_contracts`：每个 scan point 的 metric payload 是由哪些 `MetricSpec` 覆盖。
 - `factor_payload_contract`：声明 `W_students/X_students` 是否是真实 matrix factor。tensor metrics-only 路径这里会明确标记 unavailable。
+- `result_cube`：canonical multi-axis result schema，形式是 `point_id -> coordinates/metrics/artifacts`；alpha-only 结果也会保留该字段。
 - `metrics`：旧兼容 flat dict，形式是 `scan_value -> metric dict`。
 - `results`：轻量 `SingleRunResult` 展开，不包含 tensor payload。
 

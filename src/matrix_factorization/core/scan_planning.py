@@ -1,13 +1,16 @@
-"""Unified scan planning primitives.
+"""Canonical parameter-space scan planning.
 
-This module turns the current alpha / steps / nested / hysteresis config
-variants into one explicit, serializable scan plan.  It is deliberately a
-planning layer: it does not change algorithm equations or numeric execution.
+The scan system has one public shape: ``scan.axes``.  Former modes such as
+alpha, steps, nested size sweeps, and hysteresis are now represented as
+ordinary axes that override registered config paths.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
+from itertools import product
+import json
 from typing import Any, Dict, List, Optional
 
 
@@ -15,12 +18,16 @@ from typing import Any, Dict, List, Optional
 class ScanAxis:
     key: str
     values: List[Any]
+    path: Optional[str] = None
+    kind: str = "parameter"
     physical_sensitive: bool = True
     description: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "key": self.key,
+            "path": self.path,
+            "kind": self.kind,
             "values": list(self.values),
             "physical_sensitive": self.physical_sensitive,
             "description": self.description,
@@ -30,24 +37,40 @@ class ScanAxis:
 @dataclass(frozen=True)
 class ScanPoint:
     point_id: str
-    axis_values: Dict[str, Any]
+    coordinates: Dict[str, Any]
+    overrides: Dict[str, Any]
+    effective_config_hash: str
+    physical_sensitive_paths: List[str] = field(default_factory=list)
     alpha: Optional[float] = None
     max_steps: Optional[int] = None
     matrix_size: Optional[Dict[str, int]] = None
     init_overlap: Optional[float] = None
+    group_id: str = "default"
     output_group_id: str = "default"
     seed_scope: str = "scan_point"
+    label: str = ""
+
+    @property
+    def axis_values(self) -> Dict[str, Any]:
+        """Backward-compatible alias for resource planning metadata."""
+        return dict(self.coordinates)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "point_id": self.point_id,
-            "axis_values": dict(self.axis_values),
+            "coordinates": dict(self.coordinates),
+            "axis_values": dict(self.coordinates),
+            "overrides": dict(self.overrides),
+            "effective_config_hash": self.effective_config_hash,
+            "physical_sensitive_paths": list(self.physical_sensitive_paths),
             "alpha": self.alpha,
             "max_steps": self.max_steps,
             "matrix_size": dict(self.matrix_size or {}),
             "init_overlap": self.init_overlap,
+            "group_id": self.group_id,
             "output_group_id": self.output_group_id,
             "seed_scope": self.seed_scope,
+            "label": self.label,
         }
 
 
@@ -57,6 +80,7 @@ class ScanGrouping:
     label: str
     point_ids: List[str] = field(default_factory=list)
     plot_axes: List[str] = field(default_factory=list)
+    coordinates: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -64,16 +88,18 @@ class ScanGrouping:
             "label": self.label,
             "point_ids": list(self.point_ids),
             "plot_axes": list(self.plot_axes),
+            "coordinates": dict(self.coordinates),
         }
 
 
 @dataclass(frozen=True)
 class ScanExecutionConstraints:
     alpha_folding: bool = True
-    sample_folding: bool = True
+    sample_folding: bool = False
     scan_axis_folding: bool = False
     student_folding: bool = False
     steps_reuse: bool = False
+    foldable_axes: List[str] = field(default_factory=lambda: ["alpha"])
     notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -83,6 +109,7 @@ class ScanExecutionConstraints:
             "scan_axis_folding": self.scan_axis_folding,
             "student_folding": self.student_folding,
             "steps_reuse": self.steps_reuse,
+            "foldable_axes": list(self.foldable_axes),
             "notes": self.notes,
         }
 
@@ -94,7 +121,9 @@ class ScanPlan:
     points: List[ScanPoint]
     grouping: List[ScanGrouping] = field(default_factory=list)
     execution_constraints: ScanExecutionConstraints = field(default_factory=ScanExecutionConstraints)
-    source: str = "experiment_config"
+    source: str = "canonical_scan"
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def num_points(self) -> int:
@@ -104,9 +133,9 @@ class ScanPlan:
         return [point.point_id for point in self.points]
 
     def alpha_values(self) -> List[float]:
-        values = []
+        values: List[float] = []
         for point in self.points:
-            if point.alpha is not None and point.alpha not in values:
+            if point.alpha is not None and float(point.alpha) not in values:
                 values.append(float(point.alpha))
         return values
 
@@ -119,257 +148,224 @@ class ScanPlan:
             "points": [point.to_dict() for point in self.points],
             "grouping": [group.to_dict() for group in self.grouping],
             "execution_constraints": self.execution_constraints.to_dict(),
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
         }
 
 
 def build_scan_plan(config: Any, raw_config: Optional[Dict[str, Any]] = None) -> ScanPlan:
-    """Build a ScanPlan from an ExperimentConfig or current legacy scan dict."""
-    raw_config = raw_config if isinstance(raw_config, dict) else {}
-    raw_mode = _raw_scan_mode(raw_config)
-    if raw_mode == "nested" and "nested_scan" in raw_config:
-        return _build_nested_scan_plan(_legacy_nested_config_from_raw(raw_config))
-    if raw_mode == "hysteresis" and "hysteresis_scan" in raw_config:
-        return _build_hysteresis_scan_plan(_legacy_hysteresis_config_from_raw(raw_config))
-    if isinstance(config, dict):
-        mode = config.get("mode")
-        if mode == "nested":
-            return _build_nested_scan_plan(config)
-        if mode == "hysteresis":
-            return _build_hysteresis_scan_plan(config)
-        raise ValueError(f"Unsupported scan dict mode: {mode}")
+    """Build the canonical parameter-space ScanPlan."""
+    scan_spec = _scan_spec_from_inputs(config, raw_config)
+    if not isinstance(scan_spec, dict) or "axes" not in scan_spec:
+        raise ValueError("canonical scan schema requires scan.axes")
+    axes_payload = scan_spec.get("axes")
+    if not isinstance(axes_payload, dict) or not axes_payload:
+        raise ValueError("scan.axes must be a non-empty mapping")
 
+    axes: List[ScanAxis] = []
+    value_options: List[List[Any]] = []
+    axis_specs: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    for axis_key, axis_payload in axes_payload.items():
+        if not isinstance(axis_payload, dict):
+            errors.append(f"scan axis '{axis_key}' must be a mapping")
+            continue
+        kind = str(axis_payload.get("kind", "parameter"))
+        path = axis_payload.get("path")
+        raw_values = axis_payload.get("values")
+        values = _expand_axis_values(raw_values)
+        if not values:
+            errors.append(f"scan axis '{axis_key}' has no values")
+        axis = ScanAxis(
+            key=str(axis_key),
+            path=str(path) if path is not None else None,
+            kind=kind,
+            values=values,
+            physical_sensitive=bool(axis_payload.get("physical_sensitive", True)),
+            description=str(axis_payload.get("description", "")),
+        )
+        axes.append(axis)
+        value_options.append(values)
+        axis_specs.append(axis_payload)
+
+    if errors:
+        return ScanPlan("parameter_space", axes, [], errors=errors, warnings=warnings)
+
+    points: List[ScanPoint] = []
+    for idx, combo in enumerate(product(*value_options)):
+        coordinates = {axis.key: value for axis, value in zip(axes, combo)}
+        overrides: Dict[str, Any] = {}
+        physical_paths: List[str] = []
+        for axis, axis_payload, value in zip(axes, axis_specs, combo):
+            axis_overrides = _axis_value_overrides(axis, axis_payload, value)
+            for path, override_value in axis_overrides.items():
+                overrides[path] = override_value
+                if axis.physical_sensitive:
+                    physical_paths.append(path)
+        alpha = _point_alpha(coordinates, overrides, config)
+        max_steps = _point_max_steps(coordinates, overrides)
+        matrix_size = _point_matrix_size(overrides)
+        init_overlap = _point_init_overlap(overrides)
+        group_coordinates = {
+            key: value for key, value in coordinates.items()
+            if key not in {"alpha", "max_steps"}
+        }
+        group_id = _group_id(group_coordinates)
+        digest = _stable_hash({"coordinates": coordinates, "overrides": overrides})
+        points.append(ScanPoint(
+            point_id=f"p{idx:04d}",
+            coordinates=coordinates,
+            overrides=overrides,
+            effective_config_hash=digest,
+            physical_sensitive_paths=sorted(set(physical_paths)),
+            alpha=alpha,
+            max_steps=max_steps,
+            matrix_size=matrix_size,
+            init_overlap=init_overlap,
+            group_id=group_id,
+            output_group_id=group_id,
+            seed_scope=f"{group_id}:alpha:{alpha}" if alpha is not None else group_id,
+            label=", ".join(f"{key}={value}" for key, value in coordinates.items()),
+        ))
+
+    grouping = _build_grouping(points)
+    steps_reuse = any(axis.key == "max_steps" or axis.path in {"max_steps", "training.max_steps"} for axis in axes)
+    return ScanPlan(
+        scan_kind="parameter_space",
+        axes=axes,
+        points=points,
+        grouping=grouping,
+        execution_constraints=ScanExecutionConstraints(
+            alpha_folding=True,
+            sample_folding=False,
+            scan_axis_folding=False,
+            student_folding=False,
+            steps_reuse=steps_reuse,
+            foldable_axes=["alpha"],
+            notes="Only alpha may be folded inside identical non-alpha coordinates.",
+        ),
+        source="canonical_scan",
+        warnings=warnings,
+    )
+
+
+def _scan_spec_from_inputs(config: Any, raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if isinstance(raw_config, dict) and "scan" in raw_config:
+        return raw_config["scan"]
+    if isinstance(config, dict) and "scan" in config:
+        return config["scan"]
+    scan_spec = getattr(config, "scan_spec", None)
+    if isinstance(scan_spec, dict):
+        return scan_spec
     scan = getattr(config, "scan", None)
-    if scan is None:
-        raise ValueError("config has no scan attribute")
-    dimension = getattr(scan, "dimension", "alpha")
-    values = list(getattr(scan, "values", []) or [])
-    if dimension == "steps":
-        alpha = _steps_default_alpha(config, raw_config)
-        return _build_steps_scan_plan(values, alpha)
-    if dimension == "alpha":
-        return _build_alpha_scan_plan(values)
-    return _build_parameter_grid_scan_plan(dimension, values)
+    if scan is not None:
+        dimension = getattr(scan, "dimension", "alpha")
+        values = list(getattr(scan, "values", []) or [])
+        return {"axes": {dimension: {"path": dimension, "values": values}}}
+    return {}
 
 
-def _build_alpha_scan_plan(alpha_values: List[Any]) -> ScanPlan:
-    points = [
-        ScanPoint(
-            point_id=f"alpha:{idx}",
-            axis_values={"alpha": float(alpha)},
-            alpha=float(alpha),
-            output_group_id="alpha_curve",
-            seed_scope=f"alpha:{float(alpha)}",
-        )
-        for idx, alpha in enumerate(alpha_values)
-    ]
-    return ScanPlan(
-        scan_kind="alpha",
-        axes=[ScanAxis("alpha", [float(v) for v in alpha_values], True, "observation density")],
-        points=points,
-        grouping=[ScanGrouping("alpha_curve", "alpha curve", [p.point_id for p in points], ["alpha"])],
-        execution_constraints=ScanExecutionConstraints(
-            alpha_folding=True,
-            sample_folding=True,
-            scan_axis_folding=False,
-            notes="Standard alpha scan; alpha folding is allowed when algorithm seed policy permits it.",
-        ),
-    )
+def _expand_axis_values(raw_values: Any) -> List[Any]:
+    if isinstance(raw_values, dict) and {"start", "stop", "step"} <= set(raw_values):
+        start = float(raw_values["start"])
+        stop = float(raw_values["stop"])
+        step = float(raw_values["step"])
+        if step <= 0:
+            raise ValueError("scan range step must be positive")
+        values = []
+        current = start
+        while current <= stop + abs(step) * 1e-9:
+            values.append(round(float(current), 12))
+            current += step
+        return values
+    if isinstance(raw_values, dict):
+        return list(raw_values.keys())
+    if isinstance(raw_values, list):
+        return list(raw_values)
+    if raw_values is None:
+        return []
+    return [raw_values]
 
 
-def _build_steps_scan_plan(step_values: List[Any], alpha: float) -> ScanPlan:
-    points = [
-        ScanPoint(
-            point_id=f"steps:{idx}",
-            axis_values={"max_steps": int(step), "alpha": float(alpha)},
-            alpha=float(alpha),
-            max_steps=int(step),
-            output_group_id="steps_curve",
-            seed_scope=f"steps:{int(step)}",
-        )
-        for idx, step in enumerate(step_values)
-    ]
-    return ScanPlan(
-        scan_kind="steps",
-        axes=[
-            ScanAxis("max_steps", [int(v) for v in step_values], False, "checkpointed step budget"),
-            ScanAxis("alpha", [float(alpha)], True, "fixed observation density for steps scan"),
-        ],
-        points=points,
-        grouping=[ScanGrouping("steps_curve", "steps curve", [p.point_id for p in points], ["max_steps"])],
-        execution_constraints=ScanExecutionConstraints(
-            alpha_folding=False,
-            sample_folding=True,
-            scan_axis_folding=False,
-            steps_reuse=True,
-            notes="Steps scan reuses one trajectory through increasing max_steps.",
-        ),
-    )
+def _axis_value_overrides(axis: ScanAxis, axis_payload: Dict[str, Any], value: Any) -> Dict[str, Any]:
+    if axis.kind == "composite":
+        values = axis_payload.get("values", {})
+        payload = values.get(value) if isinstance(values, dict) else None
+        if not isinstance(payload, dict):
+            raise ValueError(f"composite scan axis '{axis.key}' value '{value}' must map to overrides")
+        return dict(payload)
+    path = axis.path or axis.key
+    if path == "alpha":
+        return {}
+    if path == "max_steps":
+        return {"training.max_steps": int(value)}
+    return {path: value}
 
 
-def _build_nested_scan_plan(config: Dict[str, Any]) -> ScanPlan:
-    sizes = list(config.get("sizes") or [])
-    alpha_values = [float(value) for value in (config.get("alpha_values") or [])]
-    points: List[ScanPoint] = []
-    groups: List[ScanGrouping] = []
-    for size_idx, size in enumerate(sizes):
-        n1, n2, m = [int(v) for v in size]
-        group_id = f"size:{n1}x{n2}_M{m}"
-        group_points = []
-        for alpha_idx, alpha in enumerate(alpha_values):
-            point = ScanPoint(
-                point_id=f"nested:{size_idx}:{alpha_idx}",
-                axis_values={"N1": n1, "N2": n2, "M": m, "alpha": float(alpha)},
-                alpha=float(alpha),
-                matrix_size={"N1": n1, "N2": n2, "M": m},
-                output_group_id=group_id,
-                seed_scope=f"size:{n1}:{n2}:{m}:alpha:{float(alpha)}",
-            )
-            points.append(point)
-            group_points.append(point.point_id)
-        groups.append(ScanGrouping(group_id, f"N={n1}, M={m}", group_points, ["alpha"]))
-    return ScanPlan(
-        scan_kind="nested",
-        axes=[
-            ScanAxis("matrix_size", [list(size) for size in sizes], True, "outer matrix/rank sweep"),
-            ScanAxis("alpha", alpha_values, True, "inner observation density"),
-        ],
-        points=points,
-        grouping=groups,
-        execution_constraints=ScanExecutionConstraints(
-            alpha_folding=True,
-            sample_folding=True,
-            scan_axis_folding=False,
-            notes="Nested scan keeps matrix-size axis separate unless a future batching spec proves it safe.",
-        ),
-        source="legacy_nested_config",
-    )
+def _point_alpha(coordinates: Dict[str, Any], overrides: Dict[str, Any], config: Any) -> Optional[float]:
+    if "alpha" in coordinates:
+        return float(coordinates["alpha"])
+    default = overrides.get("algorithm_params.default_alpha")
+    if default is None:
+        default = getattr(getattr(config, "algorithm_params", None), "default_alpha", 1.0)
+    return float(default)
 
 
-def _build_hysteresis_scan_plan(config: Dict[str, Any]) -> ScanPlan:
-    init_overlaps = [float(value) for value in (config.get("init_overlaps") or [])]
-    alpha_values = [float(value) for value in (config.get("alpha_values") or [])]
-    points: List[ScanPoint] = []
-    groups: List[ScanGrouping] = []
-    for overlap_idx, overlap in enumerate(init_overlaps):
-        group_id = "cold_start" if overlap <= 1e-6 else f"warm_start:{overlap:g}"
-        label = "Cold Start" if overlap <= 1e-6 else f"Warm Start (m={overlap:g})"
-        group_points = []
-        for alpha_idx, alpha in enumerate(alpha_values):
-            point = ScanPoint(
-                point_id=f"hysteresis:{overlap_idx}:{alpha_idx}",
-                axis_values={"init_overlap": overlap, "alpha": float(alpha)},
-                alpha=float(alpha),
-                init_overlap=overlap,
-                output_group_id=group_id,
-                seed_scope=f"init_overlap:{overlap}:alpha:{float(alpha)}",
-            )
-            points.append(point)
-            group_points.append(point.point_id)
-        groups.append(ScanGrouping(group_id, label, group_points, ["alpha"]))
-    return ScanPlan(
-        scan_kind="hysteresis",
-        axes=[
-            ScanAxis("init_overlap", init_overlaps, True, "initialization / intervention axis"),
-            ScanAxis("alpha", alpha_values, True, "observation density"),
-        ],
-        points=points,
-        grouping=groups,
-        execution_constraints=ScanExecutionConstraints(
-            alpha_folding=True,
-            sample_folding=True,
-            scan_axis_folding=False,
-            notes="Hysteresis scan keeps initialization axis separate; init_overlap is a scan axis, not a hidden CLI mutation.",
-        ),
-        source="legacy_hysteresis_config",
-    )
+def _point_max_steps(coordinates: Dict[str, Any], overrides: Dict[str, Any]) -> Optional[int]:
+    if "max_steps" in coordinates:
+        return int(coordinates["max_steps"])
+    if "training.max_steps" in overrides:
+        return int(overrides["training.max_steps"])
+    return None
 
 
-def _build_parameter_grid_scan_plan(dimension: str, values: List[Any]) -> ScanPlan:
-    points = [
-        ScanPoint(
-            point_id=f"{dimension}:{idx}",
-            axis_values={dimension: value},
-            output_group_id=f"{dimension}_curve",
-            seed_scope=f"{dimension}:{value}",
-        )
-        for idx, value in enumerate(values)
-    ]
-    return ScanPlan(
-        scan_kind="parameter_grid",
-        axes=[ScanAxis(dimension, list(values), True, f"parameter grid over {dimension}")],
-        points=points,
-        grouping=[ScanGrouping(f"{dimension}_curve", f"{dimension} curve", [p.point_id for p in points], [dimension])],
-        execution_constraints=ScanExecutionConstraints(
-            alpha_folding=False,
-            sample_folding=True,
-            scan_axis_folding=False,
-            notes="Generic parameter grid; no folding across the scanned axis by default.",
-        ),
-    )
-
-
-def _steps_default_alpha(config: Any, raw_config: Dict[str, Any]) -> float:
-    algorithm_params = getattr(config, "algorithm_params", None)
-    value = getattr(algorithm_params, "default_alpha", None)
-    if value is not None:
-        return float(value)
-    steps = raw_config.get("steps_scan", {}) if isinstance(raw_config, dict) else {}
-    return float(steps.get("alpha", 1.0)) if isinstance(steps, dict) else 1.0
-
-
-def _legacy_nested_config_from_raw(raw_config: Dict[str, Any]) -> Dict[str, Any]:
-    nested = raw_config.get("nested_scan", {}) if isinstance(raw_config, dict) else {}
-    sizes = nested.get("sizes", [[200, 50], [400, 100]]) if isinstance(nested, dict) else []
-    normalized_sizes = []
-    for size in sizes:
-        if len(size) == 2:
-            normalized_sizes.append((int(size[0]), int(size[0]), int(size[1])))
-        elif len(size) == 3:
-            normalized_sizes.append((int(size[0]), int(size[1]), int(size[2])))
-    alpha_cfg = nested.get("alpha", {}) if isinstance(nested, dict) else {}
+def _point_matrix_size(overrides: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    keys = {"matrix.N1", "matrix.N2", "matrix.M"}
+    if not keys <= set(overrides):
+        return None
     return {
-        "mode": "nested",
-        "sizes": normalized_sizes,
-        "alpha_values": _range_values(alpha_cfg, 0.0, 4.0, 0.1),
+        "N1": int(overrides["matrix.N1"]),
+        "N2": int(overrides["matrix.N2"]),
+        "M": int(overrides["matrix.M"]),
     }
 
 
-def _legacy_hysteresis_config_from_raw(raw_config: Dict[str, Any]) -> Dict[str, Any]:
-    hyst = raw_config.get("hysteresis_scan", {}) if isinstance(raw_config, dict) else {}
-    alpha_cfg = hyst.get("alpha", raw_config.get("alpha_scan", {})) if isinstance(hyst, dict) else {}
-    return {
-        "mode": "hysteresis",
-        "init_overlaps": hyst.get("init_overlaps", [0.0, 0.95]) if isinstance(hyst, dict) else [0.0, 0.95],
-        "alpha_values": _range_values(alpha_cfg, 0.0, 4.0, 0.05),
-    }
+def _point_init_overlap(overrides: Dict[str, Any]) -> Optional[float]:
+    if "algorithm_params.init_overlap" in overrides:
+        return float(overrides["algorithm_params.init_overlap"])
+    if overrides.get("algorithm_params.init_mode") == "random":
+        return 0.0
+    return None
 
 
-def _range_values(cfg: Dict[str, Any], default_start: float, default_stop: float, default_step: float) -> List[float]:
-    cfg = cfg if isinstance(cfg, dict) else {}
-    start = float(cfg.get("start", default_start))
-    stop = float(cfg.get("stop", default_stop))
-    step = float(cfg.get("step", default_step))
-    values: List[float] = []
-    current = start
-    epsilon = abs(step) * 1e-9 + 1e-12
-    if step <= 0:
-        raise ValueError("scan step must be positive")
-    while current <= stop + epsilon:
-        values.append(float(current))
-        current += step
-    return values
+def _group_id(coordinates: Dict[str, Any]) -> str:
+    if not coordinates:
+        return "default"
+    return "|".join(f"{key}={coordinates[key]}" for key in sorted(coordinates))
 
 
-def _raw_scan_mode(raw_config: Dict[str, Any]) -> str:
-    value = raw_config.get("scan_mode", 1) if isinstance(raw_config, dict) else 1
-    mapping = {
-        1: "alpha",
-        2: "steps",
-        3: "nested",
-        4: "hysteresis",
-        "alpha": "alpha",
-        "steps": "steps",
-        "nested": "nested",
-        "hysteresis": "hysteresis",
-    }
-    return mapping.get(value, str(value))
+def _build_grouping(points: List[ScanPoint]) -> List[ScanGrouping]:
+    grouped: Dict[str, List[ScanPoint]] = {}
+    for point in points:
+        grouped.setdefault(point.group_id, []).append(point)
+    return [
+        ScanGrouping(
+            group_id=group_id,
+            label=group_id,
+            point_ids=[point.point_id for point in group_points],
+            plot_axes=["alpha"] if any(point.alpha is not None for point in group_points) else [],
+            coordinates={
+                key: value
+                for key, value in group_points[0].coordinates.items()
+                if key not in {"alpha", "max_steps"}
+            },
+        )
+        for group_id, group_points in grouped.items()
+    ]
+
+
+def _stable_hash(payload: Dict[str, Any]) -> str:
+    text = json.dumps(payload, sort_keys=True, default=str)
+    return sha256(text.encode("utf-8")).hexdigest()[:16]

@@ -131,6 +131,73 @@ class SingleRunResult:
 
 
 @dataclass
+class ResultCubePoint:
+    point_id: str
+    coordinates: Dict[str, Any]
+    overrides: Dict[str, Any] = field(default_factory=dict)
+    effective_config_hash: str = ""
+    group_id: str = "default"
+    metric_contract: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ResultCube:
+    axes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    points: Dict[str, ResultCubePoint] = field(default_factory=dict)
+    metrics: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    artifacts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    groups: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    metric_semantics: Dict[str, Any] = field(default_factory=dict)
+
+    def add_point(
+        self,
+        point_id: str,
+        coordinates: Dict[str, Any],
+        metrics: Dict[str, Any],
+        *,
+        overrides: Optional[Dict[str, Any]] = None,
+        effective_config_hash: str = "",
+        group_id: str = "default",
+        metric_contract: Optional[Dict[str, Any]] = None,
+        artifacts: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.points[point_id] = ResultCubePoint(
+            point_id=point_id,
+            coordinates=dict(coordinates),
+            overrides=dict(overrides or {}),
+            effective_config_hash=effective_config_hash,
+            group_id=group_id,
+            metric_contract=dict(metric_contract or {}),
+        )
+        self.metrics[point_id] = dict(metrics or {})
+        if artifacts:
+            self.artifacts[point_id] = dict(artifacts)
+        self.groups.setdefault(group_id, {"point_ids": []})
+        if point_id not in self.groups[group_id]["point_ids"]:
+            self.groups[group_id]["point_ids"].append(point_id)
+
+    def is_empty(self) -> bool:
+        return not self.points
+
+    def is_alpha_only(self) -> bool:
+        return set(self.axes.keys()) <= {"alpha"} if self.axes else True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "axes": dict(self.axes),
+            "points": {key: point.to_dict() for key, point in self.points.items()},
+            "metrics": dict(self.metrics),
+            "artifacts": dict(self.artifacts),
+            "groups": dict(self.groups),
+            "metric_semantics": dict(self.metric_semantics),
+        }
+
+
+@dataclass
 class ExperimentMetadata:
     """Metadata about the experiment run."""
     timestamp: str = ""
@@ -211,6 +278,9 @@ class ExperimentResult:
     # Spreading-specific: SuperGraph data
     supergraph_data: Optional[Dict[str, Any]] = None
     # Keys: 'i_idx', 'j_idx', 'edge_counts', 'F_super' (if needed)
+
+    # Canonical multi-axis result index.
+    result_cube: ResultCube = field(default_factory=ResultCube)
 
     def add_result(self, scan_value: Any, result: SingleRunResult):
         """Add a single run result."""
@@ -457,13 +527,14 @@ class ExperimentResult:
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]
         self._write_json(path / 'metrics.json', {
-            "schema_version": 1,
+            "schema_version": 2,
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
             "contract": self.metadata.contract,
             "factor_payload_contract": self.factor_payload_contract(),
             "scan_dimension": self.scan_dimension,
             "scan_values": [str(v) for v in self.scan_values],
+            "result_cube": self.result_cube.to_dict(),
             "available_metric_keys": sorted(self._available_metric_keys()),
             "metric_schema": self.metric_schema(),
             "metric_semantics": self.metric_semantics(),
@@ -482,7 +553,25 @@ class ExperimentResult:
             }) + "\n")
 
         # Collect all tensors into unified structure
-        if save_tensors:
+        if save_tensors and not self.result_cube.is_empty() and not self.result_cube.is_alpha_only():
+            points_dir = artifacts_dir / "points"
+            for scan_value, r in sorted_items:
+                point_dir = points_dir / str(scan_value)
+                point_dir.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "metrics": r.metrics,
+                    "factor_payload_contract": self.factor_payload_contract(),
+                }
+                if r.W_students is not None:
+                    payload["W_students"] = r.W_students.cpu().to(torch.float16)
+                if r.X_students is not None:
+                    payload["X_students"] = r.X_students.cpu().to(torch.float16)
+                torch.save(payload, point_dir / "results.pt")
+                if str(scan_value) in self.result_cube.points:
+                    self.result_cube.artifacts.setdefault(str(scan_value), {})["point_results"] = str(
+                        Path("artifacts") / "points" / str(scan_value) / "results.pt"
+                    )
+        elif save_tensors:
             # Stack all W_students and X_students across scan values
             all_W = []
             all_X = []
@@ -524,6 +613,25 @@ class ExperimentResult:
             except OSError:
                 pass
 
+        if self.result_cube.artifacts:
+            self._write_json(path / 'metrics.json', {
+                "schema_version": 2,
+                "experiment_id": self.experiment_id,
+                "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
+                "contract": self.metadata.contract,
+                "factor_payload_contract": self.factor_payload_contract(),
+                "scan_dimension": self.scan_dimension,
+                "scan_values": [str(v) for v in self.scan_values],
+                "result_cube": self.result_cube.to_dict(),
+                "available_metric_keys": sorted(self._available_metric_keys()),
+                "metric_schema": self.metric_schema(),
+                "metric_semantics": self.metric_semantics(),
+                "metric_contracts": self.metric_contracts(),
+                "metrics": metrics_dict,
+                "results": self.to_results_dict(),
+                "generated_at": datetime.now().isoformat(),
+            })
+
         # Generate evolution plots (only if user does NOT have custom plots configured)
         sorted_values = [scan_value for scan_value, _ in sorted_items]
 
@@ -535,7 +643,9 @@ class ExperimentResult:
         output_contract_check = self._validate_output_contracts_before_plots(output_options or {}, path)
         self._write_json(path / 'output_contract.json', output_contract_check.to_dict())
 
-        if not has_custom_plots:
+        has_plot_queries = bool(has_custom_plots and any("x" in plot and "y" in plot for plot in output_options.get("plots", [])))
+
+        if not has_custom_plots and (self.result_cube.is_empty() or self.result_cube.is_alpha_only()):
             # Extract metrics for plotting
             x_values = [float(v) for v in sorted_values]
             metric_keys = self._available_metric_keys()
@@ -588,7 +698,9 @@ class ExperimentResult:
                 plt.close(fig)
 
         # ===== 自定义曲线绘图 (来自 output_options['plots']) =====
-        if output_options and output_options.get('plots'):
+        if has_plot_queries:
+            self._plot_result_cube_queries(output_options.get("plots") or [], plots_dir)
+        elif output_options and output_options.get('plots'):
             from matrix_factorization.modules.outputs.plotting import plot_custom_curves
 
             # 构建 results 数据格式供 plot_custom_curves 使用
@@ -688,6 +800,73 @@ class ExperimentResult:
 
         self._write_json(path / 'manifest.json', self.to_artifact_manifest(path))
 
+    def _plot_result_cube_queries(self, plot_queries: List[Dict[str, Any]], plots_dir: Path) -> None:
+        """Render PlotQuery-style plots from ResultCube."""
+        import matplotlib.pyplot as plt
+
+        if self.result_cube.is_empty():
+            raise ValueError("PlotQuery requires result_cube data")
+        for idx, query in enumerate(plot_queries):
+            if "x" not in query or "y" not in query:
+                continue
+            x_axis = query["x"]
+            metric_key = query["y"]
+            where = dict(query.get("where") or {})
+            compare = list(query.get("compare") or [])
+            series_by = list(query.get("series_by") or [])
+            filename = query.get("filename") or f"plot_query_{idx + 1}.png"
+            selected = self._select_cube_points(where)
+            if compare:
+                series_specs = [dict(item) for item in compare]
+            elif series_by:
+                seen = []
+                for point in selected:
+                    key = tuple((axis, point.coordinates.get(axis)) for axis in series_by)
+                    if key not in seen:
+                        seen.append(key)
+                series_specs = [{axis: value for axis, value in key} for key in seen]
+            else:
+                series_specs = [{}]
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for series_spec in series_specs:
+                points = [
+                    point for point in selected
+                    if all(point.coordinates.get(k) == v for k, v in series_spec.items())
+                ]
+                points = sorted(points, key=lambda point: self._sort_key(point.coordinates.get(x_axis)))
+                if not points:
+                    raise ValueError(f"PlotQuery selected no points for series {series_spec}")
+                x_values = []
+                y_values = []
+                for point in points:
+                    if x_axis not in point.coordinates:
+                        raise ValueError(f"PlotQuery x axis '{x_axis}' not found in point {point.point_id}")
+                    metrics = self.result_cube.metrics.get(point.point_id, {})
+                    if metric_key not in metrics:
+                        raise ValueError(f"PlotQuery metric '{metric_key}' missing for point {point.point_id}")
+                    x_values.append(float(point.coordinates[x_axis]))
+                    y_values.append(float(metrics[metric_key]))
+                label = ", ".join(f"{k}={v}" for k, v in series_spec.items()) or metric_key
+                ax.plot(x_values, y_values, marker="o", linewidth=2, label=label)
+            ax.set_xlabel(str(x_axis))
+            ax.set_ylabel(str(metric_key))
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            ax.set_title(query.get("title") or f"{metric_key} vs {x_axis}")
+            fig.savefig(plots_dir / filename, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+
+    def _select_cube_points(self, where: Dict[str, Any]) -> List[ResultCubePoint]:
+        points = list(self.result_cube.points.values())
+        for axis, value in where.items():
+            if axis not in self.result_cube.axes:
+                raise ValueError(f"PlotQuery where references unknown axis '{axis}'")
+            points = [point for point in points if point.coordinates.get(axis) == value]
+        if not points:
+            raise ValueError(f"PlotQuery where selected no points: {where}")
+        return points
+
     def _validate_output_contracts_before_plots(
         self,
         output_options: Dict[str, Any],
@@ -768,6 +947,7 @@ class ExperimentResult:
         # Load results. Prefer the Codex-web run schema; keep legacy fallback.
         metrics_path = path / 'metrics.json'
         legacy_results_path = path / 'results.json'
+        metrics_payload = {}
         if metrics_path.exists():
             with open(metrics_path, 'r') as f:
                 metrics_payload = json.load(f)
@@ -799,6 +979,24 @@ class ExperimentResult:
             scan_values=scan_values,
             metadata=metadata,
         )
+        cube_payload = metrics_payload.get("result_cube", {}) if isinstance(metrics_payload, dict) else {}
+        if cube_payload:
+            result.result_cube = ResultCube(
+                axes=dict(cube_payload.get("axes", {}) or {}),
+                metrics=dict(cube_payload.get("metrics", {}) or {}),
+                artifacts=dict(cube_payload.get("artifacts", {}) or {}),
+                groups=dict(cube_payload.get("groups", {}) or {}),
+                metric_semantics=dict(cube_payload.get("metric_semantics", {}) or {}),
+            )
+            for point_id, point_payload in (cube_payload.get("points", {}) or {}).items():
+                result.result_cube.points[point_id] = ResultCubePoint(
+                    point_id=point_payload.get("point_id", point_id),
+                    coordinates=dict(point_payload.get("coordinates", {}) or {}),
+                    overrides=dict(point_payload.get("overrides", {}) or {}),
+                    effective_config_hash=str(point_payload.get("effective_config_hash", "")),
+                    group_id=str(point_payload.get("group_id", "default")),
+                    metric_contract=dict(point_payload.get("metric_contract", {}) or {}),
+                )
 
         tensor_path = path / 'artifacts' / 'results.pt'
         if not tensor_path.exists():

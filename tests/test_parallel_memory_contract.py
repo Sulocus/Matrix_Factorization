@@ -49,11 +49,14 @@ matrix:
   N1: 4
   N2: 4
   M: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.2
-  step: 0.1
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.2
+        step: 0.1
 training:
   samples_per_alpha: 1
   max_steps: 2
@@ -83,11 +86,14 @@ matrix:
   N1: 4
   N2: 4
   M: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.2
-  step: 0.1
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.2
+        step: 0.1
 training:
   samples_per_alpha: 1
   max_steps: 2
@@ -117,11 +123,14 @@ matrix:
   N1: 4
   N2: 4
   M: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.2
-  step: 0.1
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.2
+        step: 0.1
 training:
   samples_per_alpha: 1
   max_steps: 2

@@ -4,13 +4,22 @@
 algorithm: 2  # bigamp_spreading
 teacher: 2    # standard
 
-scan_mode: 4  # hysteresis
-hysteresis_scan:
-  init_overlaps: [0.0, 0.99]  # 0.0=Cold, 0.99=Warm
-  alpha:
-    start: 2.0  # 聚焦在相变区域
-    stop: 4.0
-    step: 0.2
+scan:
+  axes:
+    init:
+      kind: composite
+      values:
+        cold:
+          algorithm_params.init_mode: random
+        warm_099:
+          algorithm_params.init_mode: teacher
+          algorithm_params.init_overlap: 0.99
+    alpha:
+      path: alpha
+      values:
+        start: 2.0  # 聚焦在相变区域
+        stop: 4.0
+        step: 0.2
 
 allow_intra_connection: true  # general mode
 

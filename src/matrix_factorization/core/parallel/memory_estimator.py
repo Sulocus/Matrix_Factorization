@@ -204,6 +204,9 @@ class MemoryBreakdown:
     algorithm_key: str
     components: list = dataclass_field(default_factory=list)
     safety_margin: float = 1.05
+    override_total_gb: Optional[float] = None
+    dominant_stage: str = ""
+    stage_breakdown: Dict[str, float] = dataclass_field(default_factory=dict)
     
     def add_component(self, component: MemoryComponent) -> 'MemoryBreakdown':
         """Add a component (fluent API)."""
@@ -213,12 +216,15 @@ class MemoryBreakdown:
     @property
     def total_bytes(self) -> int:
         """Total bytes across all components."""
+        if self.override_total_gb is not None:
+            return int(float(self.override_total_gb) * (1024**3))
         return sum(c.bytes for c in self.components)
     
     @property
     def total_gb(self) -> float:
         """Total GB with safety margin."""
-        return (self.total_bytes / (1024**3)) * self.safety_margin
+        base_gb = float(self.override_total_gb) if self.override_total_gb is not None else self.total_bytes / (1024**3)
+        return base_gb * self.safety_margin
     
     def summary(self) -> str:
         """Generate a human-readable summary."""
@@ -228,6 +234,28 @@ class MemoryBreakdown:
             lines.append(f"  {c.name}: {c.gb:.3f} GB ({pct:.1f}%)")
         lines.append(f"  Total (with {self.safety_margin:.0%} margin): {self.total_gb:.3f} GB")
         return "\n".join(lines)
+
+
+def _tensor_gb(shape: Tuple[int, ...], dtype: DType, count: int = 1) -> float:
+    elements = int(count)
+    for dim in shape:
+        elements *= int(dim)
+    return elements * dtype.bytes / (1024**3)
+
+
+def _stage_override(
+    breakdown: MemoryBreakdown,
+    stages: Dict[str, float],
+    *,
+    safety_margin: float = 1.0,
+) -> MemoryBreakdown:
+    if stages:
+        dominant_stage, dominant_gb = max(stages.items(), key=lambda item: item[1])
+        breakdown.override_total_gb = float(dominant_gb)
+        breakdown.dominant_stage = dominant_stage
+        breakdown.stage_breakdown = {key: float(value) for key, value in stages.items()}
+    breakdown.safety_margin = float(safety_margin)
+    return breakdown
 
 
 
@@ -255,7 +283,7 @@ class MemoryEstimator:
     # Class-level calibration factors (loaded per GPU model)
     _calibration_data: Dict[str, Dict] = {}
     
-    def __init__(self, calibration_dir: Optional[Path] = None):
+    def __init__(self, calibration_dir: Optional[Path] = None, apply_calibration: bool = True):
         """
         Initialize memory estimator.
         
@@ -268,6 +296,7 @@ class MemoryEstimator:
         else:
             self.calibration_dir = Path(calibration_dir)
         
+        self.apply_calibration = bool(apply_calibration)
         self.gpu_model = self._get_gpu_model()
         self._load_calibration()
     
@@ -311,9 +340,10 @@ class MemoryEstimator:
         
         # 1. Pure Tensor Math, then optional local calibration from real runs.
         uncalibrated_tensor_gb = self._estimators[params.algorithm_key](params)
-        calibration = self._get_calibration_adjustment(params.algorithm_key)
+        calibration = self._get_calibration_adjustment(params.algorithm_key) if self.apply_calibration else {}
         calibration_factor = 1.0
         calibration_applied = 0.0
+        calibration_source = "theory_unchecked"
         raw_tensor_gb = uncalibrated_tensor_gb
         if calibration:
             min_raw_value = calibration.get("min_raw_gb_for_apply", 1.0)
@@ -322,6 +352,7 @@ class MemoryEstimator:
                 calibration_factor = max(1.0, float(calibration.get("factor", 1.0) or 1.0))
                 raw_tensor_gb = uncalibrated_tensor_gb * calibration_factor
                 calibration_applied = 1.0
+                calibration_source = str(calibration.get("source", "local_calibration"))
         
         # 2. Dynamic Overhead Calculation
         overhead_gb = 0.0
@@ -369,7 +400,8 @@ class MemoryEstimator:
         
         total_gb = raw_tensor_gb + overhead_gb
         
-        breakdown = self._get_breakdown(params)
+        breakdown_obj = self._get_breakdown_object(params)
+        breakdown = self._breakdown_to_dict(breakdown_obj)
         if context_gb:
             breakdown["runtime.context_gb"] = context_gb
         if fragmentation_gb:
@@ -378,6 +410,12 @@ class MemoryEstimator:
         breakdown["calibration.applied_factor"] = calibration_factor
         breakdown["calibration.applied"] = calibration_applied
         breakdown["calibration.calibrated_tensor_gb"] = raw_tensor_gb
+        breakdown["estimator.raw_peak_allocated_gb"] = uncalibrated_tensor_gb
+        breakdown["estimator.device_peak_gb"] = total_gb
+        if breakdown_obj and breakdown_obj.dominant_stage:
+            breakdown["estimator.dominant_stage_gb"] = float(
+                breakdown_obj.stage_breakdown.get(breakdown_obj.dominant_stage, uncalibrated_tensor_gb)
+            )
         breakdown_msg = (
             f"  Math Tensors: {raw_tensor_gb:.2f} GB\n"
             f"  + Context:    {context_gb:.2f} GB\n"
@@ -391,6 +429,10 @@ class MemoryEstimator:
             per_batch_gb=total_gb / max(1, params.batch_size),
             breakdown=breakdown,
             confidence=self._compute_confidence(params),
+            raw_peak_allocated_gb=uncalibrated_tensor_gb,
+            device_peak_gb=total_gb,
+            dominant_stage=breakdown_obj.dominant_stage if breakdown_obj else "",
+            calibration_source=calibration_source,
         )
     
     def estimate_raw(self, params: EstimationParams) -> float:
@@ -605,8 +647,8 @@ class MemoryEstimator:
         
         return min(1.0, base_confidence)
     
-    def _get_breakdown(self, params: EstimationParams) -> Dict[str, float]:
-        """Get memory breakdown by component (algorithm-specific)."""
+    def _get_breakdown_object(self, params: EstimationParams) -> Optional[MemoryBreakdown]:
+        """Get memory breakdown object with component and stage metadata."""
         try:
             if params.algorithm_key == "bigamp":
                 breakdown = get_bigamp_standard_breakdown(params)
@@ -621,15 +663,30 @@ class MemoryEstimator:
             elif params.algorithm_key in {"bigamp_tensor", "bigamp_tensor_parallel"}:
                 breakdown = get_tensor_spreading_breakdown(params)
             else:
-                return {}
+                return None
         except Exception as exc:
             logger.warning(
                 "Failed to build memory breakdown for %s: %s",
                 params.algorithm_key,
                 exc,
             )
+            return None
+        return breakdown
+
+    def _breakdown_to_dict(self, breakdown: Optional[MemoryBreakdown]) -> Dict[str, float]:
+        """Convert a breakdown object to numeric metadata for JSON outputs."""
+        if breakdown is None:
             return {}
-        return {component.name: component.gb for component in breakdown.components}
+        result = {component.name: component.gb for component in breakdown.components}
+        for stage, gb in breakdown.stage_breakdown.items():
+            result[f"stage.{stage}"] = float(gb)
+        if breakdown.override_total_gb is not None:
+            result["stage.raw_peak_allocated_gb"] = breakdown.total_gb
+        return result
+
+    def _get_breakdown(self, params: EstimationParams) -> Dict[str, float]:
+        """Get memory breakdown by component (algorithm-specific)."""
+        return self._breakdown_to_dict(self._get_breakdown_object(params))
 
 
 # =============================================================================
@@ -880,21 +937,21 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
         ))
         breakdown.add_component(adaptive)
     
-    # =========================================================================
-    # NOTE: No fixed CUDA overhead added
-    # 
-    # Reason: Adding 1.2GB overhead causes -21.7% overestimation on large configs.
-    # Small configs may underestimate by ~50%, but OOM mechanism (exit 137)
-    # protects against actual crashes. This is acceptable tradeoff:
-    # - Large configs: accurate estimation, efficient batching
-    # - Small configs: rely on OOM protection if memory exceeded
-    #
-    # Test evidence:
-    # - N=2500,M=50,S=50: Without overhead est=14.6GB, actual=12.4GB = -15%
-    # - N=1000,M=50: May underestimate but OOM protects at 90% threshold
-    # =========================================================================
-    
-    return breakdown
+    persistent_gb = student_params.gb + supergraph.gb
+    edge_workspace_gb = _tensor_gb((B, SC, M), storage_dtype)
+    scatter_state_gb = _tensor_gb((B, scatter_dim, M), storage_dtype, count=2)
+    stages = {
+        "spreading_persistent_state": persistent_gb,
+        # Gathered edge tensors dominate; forward and scatter buffers are partly
+        # sequential in the current implementation, so summing all components
+        # overestimates the 10GB calibration profile by ~49%.
+        "spreading_edge_update_peak": persistent_gb + 3.55 * edge_workspace_gb,
+        "spreading_scatter_peak": persistent_gb + edge_workspace_gb + scatter_state_gb,
+    }
+    if params.adaptive_damping:
+        stages["spreading_adaptive_backtracking_peak"] = breakdown.total_gb
+
+    return _stage_override(breakdown, stages, safety_margin=1.0)
 
 
 @MemoryEstimator.register("bigamp")
@@ -979,8 +1036,14 @@ def get_bigamp_standard_breakdown(params: EstimationParams) -> MemoryBreakdown:
         notes="Compute intermediate tensors: w_sq, x_sq, tau_W/X, r_W/X, *_new"
     ))
     breakdown.add_component(intermediate_compute)
-    
-    return breakdown
+
+    previous_total_gb = breakdown.total_gb
+    stages = {
+        "bigamp_student_state": student.gb,
+        "bigamp_dense_update_peak": previous_total_gb,
+        "bigamp_compute_update_peak": student.gb + intermediate_compute.gb,
+    }
+    return _stage_override(breakdown, stages, safety_margin=1.0)
 
 
 @MemoryEstimator.register("agd")
@@ -1009,7 +1072,7 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     B = params.batch_size  # Alpha batch size (num_alphas for parallel processing)
     storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
     
-    breakdown = MemoryBreakdown(algorithm_key="agd", safety_margin=1.10)
+    breakdown = MemoryBreakdown(algorithm_key="agd", safety_margin=1.0)
     
     # =========================================================================
     # COMPONENT 1: Parameters and Gradients
@@ -1029,15 +1092,16 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     
     # =========================================================================
     # COMPONENT 2: Observation Masks
-    # Binary masks: (B, S, N1, N2)
+    # Binary masks: (B, N1, N2)
     # DTYPE: BOOL (1 byte)
-    # NOTE: B dimension for parallel alpha processing
+    # NOTE: The implementation builds masks per alpha and broadcasts over S:
+    # A_all = masks.unsqueeze(1), so S is not a resident mask dimension.
     # =========================================================================
     masks = MemoryComponent(name="Observation Masks")
     masks.add(TensorSpec(
         name="observation_mask",
-        shape=(B, S, N1, N2),
-        shape_formula="(B, S, N1, N2)",
+        shape=(B, N1, N2),
+        shape_formula="(B, N1, N2)",
         dtype=DType.BOOL,
         notes="Binary observation mask for parallel alpha"
     ))
@@ -1058,8 +1122,23 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
         count=2,
     ))
     breakdown.add_component(pred_res)
-    
-    return breakdown
+
+    # AGD peak is not component-sum. During train_batch_alphas(), W update and X
+    # update each keep several dense (B,S,N1,N2) tensors live around matmul,
+    # residual, masking, gradient construction, and float casts. The old model
+    # counted only prediction+residual and missed this stage peak, causing the
+    # 2026-04-26 RTX 5090 profile (N=8176,S=4,B=4,M=32) to estimate ~10GB for a
+    # measured 24.7GB tensor peak.
+    param_gb = _tensor_gb((B, S, N1 + N2, M), storage_dtype, count=4)
+    mask_gb = _tensor_gb((B, N1, N2), DType.BOOL)
+    dense_one_gb = _tensor_gb((B, S, N1, N2), storage_dtype)
+    stages = {
+        "agd_persistent_state": param_gb + mask_gb,
+        "agd_w_update_dense_peak": param_gb + mask_gb + 6.0 * dense_one_gb,
+        "agd_x_update_dense_peak": param_gb + mask_gb + 6.0 * dense_one_gb,
+        "agd_return_retention": param_gb + mask_gb + 2.0 * dense_one_gb,
+    }
+    return _stage_override(breakdown, stages, safety_margin=1.0)
 
 
 @MemoryEstimator.register("bigamp_tensor")
@@ -1083,6 +1162,7 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     formula as component metadata. It does not change the estimator total.
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
+    B = params.batch_size
     alpha_max = params.alpha_max
 
     tensor_order = getattr(params, 'tensor_order', 3)
@@ -1157,10 +1237,34 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     ))
     breakdown.add_component(temporaries)
 
-    # Keep these local names referenced so future formula edits stay visibly
-    # paired with the component structure above.
-    assert factor_memory + fy_memory + var_memory + temp_memory == breakdown.total_bytes
-    return breakdown
+    if params.algorithm_key == "bigamp_tensor_parallel":
+        factor_state_gb = _tensor_gb((B, S * sum(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32, count=2)
+        observation_gb = (
+            _tensor_gb((S * C, M), DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32)
+            + _tensor_gb((S * C,), DType.FLOAT32)
+            + _tensor_gb((S * C,), DType.INT64, count=tensor_order)
+            + _tensor_gb((B, S * C), DType.BOOL)
+        )
+        edge_workspace_gb = _tensor_gb((B, S * C, M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+        scatter_state_gb = _tensor_gb((B, S * max(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+        stages = {
+            "tensor_parallel_persistent_state": factor_state_gb + observation_gb,
+            # Mirrors probe_tensor_super_memory(): gathered_list, stacked gathered,
+            # product/Z/s/r_contrib, and per-dimension scatter buffers can overlap.
+            "tensor_parallel_supergraph_peak": factor_state_gb + observation_gb + 5.0 * edge_workspace_gb,
+            "tensor_parallel_scatter_peak": factor_state_gb + observation_gb + edge_workspace_gb + tensor_order * scatter_state_gb,
+        }
+        return _stage_override(breakdown, stages, safety_margin=1.0)
+
+    factor_state_gb = _tensor_gb((S, sum(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32, count=2)
+    observation_gb = _tensor_gb((S, C, M), DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32) + _tensor_gb((S, C), DType.FLOAT32)
+    edge_workspace_gb = _tensor_gb((S, C, M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+    stages = {
+        "tensor_serial_persistent_state": factor_state_gb + observation_gb,
+        "tensor_serial_alpha_sample_peak": factor_state_gb + observation_gb + 4.2 * edge_workspace_gb,
+        "tensor_serial_result_retention": factor_state_gb + observation_gb + 2.0 * edge_workspace_gb,
+    }
+    return _stage_override(breakdown, stages, safety_margin=1.0)
 
 
 def get_bigamp_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:

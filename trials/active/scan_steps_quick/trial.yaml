@@ -1,0 +1,14 @@
+key: scan_steps_quick
+status: active
+runtime_class: quick
+purpose: 验证 max_steps 作为 scan axis 时进入 unified canonical executor
+owner_area: scan
+config: trials/active/scan_steps_quick/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/scan_steps_quick
+expected_metrics:
+  - Q_Y_mean
+  - MSE
+promotion_target:
+  - scan framework
+notes: 固定 alpha，扫描两个很小的 max_steps。

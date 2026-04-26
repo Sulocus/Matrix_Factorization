@@ -1,0 +1,14 @@
+key: scan_mixed_axes_quick
+status: active
+runtime_class: quick
+purpose: 验证 damping/onsager/init/alpha 多 axis 与 PlotQuery 的组合
+owner_area: scan
+config: trials/active/scan_mixed_axes_quick/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/scan_mixed_axes_quick
+expected_metrics:
+  - Q_Y_mean
+  - MSE
+promotion_target:
+  - scan framework
+notes: 这是 scan 子系统的混合轴回归试跑，尺寸和步数保持极小。

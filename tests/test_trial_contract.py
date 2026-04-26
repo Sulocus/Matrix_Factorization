@@ -58,11 +58,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 output:
   enable_heatmap: false
 """,

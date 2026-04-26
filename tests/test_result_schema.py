@@ -88,7 +88,8 @@ def test_experiment_result_directory_schema(tmp_path):
     assert not (run_dir / "artifacts" / "results.pt").exists()
 
     metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    assert metrics["schema_version"] == 1
+    assert metrics["schema_version"] == 2
+    assert metrics["result_cube"]["schema_version"] == 1
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]

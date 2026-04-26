@@ -1,0 +1,14 @@
+key: scan_size_quick
+status: active
+runtime_class: quick
+purpose: 验证 size composite axis 按 shape 隔离执行并写入 ResultCube
+owner_area: scan
+config: trials/active/scan_size_quick/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/scan_size_quick
+expected_metrics:
+  - Q_Y_mean
+  - MSE
+promotion_target:
+  - scan framework
+notes: 两个小尺寸，每个尺寸一个 alpha 点。

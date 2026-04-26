@@ -1,0 +1,14 @@
+key: scan_init_quick
+status: active
+runtime_class: quick
+purpose: 验证 cold/warm init composite axis 进入 ScanPlan 和 intervention contract
+owner_area: scan
+config: trials/active/scan_init_quick/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/scan_init_quick
+expected_metrics:
+  - Q_Y_mean
+  - MSE
+promotion_target:
+  - scan framework
+notes: 使用 bigamp_spreading，因为 warm_start contract 当前兼容 spreading 路径。

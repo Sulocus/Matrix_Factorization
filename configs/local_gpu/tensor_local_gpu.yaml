@@ -2,17 +2,19 @@
 tensor_order: 3
 algorithm: bigamp_tensor
 teacher: standard
-scan_mode: alpha
-
 matrix:
   N1: 200
   N2: 200
   M: 50
 
-alpha_scan:
-  start: 0.0
-  stop: 4.0
-  step: 0.1
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 4.0
+        step: 0.1
 
 training:
   samples_per_alpha: 20

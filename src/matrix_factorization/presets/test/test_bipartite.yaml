@@ -12,12 +12,14 @@ matrix:
   N2: 200
   M: 50
 
-scan_mode: 1
-
-alpha_scan:
-  start: 0
-  stop: 4
-  step: 0.1
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0
+        stop: 4
+        step: 0.1
 
 training:
   samples_per_alpha: 50

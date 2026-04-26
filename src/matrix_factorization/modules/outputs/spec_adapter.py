@@ -74,8 +74,11 @@ class OutputSpecAdapter:
         # concrete dependency checks.
         if output_options.get("plots"):
             for plot_config in output_options.get("plots") or []:
-                for curve_code in plot_config.get("curves", []):
-                    required_metrics.add(_curve_code_to_metric_key(curve_code))
+                if "y" in plot_config:
+                    required_metrics.add(str(plot_config["y"]))
+                else:
+                    for curve_code in plot_config.get("curves", []):
+                        required_metrics.add(_curve_code_to_metric_key(curve_code))
             if "custom_curves" not in requested_specs:
                 requested_specs.append("custom_curves")
 
@@ -130,18 +133,26 @@ class OutputSpecAdapter:
 
 
 def _result_metric_keys(result: "ExperimentResult") -> set[str]:
-    return {
+    keys = {
         key
         for single_result in result.results.values()
         for key in (single_result.metrics or {})
     }
+    cube = getattr(result, "result_cube", None)
+    if cube is not None:
+        keys.update({
+            key
+            for metrics in getattr(cube, "metrics", {}).values()
+            for key in (metrics or {})
+        })
+    return keys
 
 
 def _result_artifacts(result: "ExperimentResult", run_dir: Optional[Path]) -> set[str]:
     artifacts = set()
     if result.results:
         artifacts.add("metrics_by_alpha")
-    if any(single_result.W_students is not None for single_result in result.results.values()):
+    if any(single_result.W_students is not None for single_result in result.results.values()) and result.W_teacher is not None:
         artifacts.add("matrix_factors")
     if "overlap_matrix" in _result_metric_keys(result):
         artifacts.add("overlap_matrix")

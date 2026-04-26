@@ -364,7 +364,35 @@ class ExperimentPlan:
         """Structured YAML path -> contract metadata trace for agents/tools."""
         parameter_specs = get_parameter_specs()
         chain = []
+        emitted_paths = set()
         for path, value in sorted(_flatten_config_paths(self.raw_config), key=lambda item: item[0]):
+            if _is_canonical_scan_internal_path(path):
+                if path.startswith("scan.axes.") and "scan.axes" not in emitted_paths:
+                    spec = parameter_specs["scan.axes"]
+                    effective_value, effective_source, derived_effect = _parameter_effective_trace(self, "scan.axes")
+                    active_in_current_plan = _path_active_in_current_plan(self, "scan.axes")
+                    chain.append({
+                        "path": "scan.axes",
+                        "registered": True,
+                        "value": _get_raw_path(self.raw_config, "scan.axes"),
+                        "owner": spec.owner,
+                        "status": spec.status,
+                        "physical_sensitive": spec.physical_sensitive,
+                        "consumers": list(spec.consumers),
+                        "value_type": spec.value_type,
+                        "active_in_current_plan": active_in_current_plan,
+                        "effective_value": effective_value,
+                        "effective_source": effective_source,
+                        "derived_effect": derived_effect,
+                        "consumption_status": _parameter_consumption_status(
+                            spec=spec,
+                            active_in_current_plan=active_in_current_plan,
+                            effective_source=effective_source,
+                            derived_effect=derived_effect,
+                        ),
+                    })
+                    emitted_paths.add("scan.axes")
+                continue
             spec = parameter_specs.get(path)
             if not spec:
                 chain.append({
@@ -382,6 +410,7 @@ class ExperimentPlan:
                     "derived_effect": None,
                     "consumption_status": "unregistered",
                 })
+                emitted_paths.add(path)
                 continue
             effective_value, effective_source, derived_effect = _parameter_effective_trace(self, path)
             active_in_current_plan = _path_active_in_current_plan(self, path)
@@ -406,6 +435,7 @@ class ExperimentPlan:
                 "derived_effect": derived_effect,
                 "consumption_status": consumption_status,
             })
+            emitted_paths.add(path)
         return chain
 
 
@@ -440,6 +470,7 @@ def build_experiment_plan(
     seed_policy_specs = get_seed_policy_specs()
 
     _validate_raw_paths(plan, parameter_specs)
+    _validate_scan_axis_paths(plan, parameter_specs)
     _validate_parameter_values(plan, parameter_specs)
 
     algorithm_key = getattr(config, "algorithm_key", None)
@@ -570,7 +601,8 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
     direct_map = {
         "algorithm": ("algorithm_key", getattr(config, "algorithm_key", None)),
         "teacher": ("teacher_key", getattr(config, "teacher_key", None)),
-        "scan_mode": ("scan.dimension", getattr(getattr(config, "scan", None), "dimension", None)),
+        "scan.axes": ("scan_spec.axes", _get_raw_path(raw_config, "scan.axes")),
+        "scan.execution": ("scan_spec.execution", _get_raw_path(raw_config, "scan.execution")),
         "tensor_order": ("spreading.tensor_order", getattr(getattr(config, "spreading", None), "tensor_order", None)),
         "training.seed": ("seeds.base_seed", getattr(getattr(config, "seeds", None), "base_seed", None)),
         "seeds.model": ("seeds.base_seed", getattr(getattr(config, "seeds", None), "base_seed", None)),
@@ -582,10 +614,6 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
         "teacher_config.init_distribution": (
             "teacher.init_distribution",
             getattr(getattr(config, "teacher", None), "init_distribution", None),
-        ),
-        "steps_scan.alpha": (
-            "algorithm_params.default_alpha",
-            getattr(getattr(config, "algorithm_params", None), "default_alpha", None),
         ),
     }
     if path in direct_map:
@@ -615,9 +643,6 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
             "selected_specs": [spec.key for spec in (plan.probe_specs if path == "probes" else plan.analyzer_specs)]
         }
 
-    if path.startswith(("alpha_scan.", "steps_scan.", "nested_scan.", "hysteresis_scan.")):
-        return _get_raw_path(raw_config, path), "raw_scan_block", _derived_parameter_effect(plan, path)
-
     return _get_raw_path(raw_config, path), None, _derived_parameter_effect(plan, path)
 
 
@@ -634,7 +659,7 @@ def _derived_scan_effect(plan: ExperimentPlan, path: str) -> Optional[Dict[str, 
     if scan is None:
         return None
     values = list(getattr(scan, "values", []) or [])
-    if path.startswith(("alpha_scan.", "steps_scan.", "nested_scan.", "hysteresis_scan.", "scan_mode")):
+    if path.startswith("scan."):
         preview = [_json_trace_scalar(value) for value in values[:3]]
         if len(values) > 3:
             preview = preview + ["..."]
@@ -681,17 +706,10 @@ def _get_raw_path(raw_config: Dict[str, Any], path: str) -> Any:
 
 
 def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
-    raw_mode = _raw_scan_mode(plan.raw_config if isinstance(plan.raw_config, dict) else {})
-    if path.startswith("alpha_scan."):
-        return raw_mode == "alpha"
-    if path.startswith("steps_scan."):
-        return raw_mode == "steps"
-    if path.startswith("nested_scan."):
-        return raw_mode == "nested"
-    if path.startswith("hysteresis_scan."):
-        return raw_mode == "hysteresis"
-    if path.startswith("scan."):
-        return False
+    if path == "scan.axes":
+        return True
+    if path == "scan.execution":
+        return _get_raw_path(plan.raw_config if isinstance(plan.raw_config, dict) else {}, path) is not None
     algorithm_key = getattr(plan.config, "algorithm_key", None)
     if path.startswith("spreading."):
         return algorithm_key in {"bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel", "agd_spreading"}
@@ -747,21 +765,6 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     return True
 
 
-def _raw_scan_mode(raw_config: Dict[str, Any]) -> str:
-    value = raw_config.get("scan_mode", 1)
-    mapping = {
-        1: "alpha",
-        2: "steps",
-        3: "nested",
-        4: "hysteresis",
-        "alpha": "alpha",
-        "steps": "steps",
-        "nested": "nested",
-        "hysteresis": "hysteresis",
-    }
-    return mapping.get(value, str(value))
-
-
 def _parameter_consumption_status(
     *,
     spec: ParameterSpec,
@@ -785,7 +788,13 @@ def _parameter_consumption_status(
 def _validate_raw_paths(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
     known_paths = set(parameter_specs)
     known_top_level = {path.split(".", 1)[0] for path in known_paths}
+    legacy_scan_top_level = {"scan_mode", "alpha_scan", "steps_scan", "nested_scan", "hysteresis_scan"}
     for path, _ in _flatten_config_paths(plan.raw_config):
+        if path.split(".", 1)[0] in legacy_scan_top_level:
+            plan.errors.append(f"旧 scan 字段已移除，请改用 scan.axes: {path}")
+            continue
+        if _is_canonical_scan_internal_path(path):
+            continue
         if path in known_paths:
             continue
         top = path.split(".", 1)[0]
@@ -795,9 +804,44 @@ def _validate_raw_paths(plan: ExperimentPlan, parameter_specs: Dict[str, Paramet
             plan.errors.append(f"未注册参数字段: {path}")
 
 
+def _is_canonical_scan_internal_path(path: str) -> bool:
+    return path.startswith("scan.axes.") or path.startswith("scan.execution.")
+
+
+def _validate_scan_axis_paths(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
+    raw_scan = plan.raw_config.get("scan", {}) if isinstance(plan.raw_config, dict) else {}
+    axes = raw_scan.get("axes", {}) if isinstance(raw_scan, dict) else {}
+    if not axes:
+        plan.errors.append("canonical scan requires scan.axes")
+        return
+    for axis_key, axis_spec in axes.items():
+        if not isinstance(axis_spec, dict):
+            plan.errors.append(f"scan.axes.{axis_key} 必须是 mapping")
+            continue
+        kind = axis_spec.get("kind", "parameter")
+        if kind == "composite":
+            values = axis_spec.get("values", {})
+            if not isinstance(values, dict):
+                plan.errors.append(f"scan.axes.{axis_key}.values 必须是 mapping")
+                continue
+            for value_key, overrides in values.items():
+                if not isinstance(overrides, dict):
+                    plan.errors.append(f"scan.axes.{axis_key}.values.{value_key} 必须是 override mapping")
+                    continue
+                for override_path in overrides:
+                    if override_path not in parameter_specs:
+                        plan.errors.append(f"scan axis '{axis_key}' 引用了未注册参数路径: {override_path}")
+            continue
+        path = axis_spec.get("path", axis_key)
+        if path not in {"alpha", "max_steps"} and path not in parameter_specs:
+            plan.errors.append(f"scan axis '{axis_key}' 引用了未注册参数路径: {path}")
+
+
 def _validate_parameter_values(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
     """Validate raw YAML values against ParameterSpec.type before runtime."""
     for path, value in _flatten_config_paths(plan.raw_config):
+        if _is_canonical_scan_internal_path(path):
+            continue
         spec = parameter_specs.get(path)
         if not spec:
             continue
@@ -985,6 +1029,15 @@ def _build_output_plan(plan: ExperimentPlan) -> None:
             else:
                 required_artifacts.add(requirement)
     for plot_config in plan.output_options.get("plots") or []:
+        if "y" in plot_config:
+            metric_key = str(plot_config["y"])
+            required_metrics.add(metric_key)
+            plot_semantics[metric_key] = {
+                "metric_key": metric_key,
+                "semantic_candidates": _semantic_candidates_for_flat_key(plan, metric_key),
+                "query": {key: value for key, value in plot_config.items() if key in {"x", "y", "where", "compare", "series_by"}},
+            }
+            continue
         for curve_code in plot_config.get("curves", []):
             try:
                 metric_key = _curve_code_to_metric_key(curve_code)
@@ -1083,6 +1136,15 @@ def _validate_custom_plot_metrics(plan: ExperimentPlan) -> None:
         return
     available = set(_available_metric_keys(plan))
     for plot_idx, plot_config in enumerate(plots, start=1):
+        if "y" in plot_config:
+            required_key = str(plot_config["y"])
+            if required_key not in available:
+                plan.errors.append(
+                    f"output.plots[{plot_idx}] 请求 {required_key}，"
+                    f"但 algorithm '{plan.algorithm_spec.key}' 的 MetricSpec 未声明该 flat key。"
+                )
+            _validate_plot_query_axes(plan, plot_idx, plot_config)
+            continue
         for curve_code in plot_config.get("curves", []):
             try:
                 required_key = _curve_code_to_metric_key(curve_code)
@@ -1100,6 +1162,31 @@ def _validate_custom_plot_metrics(plan: ExperimentPlan) -> None:
                     plan.effective_parameters[f"output.plots[{plot_idx}].{curve_code}.canonical"] = (
                         semantics[0].get("canonical_key")
                     )
+
+
+def _validate_plot_query_axes(plan: ExperimentPlan, plot_idx: int, plot_config: Dict[str, Any]) -> None:
+    if not plan.scan_plan:
+        return
+    axis_keys = {axis.key for axis in plan.scan_plan.axes}
+    x_axis = plot_config.get("x")
+    if x_axis not in axis_keys:
+        plan.errors.append(f"output.plots[{plot_idx}].x 引用了不存在的 scan axis: {x_axis}")
+    for container_key in ["where"]:
+        payload = plot_config.get(container_key) or {}
+        if isinstance(payload, dict):
+            for axis in payload:
+                if axis not in axis_keys:
+                    plan.errors.append(f"output.plots[{plot_idx}].{container_key} 引用了不存在的 scan axis: {axis}")
+    for axis in plot_config.get("series_by") or []:
+        if axis not in axis_keys:
+            plan.errors.append(f"output.plots[{plot_idx}].series_by 引用了不存在的 scan axis: {axis}")
+    for compare_idx, item in enumerate(plot_config.get("compare") or []):
+        if not isinstance(item, dict):
+            plan.errors.append(f"output.plots[{plot_idx}].compare[{compare_idx}] 必须是 mapping")
+            continue
+        for axis in item:
+            if axis not in axis_keys:
+                plan.errors.append(f"output.plots[{plot_idx}].compare[{compare_idx}] 引用了不存在的 scan axis: {axis}")
 
 
 def _curve_code_to_metric_key(curve_code: str) -> str:

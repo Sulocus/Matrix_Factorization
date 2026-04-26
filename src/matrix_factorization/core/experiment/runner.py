@@ -23,7 +23,7 @@ import time
 import logging
 import torch
 
-from .config import ExperimentConfig, MatrixParams
+from .config import ExperimentConfig, MatrixParams, ScanConfig
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
 from ..contracts import AlgorithmResult
@@ -224,6 +224,14 @@ class ExperimentRunner:
             print(f"Starting experiment: {getattr(config, 'experiment_name', 'unnamed_experiment')}")
             print(f"  Algorithm: {config.algorithm_key}")
             print(f"  Matrix: {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
+
+        if self._should_use_canonical_scan_executor(config):
+            return self._run_canonical_scan(
+                config=config,
+                observer=observer,
+                output_options=output_options,
+                raw_yaml=raw_yaml,
+            )
         
         try:
             # Start MemoryGuard for OOM protection
@@ -304,6 +312,143 @@ class ExperimentRunner:
             # Stop MemoryGuard
             if hasattr(self, '_memory_guard') and self._memory_guard:
                 self._memory_guard.stop()
+
+    def _should_use_canonical_scan_executor(self, config: ExperimentConfig) -> bool:
+        """Return True when scan.axes requires grouping beyond alpha-only."""
+        if getattr(config, "_disable_canonical_scan_executor", False):
+            return False
+        scan_spec = getattr(config, "scan_spec", None)
+        if not isinstance(scan_spec, dict) or "axes" not in scan_spec:
+            return False
+        axes = scan_spec.get("axes") or {}
+        return set(axes.keys()) != {"alpha"}
+
+    def _run_canonical_scan(
+        self,
+        config: ExperimentConfig,
+        observer: Optional[Callable[[ProgressEvent], None]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        raw_yaml: str = "",
+    ) -> ExperimentResult:
+        """Execute canonical multi-axis scan by isolated effective-config groups."""
+        import copy
+        import gc
+        from .result import ResultCube
+        from matrix_factorization.core.scan_planning import build_scan_plan
+
+        scan_plan = build_scan_plan(config)
+        aggregate = ExperimentResult(
+            experiment_id=getattr(config, "experiment_name", "canonical_scan"),
+            config=config,
+            scan_dimension="scan",
+            scan_values=scan_plan.point_ids(),
+            metadata=ExperimentMetadata.create_now(),
+        )
+        if output_options and output_options.get("experiment_plan"):
+            aggregate.metadata.contract = output_options["experiment_plan"]
+        aggregate.metadata.contract["scan_plan"] = scan_plan.to_dict()
+        aggregate.result_cube = ResultCube(
+            axes={axis.key: axis.to_dict() for axis in scan_plan.axes},
+            metric_semantics=aggregate.metric_semantics(),
+        )
+        points_by_id = {point.point_id: point for point in scan_plan.points}
+        shared_teacher_shape = None
+        teacher_shape_mismatch = False
+
+        for group in scan_plan.grouping:
+            group_points = [points_by_id[point_id] for point_id in group.point_ids]
+            effective_config = self._effective_config_for_scan_group(config, group_points)
+            setattr(effective_config, "_disable_canonical_scan_executor", True)
+            child_runner = ExperimentRunner(device=self.device, verbose=self.verbose)
+            child_result = child_runner.run(
+                effective_config,
+                observer=observer,
+                output_options=output_options,
+                raw_yaml=raw_yaml,
+            )
+            child_teacher = getattr(child_result, "W_teacher", None)
+            if child_teacher is not None:
+                child_shape = tuple(child_teacher.shape)
+                if shared_teacher_shape is None and not teacher_shape_mismatch:
+                    shared_teacher_shape = child_shape
+                    aggregate.W_teacher = child_result.W_teacher
+                    aggregate.X_teacher = child_result.X_teacher
+                    aggregate.Y_teacher = child_result.Y_teacher
+                elif shared_teacher_shape != child_shape:
+                    teacher_shape_mismatch = True
+                    aggregate.W_teacher = None
+                    aggregate.X_teacher = None
+                    aggregate.Y_teacher = None
+            for point in group_points:
+                child_key = self._child_result_key_for_scan_point(point, effective_config)
+                if child_key not in child_result.results:
+                    raise ValueError(
+                        f"canonical scan point {point.point_id} expected child result {child_key!r}; "
+                        f"available: {list(child_result.results)}"
+                    )
+                child_single = child_result.results[child_key]
+                single = copy.copy(child_single)
+                single.scan_value = point.point_id
+                aggregate.add_result(point.point_id, single)
+                aggregate.result_cube.add_point(
+                    point.point_id,
+                    point.coordinates,
+                    child_single.metrics,
+                    overrides=point.overrides,
+                    effective_config_hash=point.effective_config_hash,
+                    group_id=point.group_id,
+                    metric_contract=child_single.metric_contract,
+                )
+            del child_runner
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        self._emit(observer, ProgressEventType.EXPERIMENT_END, {"result": aggregate})
+        return aggregate
+
+    def _effective_config_for_scan_group(self, base_config: ExperimentConfig, points: List[Any]) -> ExperimentConfig:
+        import copy
+
+        config = copy.deepcopy(base_config)
+        group_overrides = dict(points[0].overrides)
+        for path, value in group_overrides.items():
+            if path == "training.max_steps" and len(points) > 1:
+                continue
+            self._set_config_path(config, path, value)
+        if any(point.max_steps is not None for point in points):
+            step_values = sorted({int(point.max_steps) for point in points if point.max_steps is not None})
+            config.scan = ScanConfig(dimension="steps", values=step_values)
+            if points[0].alpha is not None:
+                config.algorithm_params.default_alpha = float(points[0].alpha)
+            if step_values:
+                config.training.max_steps = max(step_values)
+        else:
+            alpha_values = sorted({float(point.alpha) for point in points if point.alpha is not None})
+            if not alpha_values:
+                alpha_values = [float(config.algorithm_params.default_alpha)]
+            config.scan = ScanConfig(dimension="alpha", values=alpha_values)
+        config.scan_spec = {"axes": {"alpha": {"path": "alpha", "values": list(config.scan.values)}}}
+        config.experiment_name = f"{base_config.experiment_name}_{points[0].group_id}".replace("|", "_").replace("=", "-")
+        return config
+
+    @staticmethod
+    def _set_config_path(config: ExperimentConfig, path: str, value: Any) -> None:
+        if path == "alpha":
+            return
+        target = config
+        parts = path.split(".")
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        setattr(target, parts[-1], value)
+
+    @staticmethod
+    def _child_result_key_for_scan_point(point: Any, config: ExperimentConfig) -> Any:
+        if getattr(point, "max_steps", None) is not None:
+            return int(point.max_steps)
+        if getattr(point, "alpha", None) is not None:
+            return float(point.alpha)
+        return float(config.algorithm_params.default_alpha)
     
     def run_scaling_sweep(
         self,
@@ -371,11 +516,18 @@ class ExperimentRunner:
         # available, also attach WorkItem-level metadata so alpha/sample/scan
         # folding decisions are explicit before deeper runner refactors.
         resource_execution_plan = None
+        scan_points_by_alpha = {}
         try:
             from matrix_factorization.core.contracts import get_batching_specs
             from matrix_factorization.core.scan_planning import build_scan_plan
 
             scan_plan = build_scan_plan(config)
+            scan_points_by_alpha = {
+                float(point.alpha): point
+                for point in scan_plan.points
+                if point.alpha is not None
+            }
+            result.result_cube.axes = {axis.key: axis.to_dict() for axis in scan_plan.axes}
             batching_spec = get_batching_specs().get(config.algorithm_key)
             plan, resource_execution_plan = self.parallel_coordinator.plan_resource_execution(
                 scan_plan,
@@ -565,6 +717,17 @@ class ExperimentRunner:
                         metric_contract=metric_contract,
                     )
                     result.add_result(alpha, single_result)
+                    point = scan_points_by_alpha.get(float(alpha))
+                    if point is not None:
+                        result.result_cube.add_point(
+                            point.point_id,
+                            point.coordinates,
+                            metrics,
+                            overrides=point.overrides,
+                            effective_config_hash=point.effective_config_hash,
+                            group_id=point.group_id,
+                            metric_contract=metric_contract,
+                        )
                     
                     global_point_idx += 1
                     self._emit(observer, ProgressEventType.POINT_COMPLETE, {

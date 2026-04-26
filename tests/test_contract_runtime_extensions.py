@@ -28,11 +28,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   damping: 0.5
   noise_var: 1.0e-5
@@ -106,11 +109,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   init_mode: teacher
 output:
@@ -139,11 +145,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   init_mode: teacher
 spreading:

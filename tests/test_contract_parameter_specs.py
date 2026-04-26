@@ -20,6 +20,7 @@ def test_parameter_specs_cover_core_yaml_fields():
         "tensor_order",
         "algorithm",
         "teacher_config.init_distribution",
+        "scan.axes",
         "training.num_workers",
         "spreading.seed",
         "algorithm_params.use_compile",
@@ -63,11 +64,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 unknown_block:
   value: 1
 """,
@@ -92,11 +96,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   damping: 0.5
   made_up_parameter: 10
@@ -122,11 +129,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   use_compile: false
   seed_partition_policy: maybe
@@ -155,11 +165,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   use_compile: "no"
 output:
@@ -186,11 +199,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 output:
   storage_mode: lightweight
 """,
@@ -216,11 +232,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 output:
   storage_mode: lightweight
 """,
@@ -248,14 +267,14 @@ training:
   samples_per_alpha: 1
   max_steps: 2
   num_workers: 3
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.2
-  step: 0.1
-nested_scan:
-  sizes:
-    - [10, 2]
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.2
+        step: 0.1
 algorithm_params:
   use_compile: false
 output:
@@ -271,10 +290,40 @@ output:
     assert chain["training.num_workers"]["effective_source"] == "effective_parameters"
     assert chain["training.num_workers"]["consumption_status"] == "effective"
     assert chain["teacher_config.init_distribution"]["effective_value"] == "rademacher"
-    assert chain["alpha_scan.start"]["derived_effect"]["scan_num_points"] == 3
-    assert chain["alpha_scan.start"]["consumption_status"] == "effective"
-    assert chain["nested_scan.sizes"]["active_in_current_plan"] is False
-    assert chain["nested_scan.sizes"]["consumption_status"] == "inactive_current_route"
+    assert chain["scan.axes"]["derived_effect"]["scan_num_points"] == 3
+    assert chain["scan.axes"]["consumption_status"] == "effective"
+
+
+def test_legacy_scan_fields_are_rejected_before_planning(tmp_path):
+    config_path = tmp_path / "legacy_scan.yaml"
+    config_path.write_text(
+        """
+tensor_order: 2
+algorithm: 1
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan_mode: 1
+alpha_scan:
+  start: 0.0
+  stop: 0.2
+  step: 0.1
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        load_yaml_config(config_path)
+    except ValueError as exc:
+        assert "旧 scan 配置已从主链路移除" in str(exc)
+    else:
+        raise AssertionError("legacy scan fields should be rejected")
 
 
 def test_parameter_chain_reports_seed_aliases_and_specific_seed_override(tmp_path):
@@ -290,11 +339,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 seeds:
   model: 11
   data: 22
@@ -336,11 +388,14 @@ training:
   samples_per_alpha: 1
   max_steps: 2
   max_epochs: 3
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   damping: 0.2
   learning_rate: 0.01
@@ -377,11 +432,14 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   damping: 0.5
   use_compile: false
@@ -416,11 +474,14 @@ training:
   samples_per_alpha: 1
   max_steps: 2
   max_epochs: 3
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   learning_rate: 0.01
   use_compile: false
@@ -454,11 +515,14 @@ training:
   samples_per_alpha: 1
   max_steps: 2
   max_epochs: 3
-scan_mode: 1
-alpha_scan:
-  start: 0.0
-  stop: 0.0
-  step: 1.0
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
 algorithm_params:
   damping: 0.2
   learning_rate: 0.01

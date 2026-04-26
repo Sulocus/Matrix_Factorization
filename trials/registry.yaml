@@ -2,3 +2,18 @@ trials:
   - key: matrix_bigamp_quick
     status: active
     path: trials/active/matrix_bigamp_quick/trial.yaml
+  - key: scan_alpha_quick
+    status: active
+    path: trials/active/scan_alpha_quick/trial.yaml
+  - key: scan_steps_quick
+    status: active
+    path: trials/active/scan_steps_quick/trial.yaml
+  - key: scan_size_quick
+    status: active
+    path: trials/active/scan_size_quick/trial.yaml
+  - key: scan_init_quick
+    status: active
+    path: trials/active/scan_init_quick/trial.yaml
+  - key: scan_mixed_axes_quick
+    status: active
+    path: trials/active/scan_mixed_axes_quick/trial.yaml
