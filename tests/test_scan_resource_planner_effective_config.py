@@ -68,16 +68,16 @@ def test_scan_resource_planner_builds_effective_params_per_non_alpha_group():
     assert all({item.output_group_id for item in batch.work_items} for batch in resource_plan.batches)
 
 
-def test_max_steps_axis_is_isolated_from_alpha_folding():
+def test_max_steps_axis_groups_independent_alpha_curves():
     config = ExperimentConfig(
         matrix=MatrixParams(N1=4, N2=4, M=1),
         training=TrainingParams(samples_per_alpha=1, max_steps=3, max_epochs=3),
         algorithm_key="bigamp",
-        scan=ScanConfig(dimension="alpha", values=[0.2]),
+        scan=ScanConfig(dimension="alpha", values=[0.2, 0.4]),
         algorithm_params=AlgorithmParams(use_compile=False, use_bf16=False),
         scan_spec={
             "axes": {
-                "alpha": {"path": "alpha", "values": [0.2]},
+                "alpha": {"path": "alpha", "values": [0.2, 0.4]},
                 "max_steps": {"path": "max_steps", "values": [1, 2, 3]},
             }
         },
@@ -90,9 +90,12 @@ def test_max_steps_axis_is_isolated_from_alpha_folding():
         batching_spec=get_batching_specs()[config.algorithm_key],
     )
 
+    assert len(resource_plan.groups) == 3
     assert resource_plan.num_batches == 3
-    assert all(batch.batch_axes == ["point"] for batch in resource_plan.batches)
+    assert resource_plan.num_work_items == 6
+    assert all(batch.batch_axes == ["alpha"] for batch in resource_plan.batches)
     assert [batch.work_items[0].axis_values["max_steps"] for batch in resource_plan.batches] == [1, 2, 3]
+    assert all([item.alpha for item in batch.work_items] == [0.2, 0.4] for batch in resource_plan.batches)
 
 
 def test_spreading_large_sample_alpha_scan_is_not_full_alpha_folded():

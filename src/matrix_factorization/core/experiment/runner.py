@@ -464,6 +464,8 @@ class ExperimentRunner:
 
     @staticmethod
     def _child_result_key_for_scan_point(point: Any, config: ExperimentConfig) -> Any:
+        if getattr(config.scan, "dimension", "") == "alpha" and getattr(point, "alpha", None) is not None:
+            return float(point.alpha)
         if getattr(point, "max_steps", None) is not None:
             return int(point.max_steps)
         if getattr(point, "alpha", None) is not None:

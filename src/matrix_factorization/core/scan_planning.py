@@ -210,7 +210,7 @@ def build_scan_plan(config: Any, raw_config: Optional[Dict[str, Any]] = None) ->
         init_overlap = _point_init_overlap(overrides)
         group_coordinates = {
             key: value for key, value in coordinates.items()
-            if key not in {"alpha", "max_steps"}
+            if key != "alpha"
         }
         group_id = _group_id(group_coordinates)
         digest = _stable_hash({"coordinates": coordinates, "overrides": overrides})
@@ -359,7 +359,7 @@ def _build_grouping(points: List[ScanPoint]) -> List[ScanGrouping]:
             coordinates={
                 key: value
                 for key, value in group_points[0].coordinates.items()
-                if key not in {"alpha", "max_steps"}
+                if key != "alpha"
             },
         )
         for group_id, group_points in grouped.items()

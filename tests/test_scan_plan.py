@@ -49,3 +49,18 @@ def test_non_foldable_axes_define_execution_groups():
     assert plan.execution_constraints.foldable_axes == ["alpha"]
     assert {group.group_id for group in plan.grouping} == {"damping=0.2", "damping=0.5"}
     assert all(len(group.point_ids) == 3 for group in plan.grouping)
+
+
+def test_max_steps_axis_defines_outer_alpha_curve_groups():
+    plan = build_scan_plan({
+        "scan": {
+            "axes": {
+                "max_steps": {"path": "max_steps", "values": [2000, 4000]},
+                "alpha": {"path": "alpha", "values": [0.0, 0.1, 0.2]},
+            }
+        }
+    })
+
+    assert {group.group_id for group in plan.grouping} == {"max_steps=2000", "max_steps=4000"}
+    assert all(len(group.point_ids) == 3 for group in plan.grouping)
+    assert all(group.coordinates["max_steps"] in {2000, 4000} for group in plan.grouping)

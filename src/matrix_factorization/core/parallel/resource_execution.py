@@ -199,7 +199,8 @@ def build_scan_resource_execution_plan(
             continue
         group_errors: List[str] = []
         try:
-            if any(point.max_steps is not None for point in group_points):
+            step_values = {int(point.max_steps) for point in group_points if point.max_steps is not None}
+            if len(step_values) > 1:
                 for point in group_points:
                     point_config = effective_config_for_scan_points(base_config, [point])
                     params = estimation_params_from_config(point_config, [float(point.alpha or point_config.algorithm_params.default_alpha)])
@@ -615,16 +616,20 @@ def effective_config_for_scan_points(base_config: Any, points: List[ScanPoint]) 
             continue
         _set_config_path(config, path, value)
 
-    if any(point.max_steps is not None for point in points):
-        step_values = sorted({int(point.max_steps) for point in points if point.max_steps is not None})
-        if step_values:
-            config.scan = ScanConfig(dimension="steps", values=step_values)
-            config.training.max_steps = max(step_values)
-        first_alpha = next((point.alpha for point in points if point.alpha is not None), None)
-        if first_alpha is not None:
-            config.algorithm_params.default_alpha = float(first_alpha)
+    alpha_values = sorted({float(point.alpha) for point in points if point.alpha is not None})
+    step_values = sorted({int(point.max_steps) for point in points if point.max_steps is not None})
+    if len(step_values) > 1:
+        config.scan = ScanConfig(dimension="steps", values=step_values)
+        config.training.max_steps = max(step_values)
+        if alpha_values:
+            config.algorithm_params.default_alpha = float(alpha_values[0])
+    elif step_values and alpha_values:
+        config.training.max_steps = step_values[0]
+        config.scan = ScanConfig(dimension="alpha", values=alpha_values)
+    elif step_values:
+        config.training.max_steps = step_values[0]
+        config.scan = ScanConfig(dimension="steps", values=step_values)
     else:
-        alpha_values = sorted({float(point.alpha) for point in points if point.alpha is not None})
         if not alpha_values:
             alpha_values = [float(config.algorithm_params.default_alpha)]
         config.scan = ScanConfig(dimension="alpha", values=alpha_values)
