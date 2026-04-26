@@ -161,6 +161,19 @@ class RuntimeExtensionExecutor:
                 "state_capabilities": state.available_capabilities(),
                 "metadata_only": True,
             }
+        elif probe.key == "state_slice":
+            payload = {
+                "hook": context.hook.value,
+                "step_index": context.step_index if context.step_index is not None else state.step_index,
+                "alpha": context.alpha if context.alpha is not None else state.alpha,
+                "alpha_values": list(state.metadata.get("alpha_values", [])),
+                "sample_count": state.metadata.get("sample_count"),
+                "loss": state.metadata.get("loss"),
+                "student_factors": self._summarize_factor_dict(state.student_factors),
+                "teacher_factors": self._summarize_factor_dict(state.teacher_factors),
+                "state_capabilities": state.available_capabilities(),
+                "metadata_only": True,
+            }
         else:
             payload = {
                 "hook": context.hook.value,
@@ -169,6 +182,33 @@ class RuntimeExtensionExecutor:
                 "metadata_only": True,
             }
         self.report.probe_reports.setdefault(probe.key, []).append(payload)
+
+    @classmethod
+    def _summarize_factor_dict(cls, factors: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(factors, dict):
+            return {}
+        return {key: cls._summarize_value(value) for key, value in factors.items()}
+
+    @staticmethod
+    def _summarize_value(value: Any) -> Dict[str, Any]:
+        if hasattr(value, "detach"):
+            tensor = value.detach()
+            summary = {
+                "kind": "tensor",
+                "shape": list(tensor.shape),
+                "dtype": str(tensor.dtype),
+                "device": str(tensor.device),
+                "numel": int(tensor.numel()),
+            }
+            if tensor.numel() > 0:
+                numeric = tensor.float()
+                summary["mean"] = float(numeric.mean().item())
+                summary["norm"] = float(numeric.norm().item())
+            return summary
+        return {
+            "kind": type(value).__name__,
+            "repr": repr(value),
+        }
 
     @staticmethod
     def _require_state(key: str, required: List[str], state: AlgorithmStateView) -> None:

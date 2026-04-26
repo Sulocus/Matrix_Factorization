@@ -1632,9 +1632,9 @@ def get_probe_specs() -> Dict[str, ProbeSpec]:
             "after_step",
             ["student_factors", "step_index"],
             ["slice_artifact"],
-            ["agd", "bigamp", "bigamp_spreading"],
-            "declared_only",
-            "Read-only runtime state snapshot for matrix factor algorithms.",
+            ["agd"],
+            "runtime_active",
+            "Read-only runtime state snapshot for AGD step-level state.",
         ),
         ProbeSpec(
             "tensor_state_slice",

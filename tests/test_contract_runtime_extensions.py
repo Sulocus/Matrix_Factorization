@@ -1,3 +1,6 @@
+import pytest
+import torch
+
 from matrix_factorization.cli import load_yaml_config
 from matrix_factorization.core.contracts import (
     AlgorithmResult,
@@ -28,6 +31,7 @@ matrix:
 training:
   samples_per_alpha: 1
   max_steps: 2
+  max_epochs: 2
 scan:
   axes:
     alpha:
@@ -50,8 +54,43 @@ output:
     )
 
 
+def _write_agd_config(path, extra: str = ""):
+    path.write_text(
+        f"""
+tensor_order: 2
+algorithm: 3
+teacher: 2
+matrix:
+  N1: 3
+  N2: 3
+  M: 1
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
+algorithm_params:
+  learning_rate: 0.01
+  use_bf16: false
+  use_tf32: false
+output:
+  enable_heatmap: false
+{extra}
+""",
+        encoding="utf-8",
+    )
+
+
 def test_probe_and_analyzer_specs_exist():
     assert "tensor_state_slice" in get_probe_specs()
+    assert get_probe_specs()["state_slice"].runtime_status == "runtime_active"
+    assert get_probe_specs()["state_slice"].compatible_algorithms == ["agd"]
     assert "batch_summary" in get_probe_specs()
     assert get_probe_specs()["tensor_state_slice"].runtime_status == "declared_only"
     assert get_probe_specs()["batch_summary"].runtime_status == "runtime_active"
@@ -456,3 +495,59 @@ analyzers:
     report = result.metadata.contract["runtime_extension_report"]
     assert report["analyzers"] == ["tensor_heatmap_summary"]
     assert report["analyzer_reports"]["tensor_heatmap_summary"]["overlap_matrix_count"] == 1
+
+
+def test_agd_state_slice_probe_is_step_level_and_read_only(tmp_path):
+    with_probe_path = tmp_path / "agd_with_state_slice.yaml"
+    without_probe_path = tmp_path / "agd_without_state_slice.yaml"
+    _write_agd_config(
+        with_probe_path,
+        """
+probes:
+  - key: state_slice
+""",
+    )
+    _write_agd_config(without_probe_path)
+
+    config, output_options, raw_yaml = load_yaml_config(with_probe_path)
+    config.training.max_epochs = config.training.max_steps
+    plan = build_experiment_plan(config, output_options, raw_yaml, with_probe_path)
+
+    assert plan.is_valid
+    assert plan.probe_specs[0].key == "state_slice"
+    assert plan.probe_specs[0].runtime_status == "runtime_active"
+
+    runner = ExperimentRunner(device=torch.device("cpu"), verbose=False)
+    result_with_probe = runner.run(
+        config,
+        output_options={**output_options, "experiment_plan": plan.to_dict()},
+        raw_yaml=raw_yaml,
+    )
+
+    report = result_with_probe.metadata.contract["runtime_extension_report"]
+    state_reports = report["probe_reports"]["state_slice"]
+    after_step_hooks = [
+        item for item in report["dispatched_hooks"]
+        if item["hook"] == "after_step"
+    ]
+    assert len(state_reports) == config.training.max_steps
+    assert after_step_hooks[0]["step_index"] == 1
+    assert state_reports[0]["step_index"] == 1
+    assert state_reports[0]["metadata_only"] is True
+    assert state_reports[0]["student_factors"]["W"]["shape"] == [1, 1, 3, 1]
+    assert state_reports[0]["student_factors"]["X"]["shape"] == [1, 1, 1, 3]
+    assert state_reports[0]["teacher_factors"]["W"]["shape"] == [3, 1]
+    assert "loss" in state_reports[0]
+
+    config_no_probe, output_no_probe, raw_no_probe = load_yaml_config(without_probe_path)
+    config_no_probe.training.max_epochs = config_no_probe.training.max_steps
+    plan_no_probe = build_experiment_plan(config_no_probe, output_no_probe, raw_no_probe, without_probe_path)
+    result_without_probe = ExperimentRunner(device=torch.device("cpu"), verbose=False).run(
+        config_no_probe,
+        output_options={**output_no_probe, "experiment_plan": plan_no_probe.to_dict()},
+        raw_yaml=raw_no_probe,
+    )
+
+    assert result_with_probe.results[0.0].metrics["Q_Y_mean"] == pytest.approx(
+        result_without_probe.results[0.0].metrics["Q_Y_mean"]
+    )

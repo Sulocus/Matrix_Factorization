@@ -18,6 +18,7 @@ from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 from pathlib import Path
 from enum import Enum
 import hashlib
+import inspect
 import json
 import time
 import logging
@@ -1126,17 +1127,22 @@ class ExperimentRunner:
         is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
         masks = None if is_spreading_family else data.masks
         if hasattr(algorithm, 'train_batch_result'):
-            return algorithm.train_batch_result(
-                algorithm_key=config.algorithm_key,
-                W_teacher=data.W_teacher,
-                X_teacher=data.X_teacher,
-                Y_teacher=data.Y_teacher,
-                masks=masks,
-                alpha_values=data.alpha_values,
-                seed=config.seeds.base_seed,
-                progress_callback=None if is_spreading_family else step_callback,
-                step_callback=step_callback if is_spreading_family else None,
+            call_kwargs = self._filter_callable_kwargs(
+                algorithm.train_batch_result,
+                {
+                    "algorithm_key": config.algorithm_key,
+                    "W_teacher": data.W_teacher,
+                    "X_teacher": data.X_teacher,
+                    "Y_teacher": data.Y_teacher,
+                    "masks": masks,
+                    "alpha_values": data.alpha_values,
+                    "seed": config.seeds.base_seed,
+                    "progress_callback": None if is_spreading_family else step_callback,
+                    "step_callback": step_callback if is_spreading_family else None,
+                    "runtime_step_callback": self._build_runtime_step_callback(config),
+                },
             )
+            return algorithm.train_batch_result(**call_kwargs)
 
         W_students, X_students = self._run_algorithm(
             algorithm=algorithm,
@@ -1247,18 +1253,23 @@ class ExperimentRunner:
         if hasattr(algorithm, 'train_batch_result'):
             is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
             masks = None if is_spreading_family else data.masks
-            algorithm_result = algorithm.train_batch_result(
-                algorithm_key=config.algorithm_key,
-                W_teacher=data.W_teacher,
-                X_teacher=data.X_teacher,
-                Y_teacher=data.Y_teacher,
-                masks=masks,
-                alpha_values=data.alpha_values,
-                seed=config.seeds.base_seed,
-                max_steps=total_steps,
-                progress_callback=None if is_spreading_family else step_callback,
-                step_callback=step_callback if is_spreading_family else None,
+            call_kwargs = self._filter_callable_kwargs(
+                algorithm.train_batch_result,
+                {
+                    "algorithm_key": config.algorithm_key,
+                    "W_teacher": data.W_teacher,
+                    "X_teacher": data.X_teacher,
+                    "Y_teacher": data.Y_teacher,
+                    "masks": masks,
+                    "alpha_values": data.alpha_values,
+                    "seed": config.seeds.base_seed,
+                    "max_steps": total_steps,
+                    "progress_callback": None if is_spreading_family else step_callback,
+                    "step_callback": step_callback if is_spreading_family else None,
+                    "runtime_step_callback": self._build_runtime_step_callback(config),
+                },
             )
+            algorithm_result = algorithm.train_batch_result(**call_kwargs)
             W_students, X_students = self._matrix_factors_from_result(algorithm_result)
             new_checkpoint = Checkpoint(
                 step=total_steps,
@@ -1549,6 +1560,47 @@ class ExperimentRunner:
             config=config,
             metadata=dict(metadata or {}),
         )
+
+    @staticmethod
+    def _filter_callable_kwargs(callable_obj: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        signature = inspect.signature(callable_obj)
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+            return dict(kwargs)
+        allowed = set(signature.parameters)
+        return {key: value for key, value in kwargs.items() if key in allowed}
+
+    def _build_runtime_step_callback(self, config: ExperimentConfig):
+        runtime_extensions = getattr(self, "_runtime_extensions", None)
+        if runtime_extensions is None:
+            return None
+
+        has_after_step_hook = any(
+            getattr(item, "spec", item).trigger == "after_step"
+            for item in [
+                *getattr(runtime_extensions, "interventions", []),
+                *getattr(runtime_extensions, "probes", []),
+            ]
+        )
+        if not has_after_step_hook:
+            return None
+
+        def runtime_step_callback(state):
+            from matrix_factorization.modules.interventions import HookPoint, RuntimeHookContext
+
+            runtime_extensions.dispatch(
+                "after_step",
+                state,
+                RuntimeHookContext(
+                    algorithm_key=config.algorithm_key,
+                    hook=HookPoint.AFTER_STEP,
+                    config=config,
+                    alpha=getattr(state, "alpha", None),
+                    step_index=getattr(state, "step_index", None),
+                    metadata={"runtime_hook_source": "algorithm_step"},
+                ),
+            )
+
+        return runtime_step_callback
 
     def _dispatch_after_batch_runtime_extensions(
         self,

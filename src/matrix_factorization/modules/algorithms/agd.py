@@ -236,6 +236,7 @@ class AGDAlgorithm(AlgorithmBase):
         progress_callback: Optional[Callable[[int, int], None]] = None,
         step_callback: Optional[Callable[[int, int], None]] = None,
         sample_callback: Optional[Callable] = None,
+        runtime_step_callback: Optional[Callable] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train AGD for multiple alphas in parallel."""
         N1, M = W_teacher.shape
@@ -303,6 +304,29 @@ class AGDAlgorithm(AlgorithmBase):
             callback = step_callback or progress_callback
             if callback:
                 callback(step + 1, steps)
+            if runtime_step_callback:
+                from ...core.contracts import AlgorithmStateView
+
+                runtime_step_callback(
+                    AlgorithmStateView(
+                        student_factors={
+                            "W": W.detach(),
+                            "X": X.detach(),
+                        },
+                        teacher_factors={
+                            "W": W_teacher.detach(),
+                            "X": X_teacher.detach(),
+                        },
+                        step_index=step + 1,
+                        metadata={
+                            "algorithm_key": "agd",
+                            "alpha_values": list(alpha_values),
+                            "sample_count": S,
+                            "loss": float((Mres2.detach().float() ** 2).mean().item()),
+                            "metadata_only": True,
+                        },
+                    )
+                )
 
         return W.float(), X.float()
 
