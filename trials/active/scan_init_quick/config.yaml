@@ -19,7 +19,7 @@ scan:
       path: alpha
       values: [0.0]
 training:
-  samples_per_alpha: 1
+  samples_per_alpha: 2
   max_steps: 2
 algorithm_params:
   damping: 0.5
