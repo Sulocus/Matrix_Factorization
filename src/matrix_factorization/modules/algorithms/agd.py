@@ -330,6 +330,44 @@ class AGDAlgorithm(AlgorithmBase):
 
         return W.float(), X.float()
 
+    def train_batch_result(
+        self,
+        *,
+        algorithm_key: str,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: Optional[torch.Tensor],
+        alpha_values: list[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        **kwargs,
+    ):
+        """Return AGD output as a native matrix AlgorithmResult.
+
+        The training loop is still the existing train_batch_alphas() path; this
+        method only makes the active result contract explicit.
+        """
+        call_kwargs = self._filter_train_batch_kwargs({
+            "W_teacher": W_teacher,
+            "X_teacher": X_teacher,
+            "Y_teacher": Y_teacher,
+            "masks": masks,
+            "alpha_values": alpha_values,
+            "seed": seed,
+            "progress_callback": progress_callback,
+            "step_callback": step_callback,
+            **kwargs,
+        })
+        W_students, X_students = self.train_batch_alphas(**call_kwargs)
+        return self.coerce_native_matrix_result(
+            algorithm_key=algorithm_key,
+            W_students=W_students,
+            X_students=X_students,
+            result_source="native_agd_algorithm_result",
+        )
+
     def supports_batch_training(self) -> bool:
         """AGD supports batch training."""
         return True

@@ -10,13 +10,15 @@
 agd
   status: active
   result_contract: legacy_matrix_result
+  active_result_path: native_agd_algorithm_result
   CLI/config: algorithm=3, tensor_order=2 matrix path
   role: matrix AGD optimizer
-  merge/delete: 不删除；可继续硬化 AlgorithmResult 和 runtime hooks
+  merge/delete: 不删除；可继续硬化 runtime hooks 和 metric compute adapters
 
 bigamp
   status: active
   result_contract: legacy_matrix_result
+  active_result_path: native_bigamp_algorithm_result
   CLI/config: algorithm=1, tensor_order=2 matrix path
   role: dense matrix BiGAMP
   merge/delete: 不删除；可继续硬化 metrics 和 memory contract
@@ -24,6 +26,7 @@ bigamp
 bigamp_spreading
   status: active
   result_contract: legacy_spreading_result
+  active_result_path: native_bigamp_spreading_algorithm_result
   CLI/config: algorithm=2 spreading path
   role: random spreading matrix BiGAMP
   merge/delete: 不删除；adaptive restart/intervention 和 spreading seed contract 仍需后续硬化
@@ -75,4 +78,3 @@ combined
 - `combined` 这种 helper 不应伪装成 trainable algorithm；如果以后保留，应考虑拆到 selector/helper 层。
 - `bigamp_tensor` 和 `bigamp_tensor_parallel` 不应直接删除任何一个；应先完成 `docs/tensor_parity_contract.md` 中的 parity checklist。
 - 新增 algorithm 文件时，必须同时更新 `AlgorithmSpec`、source inventory 和本文件，否则测试失败。
-

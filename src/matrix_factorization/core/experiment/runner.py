@@ -684,6 +684,12 @@ class ExperimentRunner:
                     data=data,
                     step_callback=internal_step_callback,
                 )
+                self._record_algorithm_result_summary(
+                    result=result,
+                    batch_idx=batch_idx,
+                    alpha_values=batch_alpha_values,
+                    algorithm_result=batch_algorithm_result,
+                )
                 W_students, X_students = self._matrix_factors_from_result(batch_algorithm_result)
                 
                 # Process each alpha in the batch
@@ -899,6 +905,12 @@ class ExperimentRunner:
                 additional_steps=additional_steps,
                 checkpoint=checkpoint,
                 step_callback=internal_step_callback,
+            )
+            self._record_algorithm_result_summary(
+                result=result,
+                batch_idx=idx,
+                alpha_values=[default_alpha],
+                algorithm_result=step_algorithm_result,
             )
             W_students, X_students = self._matrix_factors_from_result(step_algorithm_result)
             
@@ -1601,6 +1613,44 @@ class ExperimentRunner:
             )
 
         return runtime_step_callback
+
+    @staticmethod
+    def _record_algorithm_result_summary(
+        *,
+        result: ExperimentResult,
+        batch_idx: int,
+        alpha_values: List[Any],
+        algorithm_result: Optional[AlgorithmResult],
+    ) -> None:
+        if algorithm_result is None:
+            return
+        metadata = dict(getattr(algorithm_result, "metadata", {}) or {})
+        summary = {
+            "batch_idx": batch_idx,
+            "alpha_values": list(alpha_values),
+            "available_outputs": algorithm_result.available_outputs(),
+            "metrics_by_alpha_count": len(getattr(algorithm_result, "metrics_by_alpha", {}) or {}),
+            "metrics_by_alpha_keys": sorted({
+                key
+                for metrics in (getattr(algorithm_result, "metrics_by_alpha", {}) or {}).values()
+                for key in (metrics or {})
+            }),
+            "algorithm_key": metadata.get("algorithm_key"),
+            "result_contract": metadata.get("result_contract"),
+            "result_kind": metadata.get("result_kind"),
+            "result_source": metadata.get("result_source"),
+            "matrix_factors_available": metadata.get("matrix_factors_available"),
+            "metadata_keys": sorted(metadata),
+        }
+        for key in [
+            "execution_metadata",
+            "tensor_execution",
+            "internal_alpha_batch_plan",
+        ]:
+            value = metadata.get(key)
+            if isinstance(value, dict):
+                summary[key] = dict(value)
+        result.metadata.contract.setdefault("algorithm_result_batches", []).append(summary)
 
     def _dispatch_after_batch_runtime_extensions(
         self,

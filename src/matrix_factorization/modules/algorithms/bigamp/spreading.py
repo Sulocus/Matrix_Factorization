@@ -1418,6 +1418,39 @@ class BiGAMPSpreading(AlgorithmBase):
 
         return W_result, X_result
 
+    def train_batch_result(
+        self,
+        *,
+        algorithm_key: str,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: Optional[torch.Tensor],
+        alpha_values: List[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        **kwargs,
+    ):
+        """Return spreading BiGAMP output as a native matrix AlgorithmResult."""
+        call_kwargs = self._filter_train_batch_kwargs({
+            "W_teacher": W_teacher,
+            "X_teacher": X_teacher,
+            "Y_teacher": Y_teacher,
+            "masks": masks,
+            "alpha_values": alpha_values,
+            "seed": seed,
+            "progress_callback": progress_callback,
+            "step_callback": step_callback,
+            **kwargs,
+        })
+        W_students, X_students = self.train_batch_alphas(**call_kwargs)
+        return self.coerce_native_matrix_result(
+            algorithm_key=algorithm_key,
+            W_students=W_students,
+            X_students=X_students,
+            result_source="native_bigamp_spreading_algorithm_result",
+        )
 
     def train_single_alpha(
         self,

@@ -116,11 +116,13 @@ YAML
 - runner active path 优先消费 `AlgorithmResult.metrics_by_alpha`。
 - tensor serial/parallel metrics-only route 不再保存 dummy zero `W/X`。
 - active tensor route 缺 metric 时不从私有 `_batch_metrics` 补救。
-- matrix algorithms 仍由 adapter 包装 legacy `(W, X)`，metadata 标记 `legacy_matrix_adapter` 或 runner adapter。
+- `agd / bigamp / bigamp_spreading` 已有原生 `train_batch_result()`，active path 直接返回 native matrix `AlgorithmResult`。
+- legacy `train_batch_alphas()` 仍保留给旧脚本/兼容调用方；base legacy adapter 仍存在，但不应是 active matrix algorithms 的主路径。
+- `metadata.contract.algorithm_result_batches` 会记录 batch-level result summary，包括 `result_source/result_kind/result_contract/available_outputs` 和轻量 execution metadata。
 
 边界：
 
-- AGD/dense BigAMP/spreading 还不是完全原生 `AlgorithmResult` 实现。
+- Matrix algorithms 的 metric compute 仍由 runner/metric adapter 负责；原生 `AlgorithmResult` 目前主要声明真实 matrix factors 和 execution metadata。
 
 ### Research trial workflow
 
@@ -249,7 +251,7 @@ YAML
 
 优先级建议：
 
-1. 如果想继续偏工程、低物理风险，优先做 matrix algorithms 原生 `AlgorithmResult`，把 `agd/bigamp/bigamp_spreading` 从 legacy adapter 迁移到 native result path。
+1. 如果想继续偏工程、低物理风险，优先把 OutputPlan executor 从 `ExperimentResult.save()` 中拆出，让 output/plot/export 也有独立硬执行层。
 2. 如果想继续 runtime extension，可扩展 step-level state view 到 dense BigAMP/spreading/tensor。
 3. 如果目标转向物理，优先做 tensor serial/parallel parity review，不要直接合并。
 4. 如果目标转向性能，优先做 sample/student folding 的真实 execution contract，而不是只改 estimator。
@@ -257,7 +259,6 @@ YAML
 
 具体 backlog：
 
-- Matrix algorithms 原生 `AlgorithmResult`。
 - MetricSpec compute adapter 完全接管 runner metric 计算。
 - OutputPlan executor 从 `ExperimentResult.save()` 中拆出。
 - sample/student folding：
@@ -275,9 +276,9 @@ YAML
 
 推荐给下一轮 agent 的工程分支 prompt 已写在：
 
-- `docs/next_agent_prompt_algorithm_result.md`
+- `docs/next_agent_prompt_output_plan_executor.md`
 
-这个 prompt 的任务是：把 active matrix algorithms 迁移到原生 `AlgorithmResult`，不改变训练公式、不改变 metric 定义、不动 tensor parity。
+这个 prompt 的任务是：把 output/plot/export 执行从 `ExperimentResult.save()` 中拆到独立 OutputPlan executor，不改变算法和 metric 数值。
 
 ## 4. 不应提交的东西
 

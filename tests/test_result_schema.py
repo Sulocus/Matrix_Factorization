@@ -17,9 +17,12 @@ from matrix_factorization.core.experiment.data_factory import ExperimentData
 from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
 from matrix_factorization.core.experiment.runner import ExperimentRunner, ProgressEventType
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.modules.algorithms.agd import AGDAlgorithm
+from matrix_factorization.modules.algorithms.bigamp.standard import BiGAMPAlgorithm
 from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading import BiGAMPTensorSpreading
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import BiGAMPTensorSpreadingParallel
+from matrix_factorization.modules.registry import get_algorithm
 from matrix_factorization.modules.outputs.latest import refresh_latest_results
 
 
@@ -428,6 +431,22 @@ def test_runner_batch_end_event_records_elapsed_duration():
     assert batch_end_events[-1].payload["duration"] >= 0.0
 
 
+def test_runner_persists_native_matrix_algorithm_result_summary():
+    config = _tiny_config()
+    config.scan.values = [0.1]
+    config.training.max_steps = 1
+    result = ExperimentRunner(device=torch.device("cpu"), verbose=False).run(
+        config,
+        output_options={"enable_heatmap": False},
+    )
+
+    summaries = result.metadata.contract["algorithm_result_batches"]
+    assert summaries[0]["result_source"] == "native_bigamp_algorithm_result"
+    assert summaries[0]["result_kind"] == "matrix_factors"
+    assert summaries[0]["matrix_factors_available"] is True
+    assert summaries[0]["available_outputs"] == ["matrix_factors"]
+
+
 def test_runner_wraps_tensor_legacy_metrics_without_dummy_matrix_factors():
     class DummyTensorAlgorithm:
         _batch_metrics = {
@@ -687,6 +706,59 @@ def test_algorithm_base_train_batch_result_filters_unsupported_legacy_kwargs():
     assert result.matrix_factors["W_students"].shape == (1, 1, 2, 1)
     assert result.metadata["result_source"] == "legacy_matrix_adapter"
     assert result.metadata["matrix_factors_available"] is True
+
+
+@pytest.mark.parametrize(
+    ("algorithm_cls", "algorithm_key", "result_source"),
+    [
+        (AGDAlgorithm, "agd", "native_agd_algorithm_result"),
+        (BiGAMPAlgorithm, "bigamp", "native_bigamp_algorithm_result"),
+        (BiGAMPSpreading, "bigamp_spreading", "native_bigamp_spreading_algorithm_result"),
+    ],
+)
+def test_matrix_algorithms_return_native_algorithm_result(algorithm_cls, algorithm_key, result_source):
+    algorithm = object.__new__(algorithm_cls)
+    algorithm._contract_execution_metadata = {
+        "path": "unit_fixture",
+        "metadata_only": True,
+    }
+
+    def fake_train_batch_alphas(**kwargs):
+        return (
+            torch.zeros(len(kwargs["alpha_values"]), 1, 2, 1),
+            torch.zeros(len(kwargs["alpha_values"]), 1, 1, 2),
+        )
+
+    algorithm.train_batch_alphas = fake_train_batch_alphas
+
+    result = algorithm_cls.train_batch_result(
+        algorithm,
+        algorithm_key=algorithm_key,
+        W_teacher=torch.zeros(2, 1),
+        X_teacher=torch.zeros(1, 2),
+        Y_teacher=torch.zeros(2, 2),
+        masks=torch.ones(1, 2, 2),
+        alpha_values=[0.1],
+        seed=1,
+        step_callback=lambda *_: None,
+        runtime_step_callback=lambda *_: None,
+    )
+
+    assert isinstance(result, AlgorithmResult)
+    assert result.metrics_by_alpha == {}
+    assert result.matrix_factors["W_students"].shape == (1, 1, 2, 1)
+    assert result.matrix_factors["X_students"].shape == (1, 1, 1, 2)
+    assert result.metadata["result_source"] == result_source
+    assert result.metadata["result_kind"] == "matrix_factors"
+    assert result.metadata["matrix_factors_available"] is True
+    assert result.metadata["execution_metadata"]["path"] == "unit_fixture"
+
+
+@pytest.mark.parametrize("algorithm_key", ["agd", "bigamp", "bigamp_spreading"])
+def test_active_matrix_algorithm_registry_uses_native_train_batch_result(algorithm_key):
+    algorithm_cls = get_algorithm(algorithm_key).cls
+
+    assert algorithm_cls.train_batch_result is not AlgorithmBase.train_batch_result
 
 
 def test_runner_alpha_path_uses_formal_train_batch_result_contract():

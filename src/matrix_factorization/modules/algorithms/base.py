@@ -289,6 +289,43 @@ class AlgorithmBase(ABC):
             ),
         )
 
+    def coerce_native_matrix_result(
+        self,
+        *,
+        algorithm_key: str,
+        W_students: torch.Tensor,
+        X_students: torch.Tensor,
+        result_source: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> 'AlgorithmResult':
+        """Return a native AlgorithmResult for matrix algorithms.
+
+        This is the active matrix path: the algorithm itself states that the
+        returned tensors are real matrix factors. Legacy tuple APIs may still
+        exist, but runner metadata no longer has to infer result semantics.
+        """
+        from ...core.contracts import AlgorithmResult
+        from ..registry import get_algorithm_spec
+
+        spec = get_algorithm_spec(algorithm_key)
+        payload = {
+            "algorithm_key": algorithm_key,
+            "result_contract": spec.result_contract,
+            "result_kind": "matrix_factors",
+            "result_source": result_source,
+            "matrix_factors_available": True,
+        }
+        execution_metadata = getattr(self, "_contract_execution_metadata", None)
+        if isinstance(execution_metadata, dict):
+            payload["execution_metadata"] = dict(execution_metadata)
+        if metadata:
+            payload.update(metadata)
+        return AlgorithmResult(
+            metrics_by_alpha={},
+            matrix_factors={"W_students": W_students, "X_students": X_students},
+            metadata=payload,
+        )
+
     def _filter_train_batch_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Only pass keyword arguments accepted by the concrete legacy method."""
         import inspect

@@ -49,7 +49,9 @@
 - runner active path 优先消费 `AlgorithmResult.metrics_by_alpha`。
 - metrics-only tensor route 不再保存 dummy zero `W/X` 当真实 factor。
 - active tensor route 缺 metric 时 runner 不再从私有 `_batch_metrics` 补救。
-- matrix algorithms 仍通过 legacy adapter 包装 `(W, X)`，但 metadata 写明 `result_source=legacy_matrix_adapter` 或 runner adapter。
+- `agd / bigamp / bigamp_spreading` 已有原生 `train_batch_result()`，active path 直接返回 native matrix `AlgorithmResult`。
+- legacy `train_batch_alphas()` 仍保留给旧调用方；base adapter 仍作为非 migrated algorithm 的兼容层。
+- run metadata 的 `contract.algorithm_result_batches` 会记录每个 batch 的 `result_source/result_kind/result_contract/available_outputs`，因此不用开启 probe 也能回看 active path 的 result 来源。
 
 ### Canonical scan + ResultCube + PlotQuery
 
@@ -89,7 +91,7 @@
 
 ## Active but limited
 
-- Matrix algorithms 还不是原生 `AlgorithmResult` 实现；目前通过 adapter。
+- Matrix algorithms 已原生返回 `AlgorithmResult`，但 metric compute 仍在 runner/metric adapter 层，不是 algorithm 内部产出。
 - OOM 后同进程自动 retry 还未实现；runner 仍 checkpoint/flush/exit。
 - `partition_invariant` seed policy 已打开 planner 层安全 rebatch 可能性，但 runner 默认不会自动改 batch 并继续跑。
 - `spreading.chunk_size` 只记录 metadata，不做 auto tuning。

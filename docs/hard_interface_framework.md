@@ -86,7 +86,7 @@ deprecated
 - dense BigAMP、spreading 和 tensor parallel 新增 `algorithm_params.compile_fallback_policy`：默认 `allow` 保持旧行为，`torch.compile` 失败后继续 eager path；设为 `error` 时 compile 失败会在初始化阶段直接报错。该字段进入 `ParameterSpec`、`parameter_chain`、`resource_plan`、`algorithm_config_trace` 和 execution metadata，用来区分“允许 fallback”和“必须硬失败”的调试场景。
 - AGD、spreading 和 tensor parallel 新增 `algorithm_params.dtype_fallback_policy`：默认 `allow` 保持旧行为，BF16 请求在不支持的设备上回到 FP32；设为 `error` 时直接报错。execution metadata 的 `dtype_status` 会记录 `bf16_requested_and_effective`、`bf16_disabled_by_config` 或 fallback 状态。`agd` 和 `bigamp_spreading` 现在也会消费 `algorithm_params.use_bf16=false`，不再在用户显式关闭时自动开 BF16/autocast。
 - AGD、dense BigAMP、spreading 和 tensor parallel 新增 `algorithm_params.use_tf32`：默认 `true` 保持旧行为；显式 `false` 会在 algorithm 初始化时关闭 `torch.backends.cuda.matmul.allow_tf32` 和 `torch.backends.cudnn.allow_tf32`，并写入 execution metadata。
-- runner 会优先调用 algorithm 的 `train_batch_result()`；`bigamp_tensor` 和 `bigamp_tensor_parallel` 已经显式返回 metrics-only `AlgorithmResult`。active path 在拿到 `AlgorithmResult` 后不会再从私有 `_batch_metrics` 补缺失指标；旧 `_batch_metrics` 只保留为 tensor 数值实现内部的临时缓冲和未迁移 legacy fallback。
+- runner 会优先调用 algorithm 的 `train_batch_result()`；`agd`、dense `bigamp`、`bigamp_spreading` 已经显式返回 native matrix `AlgorithmResult`，`bigamp_tensor` 和 `bigamp_tensor_parallel` 显式返回 metrics-only `AlgorithmResult`。active path 在拿到 `AlgorithmResult` 后不会再从私有 `_batch_metrics` 补缺失指标；旧 `_batch_metrics` 只保留为 tensor 数值实现内部的临时缓冲和未迁移 legacy fallback。
 - tensor metrics-only result 的 `SingleRunResult.W_students/X_students` 保存为 `None`，避免把 placeholder 当成真实 factor。
 - runner 的 algorithm cache 已按 effective config signature 分区，不再只按 algorithm key 复用。每个 algorithm 实例会带 `_contract_config_trace`，run metadata 中写入 `algorithm_config_trace`，用于追踪参数是否实际传入 algorithm 构造。
 - `metrics.json` 保留旧 flat keys，同时新增 `metric_semantics` 和 `factor_payload_contract`，用于区分同名 key 在 matrix/tensor/spreading 中的语义，并声明当前 run 是否真的有 `W_students/X_students`。
@@ -115,6 +115,7 @@ deprecated
 - 保存阶段会写出 `output_contract.json`，记录 output plan 实际需要的 metric/artifact、当前 result 实际提供了什么、是否缺失。
 - 默认 scalar plot 只画真实存在的 metric；如果没有 `Q_W_mean`，不会再补 0 曲线；如果没有任何可用的 `Q_Y` 类 metric，会直接报错。
 - run metadata 会保存 `experiment_plan` 摘要，方便回看本次 run 的 effective parameters 和 warnings。
+- run metadata 会保存 `algorithm_result_batches` 摘要，记录每个 batch 的 `AlgorithmResult` 来源、result kind、available outputs 和轻量 execution metadata。
 - `metrics.json` 同样写入 `contract` 摘要，方便轻量后处理只读一个 JSON 就能知道本次结果的 contract 背景。
 - Research Trial v1 已接入：`matrix_bigamp_quick` 是内置 quick trial，真实运行时写入 `runs/trials/matrix_bigamp_quick/`，不刷新 `results/latest`。
 - nested scaling sweep 会透传 `teacher` 配置和 `experiment_plan`，避免外层 YAML 生效但内层尺寸 run 丢失配置。
@@ -145,7 +146,7 @@ analyzers:
 
 ## 仍未完成的后续阶段
 
-- `AlgorithmResult` 已接入 runner 的标准 alpha scan 和 steps/checkpoint scan。matrix algorithms 仍通过 base adapter 包装 legacy `W/X` tuple；tensor serial/parallel 已经在 algorithm class 内显式返回 metrics-only `AlgorithmResult`。后续若要继续硬化，应把 matrix algorithms 也逐步改成原生返回 `AlgorithmResult`。
+- `AlgorithmResult` 已接入 runner 的标准 alpha scan 和 steps/checkpoint scan。active matrix algorithms 现在原生返回 matrix `AlgorithmResult`；tensor serial/parallel 在 algorithm class 内显式返回 metrics-only `AlgorithmResult`。base adapter 仍保留给未迁移或测试 fixture 的 legacy tuple API。
 - `MetricSpec` 已接入 plan validation、result semantic metadata、per-point metric contract 和 registry gate；runner 仍复用旧公式实现，后续可把公式计算进一步拆到 MetricSpec compute adapter 中。
 - `OutputSpec` 已用于 preflight、保存前依赖检查和 `output_contract.json`，但具体绘图函数仍在 `ExperimentResult.save()` 中调度，后续可继续拆成独立 OutputPlan executor。
 - `InterventionSpec` 已定义并有 no-op executor；现有 warm start / adaptive restart 还没有完全迁移成 intervention module。
