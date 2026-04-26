@@ -37,6 +37,7 @@ from matrix_factorization.modules.algorithms.bigamp.tensor_supergraph import (
     create_tensor_supergraph,
 )
 from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+from matrix_factorization.modules.graphs.supergraph import _sample_unique_edges_sparse_cuda
 
 
 def _write_tensor_config(path: Path) -> None:
@@ -111,6 +112,29 @@ output:
 """,
         encoding="utf-8",
     )
+
+
+def test_sparse_supergraph_edge_sampler_is_unique_and_reproducible():
+    device = torch.device("cpu")
+    gen_a = torch.Generator(device=device).manual_seed(123)
+    gen_b = torch.Generator(device=device).manual_seed(123)
+
+    edges_a = _sample_unique_edges_sparse_cuda(
+        total_edges=1_000_000,
+        C_max=10_000,
+        generator=gen_a,
+        device=device,
+    )
+    edges_b = _sample_unique_edges_sparse_cuda(
+        total_edges=1_000_000,
+        C_max=10_000,
+        generator=gen_b,
+        device=device,
+    )
+
+    assert edges_a.shape == (10_000,)
+    assert edges_a.unique().numel() == 10_000
+    assert torch.equal(edges_a, edges_b)
 
 
 def _write_spreading_config(path: Path, adaptive_restart: bool = False) -> None:

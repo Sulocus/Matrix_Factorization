@@ -405,8 +405,8 @@ mf calibrate memory run matrix_bigamp_target_10gb
 | `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 3.78% | 16.940 | 16.805 | 0.81% |
 | `agd` | `matrix_agd_target_10gb` | 13.075 | 13.051 | 0.18% | 15.298 | 15.283 | 0.10% |
 | `agd` | `matrix_agd_target_16gb` | 15.998 | 16.004 | 0.03% | 18.718 | 18.703 | 0.08% |
-| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 10.003 | 10.067 | 0.64% | 12.704 | 12.723 | 0.15% |
-| `bigamp_spreading` | `spreading_bigamp_target_16gb` | 15.996 | 16.124 | 0.79% | 20.315 | 20.400 | 0.42% |
+| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 9.999 | 9.997 | 0.02% | 12.698 | 11.965 | 6.13% |
+| `bigamp_spreading` | `spreading_bigamp_target_16gb` | 16.002 | 16.035 | 0.20% | 20.323 | 19.324 | 5.17% |
 | `bigamp_tensor` | `tensor_serial_target_6gb` | 6.001 | 5.984 | 0.29% | 6.601 | 6.414 | 2.92% |
 | `bigamp_tensor` | `tensor_serial_target_10gb` | 10.006 | 10.183 | 1.74% | 10.606 | 10.395 | 2.04% |
 | `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 6.005 | 6.002 | 0.06% | 6.605 | 6.432 | 2.70% |
@@ -415,6 +415,7 @@ mf calibrate memory run matrix_bigamp_target_10gb
 结论：
 
 - dense `bigamp`、spreading、serial tensor 的 stage 公式在 GB profile 上已经进入 10% 以内。
+- `bigamp_spreading` 的 16GB profile 需要稀疏唯一边采样 fallback；旧的 fallback 会尝试 `randperm(N1*N2)`，在大尺寸 graph generation 阶段触发 CUDA driver error。当前实现只采样 `C_max` 条唯一边，不再分配完整 permutation。
 - `agd` 存在 CUDA/autocast workspace 档位跳变；`matrix_agd_target_10gb` 的 solver 最终落在 13GB 级 profile，这是为了避开/进入实际 workspace bin 后获得可复现校准点。
 - `bigamp_tensor_parallel` 存在 TensorSuperGraph/probe workspace 档位；当前公式用 N-dependent workspace term 对齐 6GB 和 10GB profile。后续如果修改 internal batching，必须重新跑这两条 profile。
 

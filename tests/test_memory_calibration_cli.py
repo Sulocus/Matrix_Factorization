@@ -214,19 +214,19 @@ def test_memory_estimator_can_ignore_local_calibration_coefficients(tmp_path, mo
             ),
             24.728,
         ),
-        (
-            "spreading_stage_peak_profile",
-            EstimationParams(
-                N1=11504,
-                N2=11504,
-                M=32,
-                S=4,
-                alpha_values=[0.1, 0.2, 0.3],
-                algorithm_key="bigamp_spreading",
-                use_compile=False,
+            (
+                "spreading_stage_peak_profile",
+                EstimationParams(
+                    N1=22992,
+                    N2=22992,
+                    M=32,
+                    S=4,
+                    alpha_values=[0.1, 0.2, 0.3],
+                    algorithm_key="bigamp_spreading",
+                    use_compile=False,
+                ),
+                9.997,
             ),
-            6.718,
-        ),
         (
             "tensor_serial_stage_peak_profile",
             EstimationParams(

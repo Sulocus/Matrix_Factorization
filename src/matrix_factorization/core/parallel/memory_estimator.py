@@ -972,10 +972,12 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     scatter_state_gb = _tensor_gb((B, scatter_dim, M), storage_dtype, count=2)
     stages = {
         "spreading_persistent_state": persistent_gb,
-        # Gathered edge tensors dominate; forward and scatter buffers are partly
-        # sequential in the current implementation, so summing all components
-        # overestimates the 10GB calibration profile by ~49%.
-        "spreading_edge_update_peak": persistent_gb + 3.55 * edge_workspace_gb,
+        # Gather/forward/scatter edge workspaces are sequential in the current
+        # chunked spreading implementation.  GB calibration on RTX 5090 shows
+        # the allocated peak tracks persistent state plus about 1.23 live
+        # edge-workspace equivalents; summing all gather/forward components
+        # overestimates target profiles by more than 160%.
+        "spreading_edge_update_peak": persistent_gb + 1.23 * edge_workspace_gb,
         "spreading_scatter_peak": persistent_gb + edge_workspace_gb + scatter_state_gb,
     }
     if params.adaptive_damping:

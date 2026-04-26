@@ -86,6 +86,50 @@ def _generate_single_sample(args):
     return i_idx, j_idx
 
 
+def _sample_unique_edges_sparse_cuda(
+    *,
+    total_edges: int,
+    C_max: int,
+    generator: torch.Generator,
+    device: torch.device,
+) -> torch.Tensor:
+    """Sample C_max unique flat edge ids without allocating randperm(total_edges)."""
+    if C_max <= 0:
+        return torch.empty(0, dtype=torch.long, device=device)
+    if C_max >= total_edges:
+        return torch.arange(total_edges, dtype=torch.long, device=device)
+
+    selected: list[torch.Tensor] = []
+    selected_count = 0
+    attempts = 0
+    while selected_count < C_max and attempts < 128:
+        attempts += 1
+        remaining = C_max - selected_count
+        draw = min(total_edges, max(65_536, int(remaining * 1.35)))
+        candidates = torch.randint(
+            0,
+            total_edges,
+            (draw,),
+            generator=generator,
+            device=device,
+            dtype=torch.long,
+        ).unique()
+        if selected:
+            candidates = candidates[~torch.isin(candidates, torch.cat(selected))]
+        if candidates.numel() == 0:
+            continue
+        take = candidates[:remaining]
+        selected.append(take)
+        selected_count += int(take.numel())
+
+    if selected_count < C_max:
+        raise RuntimeError(
+            "failed to sample enough unique sparse supergraph edges without "
+            "allocating a full randperm(total_edges)"
+        )
+    return torch.cat(selected)[:C_max]
+
+
 def create_supergraph(
     N1: int,
     N2: int,
@@ -200,7 +244,12 @@ def create_supergraph(
             for s in range(S):
                 seed = seeds[s].item()
                 gen = torch.Generator(device=device).manual_seed(seed)
-                perm = torch.randperm(total_edges, generator=gen, device=device)[:C_max]
+                perm = _sample_unique_edges_sparse_cuda(
+                    total_edges=total_edges,
+                    C_max=C_max,
+                    generator=gen,
+                    device=device,
+                )
                 i_idx_all[s] = (perm // N2).to(idx_dtype)
                 j_idx_all[s] = (perm % N2).to(idx_dtype)
 
