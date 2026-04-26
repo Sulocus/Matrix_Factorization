@@ -6,6 +6,7 @@ from matrix_factorization.core.experiment.config import (
     TrainingParams,
 )
 from matrix_factorization.core.experiment.runner import ExperimentRunner
+from matrix_factorization.core.parallel.parallel_coordinator import ParallelCoordinator
 
 
 def _base_config(scan_spec):
@@ -57,6 +58,54 @@ def test_steps_axis_runs_through_canonical_executor():
     assert result.scan_dimension == "scan"
     assert len(result.result_cube.points) == 2
     assert {point.coordinates["max_steps"] for point in result.result_cube.points.values()} == {1, 2}
+
+
+def test_canonical_child_runner_uses_forced_resource_batch(monkeypatch):
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+
+    def fail_child_replan(*args, **kwargs):
+        raise AssertionError("child runner must not re-plan forced canonical batches")
+
+    monkeypatch.setattr(ParallelCoordinator, "plan_resource_execution", fail_child_replan)
+
+    result = ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+        },
+    )
+
+    assert len(result.result_cube.points) == 2
+    assert set(result.results) == set(result.result_cube.points)
+
+
+def test_canonical_lightweight_aggregate_does_not_retain_factor_tensors():
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+
+    result = ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+        },
+    )
+
+    assert result.W_teacher is None
+    assert all(single.W_students is None for single in result.results.values())
+    assert all(single.X_students is None for single in result.results.values())
 
 
 def test_size_axis_runs_as_isolated_groups():

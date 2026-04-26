@@ -35,6 +35,9 @@ from ..parallel import (
     get_memory_estimator,
     EstimationParams,
     AllocationPresets,
+    BatchConfig,
+    ExecutionPlan,
+    ParallelMode,
 )
 from ..parallel.batch_checkpoint import CheckpointManager, config_to_dict
 from ..parallel.memory_guard import MemoryAbortException
@@ -373,13 +376,22 @@ class ExperimentRunner:
         points_by_id = {point.point_id: point for point in scan_plan.points}
         shared_teacher_shape = None
         teacher_shape_mismatch = False
+        retain_canonical_tensors = self._canonical_scan_should_retain_tensors(output_options)
 
         for resource_batch in resource_plan.batches:
             batch_points = [points_by_id[item.scan_point_id] for item in resource_batch.work_items]
             effective_config = effective_config_for_scan_points(config, batch_points)
             setattr(effective_config, "_disable_canonical_scan_executor", True)
+            setattr(effective_config, "_forced_resource_batch", resource_batch)
             child_runner = ExperimentRunner(device=self.device, verbose=self.verbose)
             child_output_options = copy.deepcopy(output_options) if output_options else None
+            child_checkpoint_path = None
+            if child_output_options and child_output_options.get("checkpoint_path"):
+                child_checkpoint_path = (
+                    Path(child_output_options["checkpoint_path"]).parent
+                    / f"child_batch_{resource_batch.batch_index:04d}.pt"
+                )
+                child_output_options["checkpoint_path"] = str(child_checkpoint_path)
             child_result = child_runner.run(
                 effective_config,
                 observer=observer,
@@ -391,9 +403,10 @@ class ExperimentRunner:
                 child_shape = tuple(child_teacher.shape)
                 if shared_teacher_shape is None and not teacher_shape_mismatch:
                     shared_teacher_shape = child_shape
-                    aggregate.W_teacher = child_result.W_teacher
-                    aggregate.X_teacher = child_result.X_teacher
-                    aggregate.Y_teacher = child_result.Y_teacher
+                    if retain_canonical_tensors:
+                        aggregate.W_teacher = self._detach_to_cpu(child_result.W_teacher)
+                        aggregate.X_teacher = self._detach_to_cpu(child_result.X_teacher)
+                        aggregate.Y_teacher = self._detach_to_cpu(child_result.Y_teacher)
                 elif shared_teacher_shape != child_shape:
                     teacher_shape_mismatch = True
                     aggregate.W_teacher = None
@@ -407,8 +420,23 @@ class ExperimentRunner:
                         f"available: {list(child_result.results)}"
                     )
                 child_single = child_result.results[child_key]
-                single = copy.copy(child_single)
-                single.scan_value = point.point_id
+                single = SingleRunResult(
+                    scan_value=point.point_id,
+                    metrics=dict(child_single.metrics or {}),
+                    W_students=(
+                        self._detach_to_cpu(child_single.W_students)
+                        if retain_canonical_tensors else None
+                    ),
+                    X_students=(
+                        self._detach_to_cpu(child_single.X_students)
+                        if retain_canonical_tensors else None
+                    ),
+                    mask=None,
+                    observation_indices=None,
+                    history=copy.deepcopy(child_single.history),
+                    metric_contract=copy.deepcopy(child_single.metric_contract),
+                    duration_seconds=child_single.duration_seconds,
+                )
                 aggregate.add_result(point.point_id, single)
                 aggregate.result_cube.add_point(
                     point.point_id,
@@ -416,10 +444,15 @@ class ExperimentRunner:
                     child_single.metrics,
                     overrides=point.overrides,
                     effective_config_hash=point.effective_config_hash,
-                    group_id=point.group_id,
-                    metric_contract=child_single.metric_contract,
-                )
+                            group_id=point.group_id,
+                            metric_contract=child_single.metric_contract,
+                        )
+            if child_checkpoint_path and child_checkpoint_path.exists():
+                child_checkpoint_path.unlink()
+            del child_result
             del child_runner
+            del effective_config
+            del child_output_options
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -551,11 +584,19 @@ class ExperimentRunner:
             }
             result.result_cube.axes = {axis.key: axis.to_dict() for axis in scan_plan.axes}
             batching_spec = get_batching_specs().get(config.algorithm_key)
-            plan, resource_execution_plan = self.parallel_coordinator.plan_resource_execution(
-                scan_plan,
-                params,
-                batching_spec=batching_spec,
-            )
+            forced_resource_batch = getattr(config, "_forced_resource_batch", None)
+            if forced_resource_batch is not None:
+                plan = self._execution_plan_from_forced_resource_batch(
+                    config,
+                    forced_resource_batch,
+                )
+                resource_execution_plan = None
+            else:
+                plan, resource_execution_plan = self.parallel_coordinator.plan_resource_execution(
+                    scan_plan,
+                    params,
+                    batching_spec=batching_spec,
+                )
         except Exception as exc:
             logger.warning("Falling back to alpha-only execution plan: %s", exc)
             plan = self.parallel_coordinator.plan_execution(params)
@@ -845,6 +886,69 @@ class ExperimentRunner:
         if len(completed_alphas) == total_points:
             ckpt_mgr.flush()
             ckpt_mgr.delete()
+
+    @staticmethod
+    def _canonical_scan_should_retain_tensors(output_options: Optional[Dict[str, Any]]) -> bool:
+        if not output_options:
+            return False
+        if output_options.get("storage_mode", "full") != "full":
+            return False
+        return bool(output_options.get("save_tensors", False))
+
+    @staticmethod
+    def _detach_to_cpu(tensor: Any) -> Any:
+        if tensor is None or not hasattr(tensor, "detach"):
+            return tensor
+        return tensor.detach().cpu()
+
+    def _execution_plan_from_forced_resource_batch(
+        self,
+        config: ExperimentConfig,
+        resource_batch: Any,
+    ) -> ExecutionPlan:
+        alpha_values = [
+            float(item.alpha)
+            for item in getattr(resource_batch, "work_items", []) or []
+            if getattr(item, "alpha", None) is not None
+        ]
+        if not alpha_values:
+            alpha_values = [float(value) for value in getattr(config.scan, "values", []) or []]
+        batch = BatchConfig(
+            sample_range=(0, int(config.training.samples_per_alpha)),
+            alpha_range=(0, len(alpha_values)),
+            estimated_memory_gb=float(getattr(resource_batch, "memory_estimate_gb", 0.0) or 0.0),
+            alpha_values=alpha_values,
+            memory_breakdown=dict(getattr(resource_batch, "memory_breakdown", {}) or {}),
+            work_items=list(getattr(resource_batch, "work_items", []) or []),
+            batch_axes=list(getattr(resource_batch, "batch_axes", []) or []),
+            calibration_source=getattr(resource_batch, "calibration_source", "theory_unchecked"),
+            raw_peak_allocated_gb=float(getattr(resource_batch, "raw_peak_allocated_gb", 0.0) or 0.0),
+            device_peak_gb=float(getattr(resource_batch, "device_peak_gb", 0.0) or 0.0),
+            dominant_stage=str(getattr(resource_batch, "dominant_stage", "") or ""),
+            confidence=float(getattr(resource_batch, "confidence", 0.0) or 0.0),
+            persistent_tensors=dict(getattr(resource_batch, "persistent_tensors", {}) or {}),
+            transient_peak_tensors=dict(getattr(resource_batch, "transient_peak_tensors", {}) or {}),
+        )
+        return ExecutionPlan(
+            mode=ParallelMode.HYBRID if len(alpha_values) > 1 else ParallelMode.LINEAR,
+            batches=[batch],
+            total_estimated_memory_gb=float(getattr(resource_batch, "memory_estimate_gb", 0.0) or 0.0),
+            allocation_config=self.parallel_coordinator.config,
+            algorithm_key=config.algorithm_key,
+            gpu_model=getattr(self.parallel_coordinator.estimator, "gpu_model", ""),
+            available_memory_gb=0.0,
+            seed_partition_policy=getattr(resource_batch, "seed_partition_policy", "legacy"),
+            replan_policy_key="forced_resource_batch",
+            automatic_rebatch_allowed=False,
+            replan_implemented=False,
+            plan_id=f"forced-batch-{getattr(resource_batch, 'batch_index', 0)}",
+            estimation_params={},
+            replan_provenance={
+                "source": "canonical_resource_execution_plan",
+                "resource_batch_index": int(getattr(resource_batch, "batch_index", 0)),
+                "group_id": getattr(resource_batch, "group_id", "default"),
+            },
+        )
     
     def _run_steps_scan(
         self,
