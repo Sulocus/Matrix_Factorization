@@ -292,6 +292,8 @@ class ExperimentRunner:
             )
             runtime_extensions.run_analyzers(result)
             result.metadata.contract["runtime_extension_report"] = runtime_extensions.report.to_dict()
+            if hasattr(self, '_memory_guard') and self._memory_guard:
+                result.metadata.contract["memory_guard_runtime"] = self._memory_guard.snapshot()
             self._emit(observer, ProgressEventType.EXPERIMENT_END, {'result': result})
             return result
 

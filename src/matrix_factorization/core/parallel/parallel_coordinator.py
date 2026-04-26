@@ -161,46 +161,34 @@ class ParallelCoordinator:
             self.stats["plans_created"] += 1
             return self._attach_plan_provenance(plan, params)
         
-        # Strategy 3: Reduce S and split Alpha
-        for s in range(S - 1, 0, -1):
-            reduced_params = replace(params, S=s)
-            batches = self._compute_alpha_batches(reduced_params, target_gb)
-            
-            if batches:
-                # Need multiple rounds for different sample groups
-                logger.info(f"Reducing samples from {S} to {s} for memory fit")
-                total_mem = max(b.estimated_memory_gb for b in batches)
-                plan = ExecutionPlan(
-                    mode=ParallelMode.ALPHA_PARALLEL,
-                    batches=batches,
-                    total_estimated_memory_gb=total_mem,
-                    allocation_config=self.config,
-                    algorithm_key=params.algorithm_key,
-                    gpu_model=self.estimator.gpu_model,
-                    available_memory_gb=available_gb,
-                    **replan_metadata,
-                )
-                self.stats["plans_created"] += 1
-                return self._attach_plan_provenance(plan, params)
-        
-        # Strategy 4: Fallback to linear
+        # Strategy 3 intentionally does not reduce S/sample count yet.
+        # The current runner records sample_range but does not pass sample offsets
+        # into algorithms.  Planning with a smaller S would under-estimate memory
+        # while still executing the full sample count, which is unsafe.  Actual
+        # sample/student folding must be added only after the algorithm contract
+        # exposes sample_offset and partition-invariant random streams.
+
+        # Strategy 4: Fallback to one alpha per batch, full S preserved.
         logger.warning("Falling back to LINEAR mode due to memory constraints")
         linear_plan = self._create_linear_plan(params, available_gb)
         
-        # Strategy 5: Check if even the minimum (S=1, single alpha) fits
-        # If not, the data is simply too large for this GPU
+        # Strategy 5: Check whether every real runner batch
+        # (full S, single alpha) fits. If the largest one does not fit, the
+        # data is too large for this GPU under the current precision/algorithm.
         if linear_plan.batches:
-            min_batch_mem = min(b.estimated_memory_gb for b in linear_plan.batches)
-            if min_batch_mem > target_gb:
+            max_batch_mem = max(b.estimated_memory_gb for b in linear_plan.batches)
+            if max_batch_mem > target_gb:
                 # Even linear mode can't fit - problem is too large
                 total_gb = self._get_total_memory()
+                worst_batch = max(linear_plan.batches, key=lambda b: b.estimated_memory_gb)
                 error_msg = (
                     f"ERROR: Problem size too large for GPU!\n"
-                    f"  Minimum memory required: {min_batch_mem:.2f} GB\n"
+                    f"  Largest single-alpha full-S batch required: {max_batch_mem:.2f} GB\n"
                     f"  Available allocation: {target_gb:.2f} GB (ratio={self.config.allocation_ratio:.0%})\n"
                     f"  GPU available: {available_gb:.2f} GB (after reserved)\n"
                     f"  GPU total: {total_gb:.2f} GB\n"
                     f"  Parameters: N1={params.N1}, N2={params.N2}, M={params.M}\n"
+                    f"  Worst alpha batch: {worst_batch.alpha_values}\n"
                     f"\n"
                     f"  Suggestions:\n"
                     f"    1. Reduce matrix size (N1, N2, or M)\n"
@@ -450,11 +438,11 @@ class ParallelCoordinator:
         batches = []
         
         for i, alpha in enumerate(params.alpha_values):
-            single_params = replace(params, alpha_values=[alpha], S=1)
+            single_params = replace(params, alpha_values=[alpha])
             estimate = self.estimator.estimate(single_params)
             
             batches.append(BatchConfig(
-                sample_range=(0, 1),
+                sample_range=(0, params.S),
                 alpha_range=(i, i + 1),
                 estimated_memory_gb=estimate.total_gb,
                 alpha_values=[alpha],

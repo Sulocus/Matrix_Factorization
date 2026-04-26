@@ -309,8 +309,19 @@ class MemoryEstimator:
         if params.algorithm_key not in self._estimators:
             raise ValueError(f"Unknown algorithm: {params.algorithm_key}")
         
-        # 1. Pure Tensor Math (No margins)
-        raw_tensor_gb = self._estimators[params.algorithm_key](params)
+        # 1. Pure Tensor Math, then optional local calibration from real runs.
+        uncalibrated_tensor_gb = self._estimators[params.algorithm_key](params)
+        calibration = self._get_calibration_adjustment(params.algorithm_key)
+        calibration_factor = 1.0
+        calibration_applied = 0.0
+        raw_tensor_gb = uncalibrated_tensor_gb
+        if calibration:
+            min_raw_value = calibration.get("min_raw_gb_for_apply", 1.0)
+            min_raw_gb = 1.0 if min_raw_value is None else float(min_raw_value)
+            if uncalibrated_tensor_gb >= min_raw_gb:
+                calibration_factor = max(1.0, float(calibration.get("factor", 1.0) or 1.0))
+                raw_tensor_gb = uncalibrated_tensor_gb * calibration_factor
+                calibration_applied = 1.0
         
         # 2. Dynamic Overhead Calculation
         overhead_gb = 0.0
@@ -363,6 +374,10 @@ class MemoryEstimator:
             breakdown["runtime.context_gb"] = context_gb
         if fragmentation_gb:
             breakdown["runtime.fragmentation_gb"] = fragmentation_gb
+        breakdown["calibration.uncalibrated_tensor_gb"] = uncalibrated_tensor_gb
+        breakdown["calibration.applied_factor"] = calibration_factor
+        breakdown["calibration.applied"] = calibration_applied
+        breakdown["calibration.calibrated_tensor_gb"] = raw_tensor_gb
         breakdown_msg = (
             f"  Math Tensors: {raw_tensor_gb:.2f} GB\n"
             f"  + Context:    {context_gb:.2f} GB\n"
@@ -375,7 +390,7 @@ class MemoryEstimator:
             total_gb=total_gb,
             per_batch_gb=total_gb / max(1, params.batch_size),
             breakdown=breakdown,
-            confidence=0.95 # High confidence due to dynamic stats
+            confidence=self._compute_confidence(params),
         )
     
     def estimate_raw(self, params: EstimationParams) -> float:
@@ -518,14 +533,51 @@ class MemoryEstimator:
                 logger.info(f"Loaded calibration data for {self.gpu_model}")
             except Exception as e:
                 logger.warning(f"Failed to load calibration: {e}")
+        local_file = self._local_calibration_file()
+        if local_file.exists():
+            try:
+                with open(local_file, encoding="utf-8") as f:
+                    local_payload = json.load(f)
+                self._merge_calibration_payload(local_payload, source=str(local_file))
+                logger.info(f"Loaded local calibration data from {local_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load local calibration: {e}")
+
+    def _merge_calibration_payload(self, payload: Dict, source: str) -> None:
+        """Merge local runtime calibration coefficients into the active GPU data."""
+        payload_gpu = str(payload.get("gpu_model", self.gpu_model))
+        if payload_gpu not in {self.gpu_model, self.gpu_model.replace(" ", "_").replace("/", "-")}:
+            return
+        algorithms = payload.get("algorithms")
+        if not isinstance(algorithms, dict):
+            return
+        gpu_data = self._calibration_data.setdefault(self.gpu_model, {})
+        for algo_key, algo_payload in algorithms.items():
+            if not isinstance(algo_payload, dict):
+                continue
+            merged = dict(gpu_data.get(algo_key, {}))
+            merged.update(algo_payload)
+            merged["source"] = source
+            gpu_data[algo_key] = merged
+
+    @staticmethod
+    def _local_calibration_file() -> Path:
+        return Path.cwd() / "runs" / "calibration" / "memory" / "latest_coefficients.json"
     
     def _get_calibration_factor(self, algo_key: str) -> float:
         """Get calibration factor for algorithm on current GPU."""
+        adjustment = self._get_calibration_adjustment(algo_key)
+        if adjustment:
+            return float(adjustment.get("factor", 1.0) or 1.0)
+        return 1.0  # No calibration, use raw estimate
+
+    def _get_calibration_adjustment(self, algo_key: str) -> Dict:
+        """Get full calibration adjustment payload for an algorithm."""
         if self.gpu_model in self._calibration_data:
             gpu_data = self._calibration_data[self.gpu_model]
             if algo_key in gpu_data:
-                return gpu_data[algo_key].get("factor", 1.0)
-        return 1.0  # No calibration, use raw estimate
+                return gpu_data[algo_key]
+        return {}
     
     def _compute_confidence(self, params: EstimationParams) -> float:
         """

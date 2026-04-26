@@ -675,13 +675,20 @@ def _handle_calibrate_command(argv):
         print(explain_memory_profile(profile_key))
         sys.exit(0)
 
-    record = run_memory_calibration(profile_key)
+    try:
+        record = run_memory_calibration(profile_key)
+    except MemoryError as exc:
+        print(f"❌ memory calibration refused before run: {exc}")
+        sys.exit(2)
     print("memory calibration complete")
     print(f"  key: {profile_key}")
     print(f"  output: {record['output_dir']}")
     print(f"  theoretical_tensor_estimate_gb: {record['theoretical_estimate_gb']:.6f}")
     print(f"  estimated_total_with_runtime_gb: {record['estimated_total_with_runtime_gb']:.6f}")
     print(f"  actual_peak_memory_gb: {record['actual_peak_memory_gb']:.6f}")
+    print(f"  actual_delta_peak_tensor_allocated_gb: {record['actual_delta_peak_tensor_allocated_gb']:.6f}")
+    print(f"  actual_delta_peak_cuda_device_used_gb: {record['actual_delta_peak_cuda_device_used_gb']:.6f}")
+    print(f"  timeline: {record['memory_timeline']['path']}")
     if record.get("error_pct") is not None:
         print(f"  error_pct: {record['error_pct']:.2f}")
     sys.exit(0)

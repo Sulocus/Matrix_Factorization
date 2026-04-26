@@ -270,25 +270,71 @@ internal_alpha_batch_plan
 
 ```bash
 mf calibrate memory list
-mf calibrate memory explain matrix_bigamp_small
-mf calibrate memory run matrix_bigamp_small
+mf calibrate memory explain matrix_bigamp_target_10gb
+mf calibrate memory run matrix_bigamp_target_10gb
 ```
 
-当前内置 quick profiles：
+当前内置两类 profiles：
 
 - `matrix_bigamp_small`
 - `matrix_agd_small`
 - `spreading_bigamp_small`
 - `tensor_parallel_small`
+- `matrix_agd_target_10gb`
+- `matrix_bigamp_target_10gb`
+- `matrix_bigamp_target_16gb`
+- `spreading_bigamp_target_10gb`
+- `tensor_serial_target_6gb`
+- `tensor_parallel_target_6gb`
+- `tensor_parallel_target_10gb`
+
+`*_small` 只验证记录链路；它们的显存误差会被 CUDA/PyTorch 固定开销支配，不会写成 planner 可用的校准系数。`*_target_10gb` / `*_target_16gb` 才用于正式并行估计校准。
 
 校准 raw 记录写入被 ignore 的 `runs/calibration/memory/<profile>/<timestamp>/manifest.json`。记录同时保存：
 
 - `theoretical_estimate_gb`：纯 tensor 公式估计，不含 CUDA context。
 - `estimated_total_with_runtime_gb`：`MemoryEstimator.estimate()` 的运行时总估计，含 context/fragmentation 估算。
 - `actual_peak_memory_gb`：`torch.cuda.max_memory_allocated()` 记录的实际 peak allocated。
+- `actual_delta_peak_tensor_allocated_gb`：扣除 sampler baseline 后的 tensor allocated 峰值，用于拟合 planner 系数。
+- `actual_delta_peak_cuda_device_used_gb`：扣除 sampler baseline 后的 device used 峰值，用于观察 CUDA context、allocator reserve、外部进程等整体影响。
 - `reserved_peak_memory_gb`、`allocated_after_gb`、`reserved_after_gb`。
+- `memory_timeline.path`：完整 VRAM 时间线，默认 `memory_timeline.jsonl`。
 
-小尺寸 quick profile 的误差通常会被 CUDA/PyTorch 固定开销主导；它的作用是验证记录链路和发现数量级问题，不代表中大型实验的最终安全系数。
+当 raw 估计和实际 delta 都超过 1GB 时，校准命令会更新本地 `runs/calibration/memory/latest_coefficients.json`。`MemoryEstimator` 会在后续 planner 中读取这个文件，并只做保守校正：如果实测比公式大，放大估算；如果实测比公式小，默认不把系数降到 1 以下。
+
+### 2026-04-26 本地 RTX 5090 校准记录
+
+这组记录是实际本地运行，不是 smoke，也不是只看代码估算。raw artifact 在 ignored 的 `runs/calibration/memory/`，下面只记录轻量摘要：
+
+| algorithm | profile | raw estimate GB | actual max allocated GB | device used delta GB | planner factor |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 16.805 | 1.060 |
+| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 9.996 | 6.718 | 8.527 | 1.000 |
+| `bigamp_tensor` | `tensor_serial_target_6gb` | 5.998 | 6.806 | 7.703 | 1.248 |
+| `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 5.998 | 15.480 | 15.629 | 2.839 |
+| `agd` | `matrix_agd_target_10gb` | 9.999 | 24.728 | 29.005 | 2.720 |
+
+结论：
+
+- dense `bigamp` 公式在 10-16GB 级别基本可信，保守系数约 1.06。
+- `bigamp_spreading` 当前公式偏保守，仍保持 factor=1，不让 planner 变激进。
+- `bigamp_tensor_parallel` 的 internal probe 路径显著超出公式估计，必须使用实测 factor；原 `tensor_parallel_target_10gb` 在未校准时实际冲到 18.55GB 并失败，校准后同一 profile 会被运行前保护拒绝。
+- `agd` 公式严重低估，10GB raw 实际接近 25GB allocated / 29GB device delta，后续 AGD batch 必须用实测 factor。
+
+### 当前真实支持的 batching 维度
+
+当前 runner 真实接通的是 alpha batching：同一 batch 可以包含多个 `alpha_values`，算法实际收到这组 alpha 并并行或内部调度。
+
+`sample_range` / student folding 目前只允许作为 metadata 出现在 `ResourceExecutionPlan`，不能用于降低真实执行显存。原因是 runner 尚未把 sample offset 传入算法，算法初始化随机流也没有统一暴露 `sample_offset` contract。上一版 planner 曾尝试在内存不够时把 `S` 降到 1 做估算，但 runner 实际仍按完整 `samples_per_alpha` 执行，这会低估显存；现在已经禁用。后续要恢复 sample/student folding，必须先完成：
+
+- `AlgorithmSpec/BatchingSpec` 声明 `sample_range_honored=true`。
+- runner 把 `sample_range` 和 `sample_offset` 传入 algorithm。
+- algorithm 的 partition-invariant seed 使用全局 sample index，而不是 batch-local index。
+- metrics 聚合能把多个 sample batch 合并回同一个 alpha 的统计量。
+
+在这些条件满足前，planner 的最小真实 batch 是“单 alpha + 完整 S”，不是 “S=1”。
+
+linear fallback 的安全检查必须检查每一个 single-alpha/full-S batch；只要最大 alpha batch 超过当前安全分配，planner 就报错。不能只看最小 alpha batch，否则会把低 alpha 能跑误判成整组能跑。
 
 `algorithm_params.compile_fallback_policy` 只控制 `torch.compile` 初始化失败时的行为，目前接入 `bigamp`、`bigamp_spreading` 和 `bigamp_tensor_parallel`：
 

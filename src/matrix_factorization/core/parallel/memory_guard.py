@@ -111,6 +111,11 @@ class MemoryGuard:
         # State
         self._last_warning_time = 0.0
         self._peak_usage = 0.0
+        self._peak_reserved_gb = 0.0
+        self._peak_allocated_gb = 0.0
+        self._peak_max_allocated_gb = 0.0
+        self._peak_device_used_gb = 0.0
+        self._sample_count = 0
         self._events: list = []
         self._is_running = False
         
@@ -148,6 +153,11 @@ class MemoryGuard:
         
         self._stop_event.clear()
         self._peak_usage = 0.0
+        self._peak_reserved_gb = 0.0
+        self._peak_allocated_gb = 0.0
+        self._peak_max_allocated_gb = 0.0
+        self._peak_device_used_gb = 0.0
+        self._sample_count = 0
         self._events.clear()
         
         self._thread = threading.Thread(
@@ -180,9 +190,14 @@ class MemoryGuard:
         
         summary = {
             "peak_usage": self._peak_usage,
+            "peak_reserved_gb": self._peak_reserved_gb,
+            "peak_allocated_gb": self._peak_allocated_gb,
+            "peak_max_allocated_gb": self._peak_max_allocated_gb,
+            "peak_device_used_gb": self._peak_device_used_gb,
+            "sample_count": self._sample_count,
             "warning_count": sum(1 for e in self._events if e.type == MemoryEventType.WARNING),
             "critical_count": sum(1 for e in self._events if e.type == MemoryEventType.CRITICAL),
-            "events": self._events.copy(),
+            "events": [self._event_to_dict(event) for event in self._events],
         }
         
         logger.debug(f"MemoryGuard stopped: peak={self._peak_usage:.1%}")
@@ -198,6 +213,21 @@ class MemoryGuard:
     def peak_usage_ratio(self) -> float:
         """Get peak memory usage ratio observed."""
         return self._peak_usage
+
+    def snapshot(self) -> dict:
+        """Serializable runtime memory monitor snapshot."""
+        return {
+            "running": self._is_running,
+            "peak_usage": self._peak_usage,
+            "peak_reserved_gb": self._peak_reserved_gb,
+            "peak_allocated_gb": self._peak_allocated_gb,
+            "peak_max_allocated_gb": self._peak_max_allocated_gb,
+            "peak_device_used_gb": self._peak_device_used_gb,
+            "sample_count": self._sample_count,
+            "warning_count": sum(1 for e in self._events if e.type == MemoryEventType.WARNING),
+            "critical_count": sum(1 for e in self._events if e.type == MemoryEventType.CRITICAL),
+            "events": [self._event_to_dict(event) for event in self._events],
+        }
     
     def _monitor_loop(self) -> None:
         """Main monitoring loop (runs in background thread)."""
@@ -210,6 +240,11 @@ class MemoryGuard:
                 
                 usage_ratio = status['used'] / status['total']
                 self._peak_usage = max(self._peak_usage, usage_ratio)
+                self._peak_reserved_gb = max(self._peak_reserved_gb, float(status.get("reserved", status["used"])))
+                self._peak_allocated_gb = max(self._peak_allocated_gb, float(status.get("allocated", 0.0)))
+                self._peak_max_allocated_gb = max(self._peak_max_allocated_gb, float(status.get("max_allocated", 0.0)))
+                self._peak_device_used_gb = max(self._peak_device_used_gb, float(status.get("device_used", status["used"])))
+                self._sample_count += 1
                 
                 # Check critical threshold
                 if usage_ratio >= self.critical_threshold:
@@ -281,10 +316,17 @@ class MemoryGuard:
         # Note: memory_reserved is what actually occupies VRAM from OS perspective
         try:
             device = torch.cuda.current_device()
+            free_bytes, total_info_bytes = torch.cuda.mem_get_info(device)
             reserved = torch.cuda.memory_reserved(device)
+            allocated = torch.cuda.memory_allocated(device)
+            max_allocated = torch.cuda.max_memory_allocated(device)
             total = torch.cuda.get_device_properties(device).total_memory
             return {
                 'used': reserved / (1024**3),
+                'reserved': reserved / (1024**3),
+                'allocated': allocated / (1024**3),
+                'max_allocated': max_allocated / (1024**3),
+                'device_used': (total_info_bytes - free_bytes) / (1024**3),
                 'total': total / (1024**3),
             }
         except Exception as e:
@@ -309,6 +351,16 @@ class MemoryGuard:
             pass
             
         return None
+
+    @staticmethod
+    def _event_to_dict(event: MemoryEvent) -> dict:
+        return {
+            "type": event.type.name,
+            "usage_ratio": event.usage_ratio,
+            "used_gb": event.used_gb,
+            "total_gb": event.total_gb,
+            "timestamp": event.timestamp,
+        }
 
 
 class OOMRecoveryHandler:

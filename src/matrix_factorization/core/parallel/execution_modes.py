@@ -11,9 +11,9 @@ from typing import Any, List, Tuple, Optional, Dict
 
 class ParallelMode(Enum):
     """Parallel execution modes for algorithms."""
-    LINEAR = auto()           # Fully sequential: S=1, A=1
-    SAMPLE_PARALLEL = auto()  # Sample parallel: S parallel, A sequential
-    ALPHA_PARALLEL = auto()   # Alpha parallel: S sequential, A parallel
+    LINEAR = auto()           # One alpha per runner batch; current runner keeps full S
+    SAMPLE_PARALLEL = auto()  # Reserved until sample_range is honored by algorithms
+    ALPHA_PARALLEL = auto()   # Reserved for future sample-aware alpha planning
     HYBRID = auto()           # Hybrid: S parallel, A batched
     FULL_PARALLEL = auto()    # Full parallel: S×A all parallel
 

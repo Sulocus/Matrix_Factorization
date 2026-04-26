@@ -28,11 +28,24 @@ trial 参数只改 `trials/active/<trial_key>/config.yaml`，输出写入被 ign
 
 ```bash
 mf calibrate memory list
-mf calibrate memory explain matrix_bigamp_small
-mf calibrate memory run matrix_bigamp_small
+mf calibrate memory explain matrix_bigamp_target_10gb
+mf calibrate memory run matrix_bigamp_target_10gb
 ```
 
-校准 raw artifact 写入 `runs/calibration/memory/`。若之后需要把校准系数纳入版本管理，只提交轻量 summary 或系数文件，不提交完整运行结果。
+校准 raw artifact 写入 `runs/calibration/memory/`。`*_small` profile 只检查记录链路；真正用于并行 planner 的 profile 从 10GB 级别开始，运行时会保存 `memory_timeline.jsonl`，并用扣除 baseline 后的 peak allocated 更新 `runs/calibration/memory/latest_coefficients.json`。这个系数文件是本地状态，不提交。
+
+常用本地校准顺序：
+
+```bash
+mf calibrate memory run matrix_bigamp_target_10gb
+mf calibrate memory run matrix_bigamp_target_16gb
+mf calibrate memory run spreading_bigamp_target_10gb
+mf calibrate memory run tensor_serial_target_6gb
+mf calibrate memory run tensor_parallel_target_6gb
+mf calibrate memory run matrix_agd_target_10gb
+```
+
+如果某个 profile 在实测后被判定超过当前 free VRAM 的安全比例，CLI 会在运行前拒绝，而不是硬跑到 OOM。
 
 ## Run Artifacts
 

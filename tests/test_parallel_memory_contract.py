@@ -21,6 +21,7 @@ from matrix_factorization.core.parallel import (
     BatchConfig,
     EstimationParams,
     ExecutionPlan,
+    MemoryEstimate,
     ParallelMode,
     get_parallel_coordinator,
 )
@@ -776,6 +777,67 @@ def test_parallel_coordinator_records_effective_replan_policy():
     assert replanned.replan_provenance["replan_factor"] == 0.5
     assert coordinator.current_plan is replanned
     assert coordinator.stats["replans_created"] == 1
+
+
+def test_linear_plan_preserves_full_sample_count_until_sample_range_is_real():
+    ParallelCoordinator = get_parallel_coordinator()
+    coordinator = ParallelCoordinator(
+        estimator=MemoryEstimator(),
+        config=AllocationPresets.CONSERVATIVE,
+    )
+    params = EstimationParams(
+        N1=16,
+        N2=16,
+        M=4,
+        S=7,
+        alpha_values=[0.1, 0.2],
+        algorithm_key="bigamp",
+        use_compile=False,
+    )
+
+    plan = coordinator._create_linear_plan(params, available_gb=8.0)
+
+    assert all(batch.sample_range == (0, 7) for batch in plan.batches)
+    assert all(batch.num_samples == 7 for batch in plan.batches)
+
+
+def test_linear_fallback_rejects_any_oversized_single_alpha_batch():
+    ParallelCoordinator = get_parallel_coordinator()
+
+    class FakeEstimator:
+        gpu_model = "fake"
+
+        def get_available_memory(self):
+            return 10.0
+
+        def get_total_memory(self):
+            return 10.0
+
+        def estimate(self, params):
+            if len(params.alpha_values) > 1:
+                total = 100.0
+            elif params.alpha_values and params.alpha_values[0] >= 0.2:
+                total = 20.0
+            else:
+                total = 2.0
+            return MemoryEstimate(total_gb=total, per_batch_gb=total, breakdown={})
+
+    coordinator = ParallelCoordinator(
+        estimator=FakeEstimator(),
+        config=AllocationPresets.CONSERVATIVE,
+    )
+    params = EstimationParams(
+        N1=16,
+        N2=16,
+        M=4,
+        S=7,
+        alpha_values=[0.1, 0.2],
+        algorithm_key="bigamp",
+        use_compile=False,
+    )
+
+    with pytest.raises(MemoryError, match="Largest single-alpha full-S batch required"):
+        coordinator.plan_execution(params)
 
 
 def test_runtime_resource_plan_reports_replan_provenance():
