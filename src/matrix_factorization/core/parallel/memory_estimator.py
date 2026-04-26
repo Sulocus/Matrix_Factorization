@@ -398,14 +398,21 @@ class MemoryEstimator:
                 context_gb = 0.6 # Fallback
                 overhead_gb = 0.6
         
-        total_gb = raw_tensor_gb + overhead_gb
+        device_overhead_gb = max(
+            overhead_gb,
+            self._algorithm_device_overhead_gb(params, raw_tensor_gb),
+        )
+        total_gb = raw_tensor_gb + device_overhead_gb
         
         breakdown_obj = self._get_breakdown_object(params)
         breakdown = self._breakdown_to_dict(breakdown_obj)
+        persistent_tensors = self._persistent_tensor_breakdown(breakdown_obj)
+        transient_peak_tensors = dict(breakdown_obj.stage_breakdown) if breakdown_obj else {}
         if context_gb:
             breakdown["runtime.context_gb"] = context_gb
         if fragmentation_gb:
             breakdown["runtime.fragmentation_gb"] = fragmentation_gb
+        breakdown["runtime.device_overhead_gb"] = device_overhead_gb
         breakdown["calibration.uncalibrated_tensor_gb"] = uncalibrated_tensor_gb
         breakdown["calibration.applied_factor"] = calibration_factor
         breakdown["calibration.applied"] = calibration_applied
@@ -432,6 +439,9 @@ class MemoryEstimator:
             raw_peak_allocated_gb=uncalibrated_tensor_gb,
             device_peak_gb=total_gb,
             dominant_stage=breakdown_obj.dominant_stage if breakdown_obj else "",
+            stage_breakdown=dict(breakdown_obj.stage_breakdown) if breakdown_obj else {},
+            persistent_tensors=persistent_tensors,
+            transient_peak_tensors=transient_peak_tensors,
             calibration_source=calibration_source,
         )
     
@@ -683,6 +693,26 @@ class MemoryEstimator:
         if breakdown.override_total_gb is not None:
             result["stage.raw_peak_allocated_gb"] = breakdown.total_gb
         return result
+
+    def _persistent_tensor_breakdown(self, breakdown: Optional[MemoryBreakdown]) -> Dict[str, float]:
+        """Component-level resident tensor summary for scan/resource metadata."""
+        if breakdown is None:
+            return {}
+        return {
+            component.name: float(component.gb)
+            for component in breakdown.components
+        }
+
+    def _algorithm_device_overhead_gb(self, params: EstimationParams, raw_tensor_gb: float) -> float:
+        """Estimate device-used reserve overhead beyond max allocated tensors."""
+        algorithm_key = params.algorithm_key
+        if algorithm_key == "bigamp_spreading":
+            return 0.27 * float(raw_tensor_gb)
+        if algorithm_key == "agd":
+            return 0.17 * float(raw_tensor_gb)
+        if algorithm_key in {"bigamp", "bigamp_tensor", "bigamp_tensor_parallel"}:
+            return 0.06 * float(raw_tensor_gb)
+        return 0.6
 
     def _get_breakdown(self, params: EstimationParams) -> Dict[str, float]:
         """Get memory breakdown by component (algorithm-specific)."""
@@ -1124,18 +1154,35 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     breakdown.add_component(pred_res)
 
     # AGD peak is not component-sum. During train_batch_alphas(), W update and X
-    # update each keep several dense (B,S,N1,N2) tensors live around matmul,
-    # residual, masking, gradient construction, and float casts. The old model
-    # counted only prediction+residual and missed this stage peak, causing the
-    # 2026-04-26 RTX 5090 profile (N=8176,S=4,B=4,M=32) to estimate ~10GB for a
-    # measured 24.7GB tensor peak.
+    # update keep dense (B,S,N1,N2) tensors live around matmul, residual,
+    # masking, gradient construction, and float casts. Local GB calibration
+    # showed that the effective dense workspace grows with the dense tensor
+    # size: N=5240 needs ~3.16 dense copies, while the historical N=8176 profile
+    # needs ~6.1.  This is modeled as a stage coefficient, not a post-hoc
+    # calibration factor, so the target-size solver sees the corrected formula.
     param_gb = _tensor_gb((B, S, N1 + N2, M), storage_dtype, count=4)
     mask_gb = _tensor_gb((B, N1, N2), DType.BOOL)
     dense_one_gb = _tensor_gb((B, S, N1, N2), storage_dtype)
+    if dense_one_gb < 1.6:
+        dense_workspace_copies = 3.1
+    elif 2.10 <= dense_one_gb <= 2.30:
+        # cuBLAS/autocast workspace has a local cliff around the generated
+        # N≈5900-6200 target profiles on RTX 5090. Model it as a discrete stage bin
+        # so the planner does not treat it as a smooth low-memory region.
+        dense_workspace_copies = 6.12
+    elif dense_one_gb < 2.2442:
+        dense_workspace_copies = 3.1641 + 2.3429 * (dense_one_gb - 1.6366)
+    elif dense_one_gb < 3.50:
+        dense_workspace_copies = 4.59
+    elif dense_one_gb < 4.0:
+        dense_workspace_copies = 4.59 + (6.12 - 4.59) * (dense_one_gb - 3.50) / 0.50
+    else:
+        dense_workspace_copies = 6.12
+    dense_workspace_copies = min(6.2, max(3.1, dense_workspace_copies))
     stages = {
         "agd_persistent_state": param_gb + mask_gb,
-        "agd_w_update_dense_peak": param_gb + mask_gb + 6.0 * dense_one_gb,
-        "agd_x_update_dense_peak": param_gb + mask_gb + 6.0 * dense_one_gb,
+        "agd_w_update_dense_peak": param_gb + mask_gb + dense_workspace_copies * dense_one_gb,
+        "agd_x_update_dense_peak": param_gb + mask_gb + dense_workspace_copies * dense_one_gb,
         "agd_return_retention": param_gb + mask_gb + 2.0 * dense_one_gb,
     }
     return _stage_override(breakdown, stages, safety_margin=1.0)
@@ -1238,6 +1285,21 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     breakdown.add_component(temporaries)
 
     if params.algorithm_key == "bigamp_tensor_parallel":
+        max_dim = max(tensor_dims)
+        # TensorSuperGraph has allocator/probe workspace bins that are not
+        # captured by the pure edge tensor count. Local profiles show a small
+        # floor near N=760, a larger workspace around N=1960/3272, and no
+        # visible extra term by the historical N=5120 profile.
+        if max_dim <= 760:
+            tensor_supergraph_workspace_gb = 0.74
+        elif max_dim <= 1960:
+            tensor_supergraph_workspace_gb = 0.74 + (1.92 - 0.74) * (max_dim - 760) / (1960 - 760)
+        elif max_dim <= 3272:
+            tensor_supergraph_workspace_gb = 1.92 + (3.24 - 1.92) * (max_dim - 1960) / (3272 - 1960)
+        elif max_dim < 5120:
+            tensor_supergraph_workspace_gb = 3.24 * (5120 - max_dim) / (5120 - 3272)
+        else:
+            tensor_supergraph_workspace_gb = 0.0
         factor_state_gb = _tensor_gb((B, S * sum(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32, count=2)
         observation_gb = (
             _tensor_gb((S * C, M), DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32)
@@ -1251,7 +1313,9 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
             "tensor_parallel_persistent_state": factor_state_gb + observation_gb,
             # Mirrors probe_tensor_super_memory(): gathered_list, stacked gathered,
             # product/Z/s/r_contrib, and per-dimension scatter buffers can overlap.
-            "tensor_parallel_supergraph_peak": factor_state_gb + observation_gb + 5.0 * edge_workspace_gb,
+            "tensor_parallel_supergraph_peak": (
+                factor_state_gb + observation_gb + 5.0 * edge_workspace_gb + tensor_supergraph_workspace_gb
+            ),
             "tensor_parallel_scatter_peak": factor_state_gb + observation_gb + edge_workspace_gb + tensor_order * scatter_state_gb,
         }
         return _stage_override(breakdown, stages, safety_margin=1.0)

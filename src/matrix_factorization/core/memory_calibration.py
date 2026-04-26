@@ -183,15 +183,26 @@ def get_memory_calibration_profiles() -> Dict[str, MemoryCalibrationProfile]:
             max_steps=2,
             purpose="校准 dense matrix BiGAMP 的小尺寸峰值显存记录链路。",
         ),
-        "matrix_agd_target_10gb": _make_target_profile(
+        "matrix_agd_target_10gb": MemoryCalibrationProfile(
             key="matrix_agd_target_10gb",
             algorithm_key="agd",
-            target_tensor_gb=10.0,
-            samples_per_alpha=4,
+            matrix={"N1": 5936, "N2": 5936, "M": 32},
             alpha_values=[0.0, 0.1, 0.2, 0.3],
-            M=32,
+            samples_per_alpha=4,
+            max_steps=2,
+            max_epochs=2,
             tensor_order=2,
+            use_compile=False,
+            use_bf16=False,
+            target_tensor_gb=10.0,
             purpose="10GB 级 AGD 校准；覆盖参数、梯度、prediction/residual 路径。",
+            runtime_class="quick",
+            calibration_kind="target_memory",
+            sampler_interval_s=0.05,
+            notes=(
+                "固定在 N=5936 的 13GB 级实际 workspace bin；AGD 在 10GB "
+                "target 附近存在 CUDA workspace 跳变，自动 solver 会贴到不稳定边界。"
+            ),
         ),
         "matrix_agd_small": MemoryCalibrationProfile(
             key="matrix_agd_small",
@@ -280,6 +291,16 @@ def _build_target_memory_profiles() -> Dict[str, MemoryCalibrationProfile]:
             "M": 256,
             "tensor_order": 3,
             "purpose": "6GB raw serial tensor reference path 校准；覆盖 legacy serial alpha/sample loop。",
+        },
+        {
+            "key": "tensor_serial_target_10gb",
+            "algorithm_key": "bigamp_tensor",
+            "target_tensor_gb": 10.0,
+            "samples_per_alpha": 4,
+            "alpha_values": [0.05, 0.10],
+            "M": 256,
+            "tensor_order": 3,
+            "purpose": "10GB raw serial tensor reference path 校准；验证 serial tensor stage 公式外推。",
         },
         {
             "key": "tensor_parallel_target_6gb",
@@ -403,6 +424,17 @@ def _solve_square_matrix_size_for_target(
             low = mid + 1
         else:
             high = mid - 1
+    # Some stage models intentionally contain discrete workspace bins. A pure
+    # binary search can land on the wrong side of a discontinuity, so do a local
+    # aligned scan around the binary candidate before finalizing the profile.
+    local_low = max(8, int(best_n) - 2048)
+    local_high = min(65536, int(best_n) + 2048)
+    for n in range(int(round(local_low / 8) * 8), local_high + 1, 8):
+        raw = raw_for_n(n)
+        error = abs(raw - target_tensor_gb)
+        if error < best_error:
+            best_n = n
+            best_error = error
     # Tensor cores and allocator bins behave better on aligned dimensions.
     return max(8, int(round(best_n / 8) * 8))
 
@@ -479,6 +511,69 @@ def explain_memory_profile(profile_key: str) -> str:
 
 def run_memory_calibration(profile_key: str, output_root: Optional[Path] = None) -> Dict[str, Any]:
     profile = _get_profile(profile_key)
+    return _run_memory_calibration_profile(profile, output_root=output_root)
+
+
+def tune_memory_calibration(
+    algorithm_key: str,
+    *,
+    target_allocated_gb: float,
+    max_device_gb: float = 24.0,
+) -> Dict[str, Any]:
+    """Build and run a local calibration candidate from a target raw footprint."""
+    defaults = {
+        "bigamp": {"samples_per_alpha": 4, "alpha_values": [0.0, 0.1, 0.2, 0.3], "M": 32, "tensor_order": 2},
+        "agd": {"samples_per_alpha": 4, "alpha_values": [0.0, 0.1, 0.2, 0.3], "M": 32, "tensor_order": 2},
+        "bigamp_spreading": {"samples_per_alpha": 4, "alpha_values": [0.1, 0.2, 0.3], "M": 32, "tensor_order": 2},
+        "bigamp_tensor": {"samples_per_alpha": 4, "alpha_values": [0.05, 0.10], "M": 256, "tensor_order": 3},
+        "bigamp_tensor_parallel": {"samples_per_alpha": 4, "alpha_values": [0.05, 0.10], "M": 256, "tensor_order": 3},
+    }
+    if algorithm_key not in defaults:
+        raise KeyError(f"unknown calibration algorithm '{algorithm_key}'")
+    spec = defaults[algorithm_key]
+    profile = _make_target_profile(
+        key=f"tune_{algorithm_key}_{float(target_allocated_gb):.1f}gb".replace(".", "p"),
+        algorithm_key=algorithm_key,
+        target_tensor_gb=float(target_allocated_gb),
+        samples_per_alpha=spec["samples_per_alpha"],
+        alpha_values=spec["alpha_values"],
+        M=spec["M"],
+        tensor_order=spec["tensor_order"],
+        purpose=(
+            f"Auto-tuned local memory calibration for {algorithm_key}; "
+            f"target raw allocated {float(target_allocated_gb):.2f}GB."
+        ),
+    )
+    config = build_calibration_config(profile)
+    estimator = MemoryEstimator(apply_calibration=False)
+    estimate = estimator.estimate(estimation_params_from_config(config))
+    if estimate.device_peak_gb > float(max_device_gb):
+        started_at = datetime.now()
+        output_dir = _profile_output_dir(profile, None, started_at)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "profile": profile.to_dict(),
+            "started_at": started_at.isoformat(timespec="seconds"),
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "aborted_by_memory_guard",
+            "reason": (
+                f"estimated device peak {estimate.device_peak_gb:.3f}GB exceeds "
+                f"max_device_gb {float(max_device_gb):.3f}GB"
+            ),
+            "theoretical_estimate_gb": estimator.estimate_raw(estimation_params_from_config(config)),
+            "estimated_total_with_runtime_gb": estimate.total_gb,
+            "output_dir": str(output_dir),
+        }
+        _write_json_with_retry(output_dir / "manifest.json", record)
+        _write_json_with_retry(output_dir / "config.json", config.to_dict())
+        return record
+    return _run_memory_calibration_profile(profile, output_root=None)
+
+
+def _run_memory_calibration_profile(
+    profile: MemoryCalibrationProfile,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
     config = build_calibration_config(profile)
     estimator = MemoryEstimator(apply_calibration=False)
     params = estimation_params_from_config(config)
@@ -545,6 +640,12 @@ def run_memory_calibration(profile_key: str, output_root: Optional[Path] = None)
         (raw_estimate_gb - actual_delta_peak_gb) / actual_delta_peak_gb
         if actual_delta_peak_gb > 0 else None
     )
+    formula_abs_error_pct = abs(raw_error_ratio) * 100 if raw_error_ratio is not None else None
+    formula_status = (
+        "within_tolerance"
+        if formula_abs_error_pct is not None and formula_abs_error_pct <= 10.0
+        else "formula_mismatch"
+    )
     total_error_ratio = (
         (estimate.total_gb - actual_peak_gb) / actual_peak_gb
         if actual_peak_gb > 0 else None
@@ -582,6 +683,8 @@ def run_memory_calibration(profile_key: str, output_root: Optional[Path] = None)
         },
         "error_ratio": raw_error_ratio,
         "error_pct": raw_error_ratio * 100 if raw_error_ratio is not None else None,
+        "formula_abs_error_pct": formula_abs_error_pct,
+        "formula_status": formula_status,
         "total_error_ratio": total_error_ratio,
         "total_error_pct": total_error_ratio * 100 if total_error_ratio is not None else None,
         "output_dir": str(output_dir),
@@ -618,6 +721,7 @@ def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
         tensor_order=tensor_order,
         tensor_dims=tensor_dims,
         seed_partition_policy=config.algorithm_params.seed_partition_policy,
+        chunk_size=getattr(spreading, "chunk_size", None) if spreading else None,
     )
 
 
@@ -715,6 +819,7 @@ def _update_local_calibration_coefficients(record: Dict[str, Any]) -> None:
         and raw_gb >= 1.0
         and actual_tensor_delta_gb >= 1.0
         and bool(algorithm_key)
+        and record.get("formula_status") == "within_tolerance"
     )
     ratio = actual_tensor_delta_gb / raw_gb if raw_gb > 0 else None
     failure_margin = 1.25 if status_failed_lower_bound else 1.10
@@ -723,7 +828,9 @@ def _update_local_calibration_coefficients(record: Dict[str, Any]) -> None:
     existing = algorithms.get(algorithm_key, {})
     previous_factor = float(existing.get("factor", 1.0) or 1.0)
     factor = conservative_factor if valid_for_planner else previous_factor
-    if status_failed_lower_bound and valid_for_planner:
+    if record.get("formula_status") == "formula_mismatch":
+        status = "formula_mismatch"
+    elif status_failed_lower_bound and valid_for_planner:
         status = "failed_lower_bound_active"
     elif valid_for_planner:
         status = "active"

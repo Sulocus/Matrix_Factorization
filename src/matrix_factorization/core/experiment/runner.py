@@ -261,7 +261,8 @@ class ExperimentRunner:
                 Y_teacher=Y_teacher,
             )
             if output_options and output_options.get('experiment_plan'):
-                result.metadata.contract = output_options['experiment_plan']
+                import copy
+                result.metadata.contract = copy.deepcopy(output_options['experiment_plan'])
             runtime_extensions = self._build_runtime_extension_executor(
                 result.metadata.contract,
                 config.algorithm_key,
@@ -334,9 +335,25 @@ class ExperimentRunner:
         import copy
         import gc
         from .result import ResultCube
+        from matrix_factorization.core.contracts import get_batching_specs
         from matrix_factorization.core.scan_planning import build_scan_plan
+        from matrix_factorization.core.parallel.resource_execution import (
+            build_scan_resource_execution_plan,
+            effective_config_for_scan_points,
+        )
 
         scan_plan = build_scan_plan(config)
+        resource_plan = build_scan_resource_execution_plan(
+            scan_plan=scan_plan,
+            base_config=config,
+            coordinator=self.parallel_coordinator,
+            batching_spec=get_batching_specs().get(config.algorithm_key),
+        )
+        if resource_plan.preflight_errors:
+            raise ValueError(
+                "canonical scan resource preflight failed:\n"
+                + "\n".join(f"- {item}" for item in resource_plan.preflight_errors)
+            )
         aggregate = ExperimentResult(
             experiment_id=getattr(config, "experiment_name", "canonical_scan"),
             config=config,
@@ -345,8 +362,9 @@ class ExperimentRunner:
             metadata=ExperimentMetadata.create_now(),
         )
         if output_options and output_options.get("experiment_plan"):
-            aggregate.metadata.contract = output_options["experiment_plan"]
+            aggregate.metadata.contract = copy.deepcopy(output_options["experiment_plan"])
         aggregate.metadata.contract["scan_plan"] = scan_plan.to_dict()
+        aggregate.metadata.contract["runtime_resource_plan"] = resource_plan.to_dict()
         aggregate.result_cube = ResultCube(
             axes={axis.key: axis.to_dict() for axis in scan_plan.axes},
             metric_semantics=aggregate.metric_semantics(),
@@ -355,15 +373,16 @@ class ExperimentRunner:
         shared_teacher_shape = None
         teacher_shape_mismatch = False
 
-        for group in scan_plan.grouping:
-            group_points = [points_by_id[point_id] for point_id in group.point_ids]
-            effective_config = self._effective_config_for_scan_group(config, group_points)
+        for resource_batch in resource_plan.batches:
+            batch_points = [points_by_id[item.scan_point_id] for item in resource_batch.work_items]
+            effective_config = effective_config_for_scan_points(config, batch_points)
             setattr(effective_config, "_disable_canonical_scan_executor", True)
             child_runner = ExperimentRunner(device=self.device, verbose=self.verbose)
+            child_output_options = copy.deepcopy(output_options) if output_options else None
             child_result = child_runner.run(
                 effective_config,
                 observer=observer,
-                output_options=output_options,
+                output_options=child_output_options,
                 raw_yaml=raw_yaml,
             )
             child_teacher = getattr(child_result, "W_teacher", None)
@@ -379,7 +398,7 @@ class ExperimentRunner:
                     aggregate.W_teacher = None
                     aggregate.X_teacher = None
                     aggregate.Y_teacher = None
-            for point in group_points:
+            for point in batch_points:
                 child_key = self._child_result_key_for_scan_point(point, effective_config)
                 if child_key not in child_result.results:
                     raise ValueError(
@@ -992,6 +1011,7 @@ class ExperimentRunner:
             tensor_order=tensor_order,
             tensor_dims=tensor_dims,
             seed_partition_policy=config.algorithm_params.seed_partition_policy,
+            chunk_size=getattr(config.spreading, "chunk_size", None) if config.spreading else None,
         )
 
     def _runtime_resource_plan_report(
@@ -1050,6 +1070,10 @@ class ExperimentRunner:
                     "alpha_values": [float(value) for value in self._batch_alpha_values(batch)],
                     "batch_axes": list(getattr(batch, "batch_axes", []) or []),
                     "calibration_source": getattr(batch, "calibration_source", "theory_unchecked"),
+                    "raw_peak_allocated_gb": float(getattr(batch, "raw_peak_allocated_gb", 0.0) or 0.0),
+                    "device_peak_gb": float(getattr(batch, "device_peak_gb", 0.0) or 0.0),
+                    "dominant_stage": getattr(batch, "dominant_stage", ""),
+                    "confidence": float(getattr(batch, "confidence", 0.0) or 0.0),
                     "work_items": [
                         item.to_dict() if hasattr(item, "to_dict") else dict(item)
                         for item in (getattr(batch, "work_items", []) or [])
@@ -1059,6 +1083,8 @@ class ExperimentRunner:
                         str(key): float(value)
                         for key, value in (getattr(batch, "memory_breakdown", {}) or {}).items()
                     },
+                    "persistent_tensors": dict(getattr(batch, "persistent_tensors", {}) or {}),
+                    "transient_peak_tensors": dict(getattr(batch, "transient_peak_tensors", {}) or {}),
                 }
                 for idx, batch in enumerate(getattr(plan, "batches", []) or [])
             ],

@@ -571,16 +571,17 @@ def _handle_calibrate_command(argv):
         explain_memory_profile,
         get_memory_calibration_profiles,
         run_memory_calibration,
+        tune_memory_calibration,
     )
 
     if not argv or argv[0] in ("-h", "--help"):
-        print("Usage: mf calibrate memory [list|explain|run] <profile_key>")
+        print("Usage: mf calibrate memory [list|explain|run|tune] <profile_key|algorithm> [--target-allocated-gb N] [--max-device-gb N]")
         sys.exit(0 if argv else 1)
     if argv[0] != "memory":
         print(f"❌ Unknown calibrate target: {argv[0]}")
         sys.exit(1)
     if len(argv) < 2:
-        print("Usage: mf calibrate memory [list|explain|run] <profile_key>")
+        print("Usage: mf calibrate memory [list|explain|run|tune] <profile_key|algorithm> [--target-allocated-gb N] [--max-device-gb N]")
         sys.exit(1)
 
     command = argv[1]
@@ -595,6 +596,37 @@ def _handle_calibrate_command(argv):
                 f"runtime_class={profile.runtime_class}, matrix={profile.matrix}"
             )
         sys.exit(0)
+
+    if command == "tune":
+        algorithm_key = profile_key
+        if not algorithm_key:
+            print("❌ memory calibration tune requires an algorithm key")
+            sys.exit(1)
+        target_gb = _cli_float_option(argv[3:], "--target-allocated-gb", None)
+        max_device_gb = _cli_float_option(argv[3:], "--max-device-gb", 24.0)
+        if target_gb is None:
+            print("❌ tune requires --target-allocated-gb N")
+            sys.exit(1)
+        try:
+            record = tune_memory_calibration(
+                algorithm_key,
+                target_allocated_gb=target_gb,
+                max_device_gb=max_device_gb,
+            )
+        except (KeyError, MemoryError) as exc:
+            print(f"❌ memory calibration tune failed: {exc}")
+            sys.exit(2)
+        print("memory calibration tune complete")
+        print(f"  algorithm: {algorithm_key}")
+        print(f"  status: {record.get('status')}")
+        print(f"  output: {record['output_dir']}")
+        print(f"  theoretical_tensor_estimate_gb: {record.get('theoretical_estimate_gb', 0.0):.6f}")
+        print(f"  estimated_total_with_runtime_gb: {record.get('estimated_total_with_runtime_gb', 0.0):.6f}")
+        if record.get("formula_abs_error_pct") is not None:
+            print(f"  formula_abs_error_pct: {record['formula_abs_error_pct']:.2f}")
+        if record.get("reason"):
+            print(f"  reason: {record['reason']}")
+        sys.exit(0 if record.get("status") != "aborted_by_memory_guard" else 2)
 
     if command not in {"explain", "run"}:
         print(f"❌ Unknown memory calibration command: {command}")
@@ -627,7 +659,23 @@ def _handle_calibrate_command(argv):
     print(f"  timeline: {record['memory_timeline']['path']}")
     if record.get("error_pct") is not None:
         print(f"  error_pct: {record['error_pct']:.2f}")
+    if record.get("formula_abs_error_pct") is not None:
+        print(f"  formula_abs_error_pct: {record['formula_abs_error_pct']:.2f}")
+    if record.get("formula_status"):
+        print(f"  formula_status: {record['formula_status']}")
     sys.exit(0)
+
+
+def _cli_float_option(argv, name, default):
+    if name not in argv:
+        return default
+    idx = argv.index(name)
+    if idx + 1 >= len(argv):
+        raise SystemExit(f"{name} requires a value")
+    try:
+        return float(argv[idx + 1])
+    except ValueError as exc:
+        raise SystemExit(f"{name} requires a numeric value") from exc
 
 
 def _print_plan_warnings(plan):

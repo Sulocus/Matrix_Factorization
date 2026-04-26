@@ -82,11 +82,36 @@
 
 - matrix、spreading、tensor 的 live tensors 不同。
 - tensor order、C formula、F dtype、indices dtype、compile cache 都影响实际峰值。
+- stage peak 公式已经接入 planner，但 GB 级本地 calibration 仍必须逐
+  algorithm 验证；误差超过 10% 的 run 会记录为 `formula_mismatch`，不会自动
+  变成长期 planner factor。
+- AGD 和 tensor parallel 都发现了 CUDA workspace 档位：公式当前按本地
+  RTX 5090 profile 建模，后续换 GPU、dtype、compile、internal batching 时必须重新校准。
 
 需要确认：
 
-- 是否要为每个 active algorithm 建独立 MemoryModel。
 - 公式估计和 probe 估计冲突时以哪个为准。
+- `bigamp_spreading` 的 chunk/backtracking peak 是否需要按 `chunk_size`
+  做更细的分段公式。
+- `bigamp_tensor_parallel` 的 internal alpha batching 和 TensorSuperGraph
+  probe 是否应统一到同一个 planner 入口。
+- 是否需要把 AGD / tensor parallel 的 workspace bin 从经验分段升级为更
+  细的 runtime probe，而不是固定在公式里。
+
+## Scan-Aware Planner Parity
+
+当前风险：
+
+- canonical scan 的 `ResourceExecutionPlan` 已经按 non-alpha group 分组；
+  但 child runner 内部仍会在单个 batch config 上重新做 alpha plan，只是不能
+  扩大顶层已选 alpha set。
+- `max_steps` axis 现在按 point-level batch 隔离，后续如果要恢复 checkpoint
+  reuse，需要明确 `steps_reuse` 是否保持随机流和 result semantics。
+
+需要确认：
+
+- 是否允许在 partition-invariant policy 下把 nested 外层某些非 shape 轴也折叠。
+- steps scan 是否应该保留“增量继续训练”语义，还是默认每个 step budget 独立运行。
 
 ## 当前允许继续做的低风险工作
 

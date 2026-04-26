@@ -118,15 +118,15 @@ class ParallelCoordinator:
         full_estimate = self.estimator.estimate(params)
         replan_metadata = self._replan_metadata(params)
         
-        if full_estimate.total_gb <= target_gb:
+        full_target_gb = self._safe_target_for_estimate(target_gb, full_estimate)
+        if full_estimate.total_gb <= full_target_gb:
             plan = ExecutionPlan(
                 mode=ParallelMode.FULL_PARALLEL,
-                batches=[BatchConfig(
+                batches=[self._batch_from_estimate(
+                    estimate=full_estimate,
                     sample_range=(0, S),
                     alpha_range=(0, A),
-                    estimated_memory_gb=full_estimate.total_gb,
                     alpha_values=params.alpha_values,
-                    memory_breakdown=dict(full_estimate.breakdown),
                 )],
                 total_estimated_memory_gb=full_estimate.total_gb,
                 allocation_config=self.config,
@@ -135,7 +135,11 @@ class ParallelCoordinator:
                 available_memory_gb=available_gb,
                 **replan_metadata,
             )
-            logger.info(f"Selected FULL_PARALLEL mode: {full_estimate.total_gb:.1f}GB")
+            logger.info(
+                "Selected FULL_PARALLEL mode: %.1fGB <= target %.1fGB",
+                full_estimate.total_gb,
+                full_target_gb,
+            )
             self.stats["plans_created"] += 1
             return self._attach_plan_provenance(plan, params)
         
@@ -177,14 +181,15 @@ class ParallelCoordinator:
         # data is too large for this GPU under the current precision/algorithm.
         if linear_plan.batches:
             max_batch_mem = max(b.estimated_memory_gb for b in linear_plan.batches)
-            if max_batch_mem > target_gb:
+            worst_batch = max(linear_plan.batches, key=lambda b: b.estimated_memory_gb)
+            safe_target_gb = self._safe_target_for_batch(target_gb, worst_batch)
+            if max_batch_mem > safe_target_gb:
                 # Even linear mode can't fit - problem is too large
                 total_gb = self._get_total_memory()
-                worst_batch = max(linear_plan.batches, key=lambda b: b.estimated_memory_gb)
                 error_msg = (
                     f"ERROR: Problem size too large for GPU!\n"
                     f"  Largest single-alpha full-S batch required: {max_batch_mem:.2f} GB\n"
-                    f"  Available allocation: {target_gb:.2f} GB (ratio={self.config.allocation_ratio:.0%})\n"
+                    f"  Available allocation: {safe_target_gb:.2f} GB (ratio={self.config.allocation_ratio:.0%})\n"
                     f"  GPU available: {available_gb:.2f} GB (after reserved)\n"
                     f"  GPU total: {total_gb:.2f} GB\n"
                     f"  Parameters: N1={params.N1}, N2={params.N2}, M={params.M}\n"
@@ -401,17 +406,17 @@ class ParallelCoordinator:
                 
                 estimate = self.estimator.estimate(batch_params)
                 
-                if estimate.total_gb <= target_gb:
+                safe_target_gb = self._safe_target_for_estimate(target_gb, estimate)
+                if estimate.total_gb <= safe_target_gb:
                     logger.info(
                         f"Batch selected: alphas={len(batch_alphas)}, α_max={batch_alpha_max:.2f}, "
                         f"estimate={estimate.total_gb:.1f}GB <= target={target_gb:.1f}GB"
                     )
-                    batches.append(BatchConfig(
+                    batches.append(self._batch_from_estimate(
+                        estimate=estimate,
                         sample_range=(0, params.S),
                         alpha_range=(current_start, end),
-                        estimated_memory_gb=estimate.total_gb,
                         alpha_values=batch_alphas,
-                        memory_breakdown=dict(estimate.breakdown),
                     ))
                     current_start = end
                     break
@@ -441,12 +446,11 @@ class ParallelCoordinator:
             single_params = replace(params, alpha_values=[alpha])
             estimate = self.estimator.estimate(single_params)
             
-            batches.append(BatchConfig(
+            batches.append(self._batch_from_estimate(
+                estimate=estimate,
                 sample_range=(0, params.S),
                 alpha_range=(i, i + 1),
-                estimated_memory_gb=estimate.total_gb,
                 alpha_values=[alpha],
-                memory_breakdown=dict(estimate.breakdown),
             ))
         
         total_mem = max(b.estimated_memory_gb for b in batches) if batches else 0
@@ -472,6 +476,11 @@ class ParallelCoordinator:
                 "alpha_range": [int(batch.alpha_range[0]), int(batch.alpha_range[1])],
                 "alpha_values": [float(alpha) for alpha in batch.alpha_values],
                 "estimated_memory_gb": float(batch.estimated_memory_gb),
+                "raw_peak_allocated_gb": float(batch.raw_peak_allocated_gb),
+                "device_peak_gb": float(batch.device_peak_gb),
+                "dominant_stage": batch.dominant_stage,
+                "confidence": float(batch.confidence),
+                "calibration_source": batch.calibration_source,
             }
             for batch in plan.batches
         ]
@@ -500,6 +509,48 @@ class ParallelCoordinator:
             "metadata_only": True,
         }
         return plan
+
+    @staticmethod
+    def _safe_target_for_estimate(base_target_gb: float, estimate) -> float:
+        """Lower the effective budget for low-confidence or unchecked formulas."""
+        target = float(base_target_gb)
+        if float(getattr(estimate, "confidence", 0.0) or 0.0) < 0.8:
+            target *= 0.8
+        if getattr(estimate, "calibration_source", "theory_unchecked") == "theory_unchecked":
+            target *= 0.75
+        return target
+
+    @staticmethod
+    def _safe_target_for_batch(base_target_gb: float, batch: BatchConfig) -> float:
+        target = float(base_target_gb)
+        if float(getattr(batch, "confidence", 0.0) or 0.0) < 0.8:
+            target *= 0.8
+        if getattr(batch, "calibration_source", "theory_unchecked") == "theory_unchecked":
+            target *= 0.75
+        return target
+
+    @staticmethod
+    def _batch_from_estimate(
+        *,
+        estimate,
+        sample_range,
+        alpha_range,
+        alpha_values,
+    ) -> BatchConfig:
+        return BatchConfig(
+            sample_range=sample_range,
+            alpha_range=alpha_range,
+            estimated_memory_gb=float(estimate.total_gb),
+            alpha_values=[float(alpha) for alpha in alpha_values],
+            memory_breakdown=dict(estimate.breakdown),
+            calibration_source=getattr(estimate, "calibration_source", "theory_unchecked"),
+            raw_peak_allocated_gb=float(getattr(estimate, "raw_peak_allocated_gb", 0.0) or 0.0),
+            device_peak_gb=float(getattr(estimate, "device_peak_gb", 0.0) or 0.0),
+            dominant_stage=str(getattr(estimate, "dominant_stage", "") or ""),
+            confidence=float(getattr(estimate, "confidence", 0.0) or 0.0),
+            persistent_tensors=dict(getattr(estimate, "persistent_tensors", {}) or {}),
+            transient_peak_tensors=dict(getattr(estimate, "transient_peak_tensors", {}) or {}),
+        )
     
     def _execute_batch(
         self,

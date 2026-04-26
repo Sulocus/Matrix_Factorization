@@ -270,6 +270,21 @@ class ExperimentPlan:
                 lines.append(f"  seed_policy: {seed_policy.get('policy_key')}")
                 lines.append(f"  partition_invariant: {seed_policy.get('partition_invariant')}")
                 lines.append(f"  automatic_rebatch_allowed: {seed_policy.get('automatic_rebatch_allowed')}")
+            preview = self.resource_plan.get("resource_execution_plan_preview") or {}
+            if preview:
+                lines.append("  scan/resource execution plan:")
+                lines.append(f"    groups: {preview.get('num_groups')}")
+                lines.append(f"    batches: {preview.get('num_batches')}")
+                lines.append(f"    work_items: {preview.get('num_work_items')}")
+                lines.append(f"    max_allocated_estimate: {preview.get('max_estimated_allocated_gb')}")
+                lines.append(f"    max_device_estimate: {preview.get('max_estimated_device_gb')}")
+                lines.append(
+                    "    calibration_sources: "
+                    f"{', '.join(preview.get('calibration_sources') or []) or 'none'}"
+                )
+                if preview.get("preflight_errors"):
+                    lines.append("    preflight_errors:")
+                    lines.extend(f"      - {item}" for item in preview.get("preflight_errors") or [])
         if self.tensor_parity_report:
             lines.append("")
             lines.append("tensor serial/parallel parity:")
@@ -471,6 +486,7 @@ def build_experiment_plan(
 
     _validate_raw_paths(plan, parameter_specs)
     _validate_scan_axis_paths(plan, parameter_specs)
+    _validate_scan_execution_options(plan)
     _validate_parameter_values(plan, parameter_specs)
 
     algorithm_key = getattr(config, "algorithm_key", None)
@@ -837,6 +853,33 @@ def _validate_scan_axis_paths(plan: ExperimentPlan, parameter_specs: Dict[str, P
             plan.errors.append(f"scan axis '{axis_key}' 引用了未注册参数路径: {path}")
 
 
+def _validate_scan_execution_options(plan: ExperimentPlan) -> None:
+    raw_scan = plan.raw_config.get("scan", {}) if isinstance(plan.raw_config, dict) else {}
+    raw_execution = raw_scan.get("execution", {}) if isinstance(raw_scan, dict) else {}
+    if raw_execution in ({}, None):
+        return
+    if not isinstance(raw_execution, dict):
+        plan.errors.append("scan.execution 必须是 mapping")
+        return
+    allowed_keys = {
+        "max_allocated_gb",
+        "target_utilization",
+        "device_hard_stop_gb",
+        "allowed_fold_axes",
+        "auto_rebatch",
+    }
+    for key in raw_execution:
+        if key not in allowed_keys:
+            plan.errors.append(f"未注册 scan.execution 字段: scan.execution.{key}")
+    numeric_keys = {"max_allocated_gb", "target_utilization", "device_hard_stop_gb"}
+    for key in numeric_keys & set(raw_execution):
+        value = raw_execution[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            plan.errors.append(f"scan.execution.{key} 类型无效: expected float, got {type(value).__name__}")
+    if "allowed_fold_axes" in raw_execution and not isinstance(raw_execution["allowed_fold_axes"], list):
+        plan.errors.append("scan.execution.allowed_fold_axes 类型无效: expected list")
+
+
 def _validate_parameter_values(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
     """Validate raw YAML values against ParameterSpec.type before runtime."""
     for path, value in _flatten_config_paths(plan.raw_config):
@@ -989,6 +1032,50 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "seed_policy": plan.seed_policy_spec.notes if plan.seed_policy_spec else "",
         },
     }
+    _attach_resource_execution_preview(plan)
+
+
+def _attach_resource_execution_preview(plan: ExperimentPlan) -> None:
+    if plan.scan_plan is None:
+        return
+    if not plan.scan_plan.points:
+        plan.resource_plan["resource_execution_plan_preview"] = {
+            "num_groups": 0,
+            "num_batches": 0,
+            "num_work_items": 0,
+            "preflight_errors": list(plan.scan_plan.errors),
+        }
+        return
+    try:
+        from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
+        from matrix_factorization.core.parallel.parallel_coordinator import ParallelCoordinator
+        from matrix_factorization.core.parallel.resource_execution import build_scan_resource_execution_plan
+
+        resource_execution_plan = build_scan_resource_execution_plan(
+            scan_plan=plan.scan_plan,
+            base_config=plan.config,
+            coordinator=ParallelCoordinator(estimator=MemoryEstimator()),
+            batching_spec=plan.batching_spec,
+        )
+    except Exception as exc:
+        plan.warnings.append(f"ResourceExecutionPlan preview 构造失败: {exc}")
+        return
+
+    preview = resource_execution_plan.to_dict()
+    plan.resource_plan["resource_execution_plan_preview"] = {
+        "num_groups": len(preview.get("groups") or []),
+        "num_batches": preview.get("num_batches", 0),
+        "num_work_items": preview.get("num_work_items", 0),
+        "max_estimated_allocated_gb": preview.get("max_estimated_allocated_gb", 0.0),
+        "max_estimated_device_gb": preview.get("max_estimated_device_gb", 0.0),
+        "dominant_stages": preview.get("dominant_stages", {}),
+        "calibration_sources": preview.get("calibration_sources", []),
+        "scan_execution": preview.get("scan_execution", {}),
+        "preflight_errors": preview.get("preflight_errors", []),
+        "fold_axis_rejections": preview.get("fold_axis_rejections", []),
+    }
+    for error in resource_execution_plan.preflight_errors:
+        plan.errors.append(f"ResourceExecutionPlan preflight: {error}")
 
 
 def _effective_seed_policy_summary(plan: ExperimentPlan) -> Dict[str, Any]:

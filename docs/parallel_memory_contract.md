@@ -10,9 +10,49 @@
 - `ExperimentPlan.resource_plan`：`mf explain-config` / `mf validate --json` 中的静态 resource summary。
 - `runtime_resource_plan`：run metadata 中的 runner-level execution plan。
 - `ScanPlan`：把 `alpha/steps/nested/hysteresis` 展开为统一 scan point 和 plot grouping。
-- `ResourceExecutionPlan` / `WorkItem`：把 runner batch 映射到显式 work items，记录 alpha/sample/scan-axis 折叠情况。
+- `ResourceExecutionPlan` / `ResourceGroup` / `WorkItem`：把 canonical `ScanPoint`
+  映射到显式 resource group 和 batch，记录 alpha/sample/scan-axis 折叠情况。
 
 ## 当前策略
+
+### Scan-Aware Resource Planner
+
+canonical scan 现在是资源调度的入口：
+
+```text
+scan.axes
+  -> ScanPlan(points/grouping)
+    -> ResourceExecutionPlan(groups/batches/work_items)
+      -> child ExperimentConfig per ResourceBatch
+        -> runner alpha/steps execution
+          -> ResultCube point_id
+```
+
+当前真实可自动折叠的执行维度只有 `alpha`：
+
+- `size / init / damping / onsager / arbitrary parameter axis` 会形成不同
+  `ResourceGroup`，不同 group 之间不折叠。
+- `max_steps` axis 会被隔离成 point-level batch，不和 alpha folding 混在一起。
+- `sample_range` 继续只是 contract metadata；`sample_range_honored=false`
+  的 algorithm 不能被 planner 用 sample splitting 降显存。
+- `scan.execution.allowed_fold_axes` 只能收紧 `BatchingSpec.foldable_axes`，
+  不能绕过 contract。请求 `sample` folding 会 preflight error。
+
+`scan.execution` 支持：
+
+```yaml
+scan:
+  execution:
+    max_allocated_gb: 24.0
+    target_utilization: 0.75
+    device_hard_stop_gb: 30.0
+    allowed_fold_axes: [alpha]
+    auto_rebatch: preflight_only
+```
+
+默认 target 是 `min(cuda_free * target_utilization, max_allocated_gb)`；低
+confidence 或 `theory_unchecked` memory model 会进一步降低 effective target。
+超过 `device_hard_stop_gb` 的 batch 会在 preflight 中报错。
 
 ### AGD
 
@@ -217,12 +257,57 @@ contract.runtime_resource_plan
 	  batches
 	    batch_axes
 	    calibration_source
+	    raw_peak_allocated_gb
+	    device_peak_gb
+	    dominant_stage
+	    persistent_tensors
+	    transient_peak_tensors
 	    work_items
 	  resource_execution_plan
+	    groups
 	    batches
 	    plot_grouping
+	    max_estimated_allocated_gb
+	    max_estimated_device_gb
+	    dominant_stages
+	    calibration_sources
+	    preflight_errors
 	  metadata_only
 ```
+
+canonical multi-axis scan 的 aggregate result 会把顶层
+`ResourceExecutionPlan` 写到 `metadata.contract.runtime_resource_plan`，并且
+每个 `WorkItem.scan_point_id` 必须能在 `ResultCube.points` 中找到对应点。
+
+## Memory Estimator Stage Model
+
+`MemoryEstimate` 现在不只输出一个总量，还必须带：
+
+```text
+raw_peak_allocated_gb
+device_peak_gb
+dominant_stage
+stage_breakdown
+persistent_tensors
+transient_peak_tensors
+calibration_source
+confidence
+```
+
+每个 active algorithm 的 estimator 都按 stage peak 表达：
+
+- `bigamp`：dense W/X state 和 dense update peak。
+- `agd`：补齐 `A_all/Y_teacher/Y_student/residual/grad_W/grad_X/old+new W/X`
+  等 dense update live tensors。
+- `bigamp_spreading`：拆 graph/F/Y resident、gather/scatter/chunk workspace。
+- `bigamp_tensor`：serial alpha/sample loop 的单点 peak。
+- `bigamp_tensor_parallel`：TensorSuperGraph 的 indices/offset/gather/product/Z/s
+  和 scatter buffers。
+
+本地 calibration 如果发现 raw formula 与
+`torch.cuda.max_memory_allocated()` 的误差超过 10%，记录状态为
+`formula_mismatch`。这种记录不会自动变成长期 planner factor；它会进入
+review queue，要求先修公式再重新校准。
 
 tensor serial/parallel 的 `AlgorithmResult.metadata` 还会包含：
 
@@ -283,8 +368,11 @@ mf calibrate memory run matrix_bigamp_target_10gb
 - `matrix_agd_target_10gb`
 - `matrix_bigamp_target_10gb`
 - `matrix_bigamp_target_16gb`
+- `matrix_agd_target_16gb`
 - `spreading_bigamp_target_10gb`
+- `spreading_bigamp_target_16gb`
 - `tensor_serial_target_6gb`
+- `tensor_serial_target_10gb`
 - `tensor_parallel_target_6gb`
 - `tensor_parallel_target_10gb`
 
@@ -300,26 +388,30 @@ mf calibrate memory run matrix_bigamp_target_10gb
 - `reserved_peak_memory_gb`、`allocated_after_gb`、`reserved_after_gb`。
 - `memory_timeline.path`：完整 VRAM 时间线，默认 `memory_timeline.jsonl`。
 
-当 raw 估计和实际 delta 都超过 1GB 时，校准命令会更新本地 `runs/calibration/memory/latest_coefficients.json`。`MemoryEstimator` 会在后续 planner 中读取这个文件，并只做保守校正：如果实测比公式大，放大估算；如果实测比公式小，默认不把系数降到 1 以下。
+当 raw 估计和实际 delta 都超过 1GB 且 `formula_abs_error_pct <= 10` 时，校准命令会更新本地 `runs/calibration/memory/latest_coefficients.json`。如果误差超过 10%，记录会标记为 `formula_mismatch`，不会自动把大 factor 写成长期 planner 方案。
 
 ### 2026-04-26 本地 RTX 5090 校准记录
 
 这组记录是实际本地运行，不是 smoke，也不是只看代码估算。raw artifact 在 ignored 的 `runs/calibration/memory/`，下面只记录轻量摘要：
 
-| algorithm | profile | raw estimate GB | actual max allocated GB | device used delta GB | planner factor |
+| algorithm | profile | raw estimate GB | actual max allocated GB | device used delta GB | formula error |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 16.805 | 1.060 |
-| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 9.996 | 6.718 | 8.527 | 1.000 |
-| `bigamp_tensor` | `tensor_serial_target_6gb` | 5.998 | 6.806 | 7.703 | 1.248 |
-| `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 5.998 | 15.480 | 15.629 | 2.839 |
-| `agd` | `matrix_agd_target_10gb` | 9.999 | 24.728 | 29.005 | 2.720 |
+| `bigamp` | `matrix_bigamp_target_10gb` | 10.005 | 9.618 | 10.535 | 4.02% |
+| `bigamp` | `matrix_bigamp_target_16gb` | 15.982 | 15.399 | 16.805 | 3.78% |
+| `agd` | `matrix_agd_target_10gb` | 13.075 | 13.051 | 15.283 | 0.18% |
+| `agd` | `matrix_agd_target_16gb` | 15.998 | 16.004 | 18.703 | 0.03% |
+| `bigamp_spreading` | `spreading_bigamp_target_10gb` | 10.003 | 10.067 | 12.723 | 0.64% |
+| `bigamp_spreading` | `spreading_bigamp_target_16gb` | 15.996 | 16.124 | 20.400 | 0.79% |
+| `bigamp_tensor` | `tensor_serial_target_6gb` | 6.001 | 5.984 | 6.414 | 0.29% |
+| `bigamp_tensor` | `tensor_serial_target_10gb` | 10.006 | 10.183 | 10.395 | 1.74% |
+| `bigamp_tensor_parallel` | `tensor_parallel_target_6gb` | 6.005 | 6.002 | 6.432 | 0.06% |
+| `bigamp_tensor_parallel` | `tensor_parallel_target_10gb` | 9.993 | 9.988 | 10.574 | 0.05% |
 
 结论：
 
-- dense `bigamp` 公式在 10-16GB 级别基本可信，保守系数约 1.06。
-- `bigamp_spreading` 当前公式偏保守，仍保持 factor=1，不让 planner 变激进。
-- `bigamp_tensor_parallel` 的 internal probe 路径显著超出公式估计，必须使用实测 factor；原 `tensor_parallel_target_10gb` 在未校准时实际冲到 18.55GB 并失败，校准后同一 profile 会被运行前保护拒绝。
-- `agd` 公式严重低估，10GB raw 实际接近 25GB allocated / 29GB device delta，后续 AGD batch 必须用实测 factor。
+- dense `bigamp`、spreading、serial tensor 的 stage 公式在 GB profile 上已经进入 10% 以内。
+- `agd` 存在 CUDA/autocast workspace 档位跳变；`matrix_agd_target_10gb` 的 solver 最终落在 13GB 级 profile，这是为了避开/进入实际 workspace bin 后获得可复现校准点。
+- `bigamp_tensor_parallel` 存在 TensorSuperGraph/probe workspace 档位；当前公式用 N-dependent workspace term 对齐 6GB 和 10GB profile。后续如果修改 internal batching，必须重新跑这两条 profile。
 
 ### 当前真实支持的 batching 维度
 

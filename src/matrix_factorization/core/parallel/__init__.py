@@ -39,7 +39,13 @@ from .execution_modes import (
     AllocationPresets,
     ExecutionPlan,
 )
-from .resource_execution import WorkItem, ResourceBatch, ResourceExecutionPlan
+from .resource_execution import (
+    WorkItem,
+    ResourceBatch,
+    ResourceExecutionPlan,
+    ResourceGroup,
+    build_scan_resource_execution_plan,
+)
 
 # Delay imports to avoid circular dependencies
 def get_memory_estimator():
@@ -70,6 +76,8 @@ __all__ = [
     'WorkItem',
     'ResourceBatch',
     'ResourceExecutionPlan',
+    'ResourceGroup',
+    'build_scan_resource_execution_plan',
     # Lazy loaders
     'get_memory_estimator',
     'get_parallel_coordinator',

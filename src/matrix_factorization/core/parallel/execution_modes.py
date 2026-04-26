@@ -48,6 +48,7 @@ class EstimationParams:
     tensor_order: int = 2
     tensor_dims: Optional[Tuple[int, ...]] = None
     seed_partition_policy: str = "legacy"
+    chunk_size: Optional[int] = None
     
     @property
     def alpha_max(self) -> float:
@@ -86,6 +87,7 @@ class EstimationParams:
             "tensor_order": int(self.tensor_order),
             "tensor_dims": [int(dim) for dim in self.tensor_dims] if self.tensor_dims else None,
             "seed_partition_policy": self.seed_partition_policy,
+            "chunk_size": int(self.chunk_size) if self.chunk_size is not None else None,
         }
 
     @classmethod
@@ -107,6 +109,10 @@ class EstimationParams:
             tensor_order=int(payload.get("tensor_order", 2)),
             tensor_dims=tuple(int(dim) for dim in tensor_dims) if tensor_dims else None,
             seed_partition_policy=str(payload.get("seed_partition_policy", "legacy")),
+            chunk_size=(
+                int(payload["chunk_size"])
+                if payload.get("chunk_size") is not None else None
+            ),
         )
 
 
@@ -120,6 +126,9 @@ class MemoryEstimate:
     raw_peak_allocated_gb: float = 0.0
     device_peak_gb: float = 0.0
     dominant_stage: str = ""
+    stage_breakdown: Dict[str, float] = field(default_factory=dict)
+    persistent_tensors: Dict[str, float] = field(default_factory=dict)
+    transient_peak_tensors: Dict[str, float] = field(default_factory=dict)
     calibration_source: str = "theory_unchecked"
     
     def __repr__(self) -> str:
@@ -139,6 +148,12 @@ class BatchConfig:
     work_items: List[Any] = field(default_factory=list)
     batch_axes: List[str] = field(default_factory=list)
     calibration_source: str = "theory_unchecked"
+    raw_peak_allocated_gb: float = 0.0
+    device_peak_gb: float = 0.0
+    dominant_stage: str = ""
+    confidence: float = 0.0
+    persistent_tensors: Dict[str, float] = field(default_factory=dict)
+    transient_peak_tensors: Dict[str, float] = field(default_factory=dict)
     
     @property
     def num_samples(self) -> int:

@@ -29,6 +29,7 @@ def test_memory_calibration_profiles_build_small_configs():
         "matrix_bigamp_target_16gb",
         "matrix_agd_target_16gb",
         "spreading_bigamp_target_16gb",
+        "tensor_serial_target_10gb",
         "tensor_parallel_target_10gb",
     } <= set(profiles)
     tensor_config = build_calibration_config(profiles["tensor_parallel_small"])
@@ -54,6 +55,22 @@ def test_memory_calibration_cli_list_and_explain():
     assert "theoretical_tensor_estimate_gb" in explained.stdout
     assert "estimated_total_with_runtime_gb" in explained.stdout
     assert "output_root: runs/calibration/memory/matrix_bigamp_target_10gb" in explained.stdout
+
+
+def test_memory_calibration_cli_tune_refuses_over_hard_stop():
+    tuned = _run_cli(
+        "calibrate",
+        "memory",
+        "tune",
+        "bigamp",
+        "--target-allocated-gb",
+        "1000",
+        "--max-device-gb",
+        "1",
+    )
+
+    assert tuned.returncode == 2
+    assert "aborted_by_memory_guard" in tuned.stdout
 
 
 def test_memory_estimator_applies_local_calibration_coefficients(tmp_path, monkeypatch):
