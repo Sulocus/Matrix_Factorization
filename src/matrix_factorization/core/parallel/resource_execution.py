@@ -400,6 +400,10 @@ def build_resource_execution_plan(
         seed_partition_policy=seed_partition_policy,
         sample_range_honored=sample_range_honored,
         metadata_only=metadata_only,
+        max_estimated_allocated_gb=max((b.raw_peak_allocated_gb for b in batches), default=0.0),
+        max_estimated_device_gb=max((b.device_peak_gb for b in batches), default=0.0),
+        dominant_stages=_dominant_stage_counts(batches),
+        calibration_sources=sorted({b.calibration_source for b in batches if b.calibration_source}),
         notes=(
             "WorkItem-level execution metadata. Current alpha runner consumes "
             "work_items for batch alpha selection; multi-axis legacy handlers "
@@ -457,6 +461,10 @@ def _grouped_alpha_resource_plan(
         seed_partition_policy=seed_partition_policy,
         sample_range_honored=sample_range_honored,
         metadata_only=True if scan_plan.scan_kind in {"nested", "hysteresis"} else metadata_only,
+        max_estimated_allocated_gb=max((b.raw_peak_allocated_gb for b in batches), default=0.0),
+        max_estimated_device_gb=max((b.device_peak_gb for b in batches), default=0.0),
+        dominant_stages=_dominant_stage_counts(batches),
+        calibration_sources=sorted({b.calibration_source for b in batches if b.calibration_source}),
         notes=(
             "Grouped scan resource plan. Alpha folding is allowed only inside "
             "one output_group_id; matrix-size and initialization axes are never "
@@ -498,6 +506,10 @@ def _single_point_resource_plan(
         seed_partition_policy=seed_partition_policy,
         sample_range_honored=sample_range_honored,
         metadata_only=metadata_only,
+        max_estimated_allocated_gb=max((b.raw_peak_allocated_gb for b in batches), default=0.0),
+        max_estimated_device_gb=max((b.device_peak_gb for b in batches), default=0.0),
+        dominant_stages=_dominant_stage_counts(batches),
+        calibration_sources=sorted({b.calibration_source for b in batches if b.calibration_source}),
         notes="Non-alpha scan resource plan; each scan point is isolated.",
     )
 

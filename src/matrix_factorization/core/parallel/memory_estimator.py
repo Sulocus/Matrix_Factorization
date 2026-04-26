@@ -1007,45 +1007,67 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
         + _tensor_gb((S, C_max), DType.INT64)  # topk indices
     )
 
-    # Explicit live-tensor model for bigamp_step_disjoint_union_flat():
-    # - four advanced-index gather copies are retained until the function exits
-    # - W update contribution tensors remain live while X update starts
-    # - elementwise chains create full edge-shaped temporaries
-    # - scatter_add_ may materialize the expanded int64 index view internally
+    # Explicit live-tensor model for bigamp_step_disjoint_union_flat().
+    #
+    # The compiled and eager paths have different live-buffer behavior.  With
+    # torch.compile=True, Inductor fuses/reuses the elementwise chains feeding
+    # reductions and scatter_add_; the unavoidable peak is dominated by the
+    # four advanced-index gather copies.  In eager mode those chains can
+    # materialize more edge-shaped temporaries, so keep the larger model there.
     gather_selected_gb = _tensor_gb((B, SC, M), storage_dtype, count=4)
-    forward_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
-    variance_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=4)
-    retained_w_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
-    current_x_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
-    elementwise_chain_scratch_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
-    scatter_index_workspace_gb = _tensor_gb((B, SC, M), DType.INT64)
     scalar_edge_workspace_gb = edge_scalar_gb * 8
 
-    forward_peak_gb = (
-        persistent_gb
-        + gather_selected_gb
-        + f_compute_gb
-        + forward_expression_gb
-        + scalar_edge_workspace_gb
-    )
-    variance_peak_gb = (
-        persistent_gb
-        + gather_selected_gb
-        + f_compute_gb
-        + variance_expression_gb
-        + scalar_edge_workspace_gb
-    )
-    scatter_x_peak_gb = (
-        persistent_gb
-        + gather_selected_gb
-        + f_compute_gb
-        + retained_w_contrib_gb
-        + current_x_contrib_gb
-        + elementwise_chain_scratch_gb
-        + scatter_index_workspace_gb
-        + scalar_edge_workspace_gb
-        + state_update_gb
-    )
+    if params.use_compile:
+        compiled_scalar_workspace_gb = edge_scalar_gb * 8
+        compiled_fused_source_gb = _tensor_gb((B, SC, M), storage_dtype)
+        compiled_scatter_peak_gb = (
+            persistent_gb
+            + _tensor_gb((B, SC, M), storage_dtype, count=2)  # selected factors used by the source expression
+            + compiled_fused_source_gb
+            + scatter_state_gb
+            + compiled_scalar_workspace_gb
+        )
+        forward_peak_gb = (
+            persistent_gb
+            + gather_selected_gb
+            + f_compute_gb
+            + compiled_scalar_workspace_gb
+        )
+        variance_peak_gb = forward_peak_gb
+        scatter_x_peak_gb = max(forward_peak_gb, compiled_scatter_peak_gb)
+    else:
+        forward_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+        variance_expression_gb = _tensor_gb((B, SC, M), storage_dtype, count=4)
+        retained_w_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+        current_x_contrib_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+        elementwise_chain_scratch_gb = _tensor_gb((B, SC, M), storage_dtype, count=2)
+        scatter_index_workspace_gb = _tensor_gb((B, SC, M), DType.INT64)
+
+        forward_peak_gb = (
+            persistent_gb
+            + gather_selected_gb
+            + f_compute_gb
+            + forward_expression_gb
+            + scalar_edge_workspace_gb
+        )
+        variance_peak_gb = (
+            persistent_gb
+            + gather_selected_gb
+            + f_compute_gb
+            + variance_expression_gb
+            + scalar_edge_workspace_gb
+        )
+        scatter_x_peak_gb = (
+            persistent_gb
+            + gather_selected_gb
+            + f_compute_gb
+            + retained_w_contrib_gb
+            + current_x_contrib_gb
+            + elementwise_chain_scratch_gb
+            + scatter_index_workspace_gb
+            + scalar_edge_workspace_gb
+            + state_update_gb
+        )
 
     stages = {
         "spreading_persistent_state": persistent_gb,
