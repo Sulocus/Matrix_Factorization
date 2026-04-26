@@ -249,10 +249,11 @@ YAML
 
 优先级建议：
 
-1. 完成 Phase 6 文档收口后，如果还要继续同一方向，下一步最自然是扩展 runtime hooks 到 dense BigAMP/spreading/tensor。
-2. 如果目标转向物理，优先做 tensor serial/parallel parity review，不要直接合并。
-3. 如果目标转向性能，优先做 sample/student folding 的真实 execution contract，而不是只改 estimator。
-4. 如果目标转向研究产出体验，继续做 ResultCube browser / query CLI / compare-runs 工具。
+1. 如果想继续偏工程、低物理风险，优先做 matrix algorithms 原生 `AlgorithmResult`，把 `agd/bigamp/bigamp_spreading` 从 legacy adapter 迁移到 native result path。
+2. 如果想继续 runtime extension，可扩展 step-level state view 到 dense BigAMP/spreading/tensor。
+3. 如果目标转向物理，优先做 tensor serial/parallel parity review，不要直接合并。
+4. 如果目标转向性能，优先做 sample/student folding 的真实 execution contract，而不是只改 estimator。
+5. 如果目标转向研究产出体验，继续做 ResultCube browser / query CLI / compare-runs 工具。
 
 具体 backlog：
 
@@ -271,6 +272,12 @@ YAML
 - tensor serial/parallel parity 和可能合并。
 - real intervention：adaptive restart migration、Metropolis-like kick。
 - trial promotion CLI。
+
+推荐给下一轮 agent 的工程分支 prompt 已写在：
+
+- `docs/next_agent_prompt_algorithm_result.md`
+
+这个 prompt 的任务是：把 active matrix algorithms 迁移到原生 `AlgorithmResult`，不改变训练公式、不改变 metric 定义、不动 tensor parity。
 
 ## 4. 不应提交的东西
 
