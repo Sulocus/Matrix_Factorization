@@ -665,6 +665,9 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
                 return getattr(obj, key), f"{attr_name}.{key}", _derived_parameter_effect(plan, path)
 
     if path.startswith("output."):
+        nested_value = _get_raw_path({"output": plan.output_options}, path)
+        if nested_value is not None:
+            return nested_value, f"output_options.{path.split('.', 1)[1]}", None
         key = path.split(".", 1)[1]
         if key in plan.output_options:
             return plan.output_options.get(key), f"output_options.{key}", None
@@ -974,6 +977,14 @@ def _effective_parameter_summary(
         "output.heatmap_metric": output_options.get("heatmap_metric"),
         "output.storage_mode": output_options.get("storage_mode"),
         "output.custom_plots": bool(output_options.get("plots")),
+        "output.group_results.enabled": (output_options.get("group_results") or {}).get("enabled", "auto")
+            if isinstance(output_options.get("group_results"), dict) else "auto",
+        "output.group_results.save_tensors": (output_options.get("group_results") or {}).get("save_tensors", False)
+            if isinstance(output_options.get("group_results"), dict) else False,
+        "output.group_results.enable_heatmap": (output_options.get("group_results") or {}).get("enable_heatmap", False)
+            if isinstance(output_options.get("group_results"), dict) else False,
+        "output.group_results.write_plots": (output_options.get("group_results") or {}).get("write_plots", True)
+            if isinstance(output_options.get("group_results"), dict) else True,
         "probes.count": len(_as_list(raw_config.get("probes"))),
         "analyzers.count": len(_as_list(raw_config.get("analyzers"))),
     }

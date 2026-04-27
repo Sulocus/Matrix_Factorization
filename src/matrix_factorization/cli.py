@@ -148,6 +148,7 @@ def load_yaml_config(yaml_path: Path):
         'enable_heatmap': output_cfg.get('enable_heatmap', True),  # Heatmap + GIF 开关
         'heatmap_metric': output_cfg.get('heatmap_metric', 'Q_Y'),
         'plots': output_cfg.get('plots', []),  # 新格式: [{curves: [A.y, B.w]}, ...]
+        'group_results': output_cfg.get('group_results', {}),
     }
 
     runtime_scan = _runtime_scan_from_canonical_scan(scan_spec, algo_params)
@@ -304,6 +305,7 @@ def handle_resume(output_dir=None):
             'enable_heatmap': output_cfg.get('enable_heatmap', True),
             'heatmap_metric': output_cfg.get('heatmap_metric', 'Q_Y'),
             'plots': output_cfg.get('plots', []),
+            'group_results': output_cfg.get('group_results', {}),
         }
         print("   配置来源: 原始 YAML (完整)")
     else:

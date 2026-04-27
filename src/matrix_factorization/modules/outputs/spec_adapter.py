@@ -68,6 +68,10 @@ class OutputSpecAdapter:
         metric_semantics = output_plan.get("metric_semantics") or {}
         plot_semantics = output_plan.get("plot_semantics") or {}
         artifact_semantics = output_plan.get("artifact_semantics") or {}
+        if output_options.get("_auto_disabled_unavailable_heatmap") is True:
+            heatmap_specs = {"fallback_W_heatmap", "tensor_heatmap", "tensor_gif"}
+            requested_specs = [spec for spec in requested_specs if spec not in heatmap_specs]
+            required_artifacts -= {"matrix_factors", "overlap_matrix", "overlap_matrix|matrix_factors"}
 
         # Fallback for direct ExperimentResult.save() calls without preflight
         # metadata. This preserves legacy behavior while enforcing the same

@@ -137,6 +137,10 @@ def test_canonical_scan_writes_partial_snapshot_after_batch(tmp_path):
     assert payload["total"] == 2
     assert set(payload["result_cube"]["points"]) == set(result.result_cube.points)
     assert (run_dir / "metrics.partial.json").exists()
+    group_dirs = sorted((run_dir / "groups").glob("*"))
+    assert len(group_dirs) == 1
+    assert (group_dirs[0] / "GROUP.md").exists()
+    assert (group_dirs[0] / "metrics.json").exists()
 
 
 def test_size_axis_runs_as_isolated_groups():

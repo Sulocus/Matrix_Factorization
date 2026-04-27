@@ -585,6 +585,18 @@ class ExperimentResult:
             "artifacts": artifacts,
         }
 
+    def _should_disable_unavailable_heatmap(self, output_options: Dict[str, Any]) -> bool:
+        if not output_options.get("enable_heatmap", True):
+            return False
+        has_overlap_matrix = any(
+            isinstance(result.metrics, dict) and "overlap_matrix" in result.metrics
+            for result in self.results.values()
+        )
+        has_matrix_factors = any(result.W_students is not None for result in self.results.values())
+        if has_overlap_matrix or has_matrix_factors:
+            return False
+        return not self.result_cube.is_empty() and not self.result_cube.is_alpha_only()
+
     @classmethod
     def _write_json(cls, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -611,9 +623,23 @@ class ExperimentResult:
         - results.pt: Single unified tensor file (all alphas combined)
         - plots/: Evolution plots and heatmaps
         """
+        import copy
         import matplotlib.pyplot as plt
 
         path = Path(path)
+        output_options = copy.deepcopy(output_options or {})
+        output_warnings: List[str] = []
+        if self._should_disable_unavailable_heatmap(output_options):
+            output_options["enable_heatmap"] = False
+            output_options["_auto_disabled_unavailable_heatmap"] = True
+            output_warnings.append(
+                "enable_heatmap was disabled for this lightweight canonical "
+                "ResultCube because matrix_factors/overlap_matrix artifacts "
+                "are not available. Use output.group_results.enable_heatmap "
+                "or save_tensors/full storage when factor heatmaps are needed."
+            )
+        if output_warnings:
+            self.metadata.contract.setdefault("output_warnings", []).extend(output_warnings)
         path.mkdir(parents=True, exist_ok=True)
         plots_dir = path / 'plots'
         artifacts_dir = path / 'artifacts'
@@ -813,24 +839,40 @@ class ExperimentResult:
         if has_plot_queries:
             self._plot_result_cube_queries(output_options.get("plots") or [], plots_dir)
         elif output_options and output_options.get('plots'):
-            from matrix_factorization.modules.outputs.plotting import plot_custom_curves
+            if not self.result_cube.is_empty() and not self.result_cube.is_alpha_only():
+                with open(path / "events.jsonl", "a") as f:
+                    f.write(json.dumps({
+                        "type": "legacy_curve_plots_skipped",
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": (
+                            "legacy curves plots require alpha-only results; "
+                            "use PlotQuery with x/y/where/series_by/compare "
+                            "for final multi-axis canonical scan plots"
+                        ),
+                    }) + "\n")
+                self.metadata.contract.setdefault("output_warnings", []).append(
+                    "Legacy output.plots curves were skipped for final multi-axis "
+                    "ResultCube. Use PlotQuery for cross-scan comparison plots."
+                )
+            else:
+                from matrix_factorization.modules.outputs.plotting import plot_custom_curves
 
-            # 构建 results 数据格式供 plot_custom_curves 使用
-            plot_results = {
-                float(v): r.metrics for v, r in self.results.items()
-            }
+                # 构建 results 数据格式供 plot_custom_curves 使用
+                plot_results = {
+                    float(v): r.metrics for v, r in self.results.items()
+                }
 
-            for i, plot_config in enumerate(output_options['plots']):
-                curves = plot_config.get('curves', [])
-                if curves:
-                    output_file = plots_dir / f'custom_plot_{i+1}.png'
-                    plot_custom_curves(
-                        plot_results,
-                        curves,
-                        output_file,
-                        title=f"{self.experiment_id} - Plot {i+1}",
-                    )
-                    print(f"Generated: {output_file}")
+                for i, plot_config in enumerate(output_options['plots']):
+                    curves = plot_config.get('curves', [])
+                    if curves:
+                        output_file = plots_dir / f'custom_plot_{i+1}.png'
+                        plot_custom_curves(
+                            plot_results,
+                            curves,
+                            output_file,
+                            title=f"{self.experiment_id} - Plot {i+1}",
+                        )
+                        print(f"Generated: {output_file}")
 
         # ===== Heatmap 和 GIF (由 enable_heatmap 控制) =====
         enable_heatmap = True  # 默认开启

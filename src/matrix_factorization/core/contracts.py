@@ -394,6 +394,10 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("output.heatmap_metric", "str", "Q_Y", "output", ["heatmap"], False),
         ParameterSpec("output.uniform_colormap", "bool", False, "output", ["heatmap"], False),
         ParameterSpec("output.plots", "list", [], "output", ["custom_curves"], False),
+        ParameterSpec("output.group_results.enabled", "bool|str", "auto", "output", ["canonical_group_results"], False),
+        ParameterSpec("output.group_results.save_tensors", "bool", False, "output", ["canonical_group_results"], False),
+        ParameterSpec("output.group_results.enable_heatmap", "bool", False, "output", ["canonical_group_results"], False),
+        ParameterSpec("output.group_results.write_plots", "bool", True, "output", ["canonical_group_results"], False),
         ParameterSpec("probes", "list", [], "probe", ["ProbeSpec"], False),
         ParameterSpec("analyzers", "list", [], "analyzer", ["AnalyzerSpec"], False),
     ]

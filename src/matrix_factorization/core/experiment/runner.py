@@ -378,6 +378,15 @@ class ExperimentRunner:
         teacher_shape_mismatch = False
         retain_canonical_tensors = self._canonical_scan_should_retain_tensors(output_options)
         partial_output_path = self._canonical_partial_output_path(output_options)
+        saved_group_ids: set[str] = set()
+        if partial_output_path is not None:
+            self._write_canonical_scan_readme(
+                partial_output_path,
+                config=config,
+                scan_plan=scan_plan,
+                resource_plan=resource_plan,
+                output_options=output_options,
+            )
 
         for resource_batch in resource_plan.batches:
             batch_points = [points_by_id[item.scan_point_id] for item in resource_batch.work_items]
@@ -449,6 +458,23 @@ class ExperimentRunner:
                             metric_contract=child_single.metric_contract,
                         )
             if partial_output_path is not None:
+                completed_group_ids = self._completed_canonical_group_ids(
+                    aggregate,
+                    resource_plan,
+                )
+                for group_idx, group in enumerate(getattr(resource_plan, "groups", []) or []):
+                    group_id = str(getattr(group, "group_id", ""))
+                    if group_id in saved_group_ids or group_id not in completed_group_ids:
+                        continue
+                    self._save_canonical_group_result(
+                        partial_output_path,
+                        aggregate=aggregate,
+                        group=group,
+                        group_index=group_idx,
+                        scan_plan=scan_plan,
+                        output_options=output_options,
+                    )
+                    saved_group_ids.add(group_id)
                 aggregate.save_partial_snapshot(
                     partial_output_path,
                     output_options=output_options,
@@ -457,10 +483,7 @@ class ExperimentRunner:
                         "last_group_id": resource_batch.group_id,
                         "completed_batches": resource_batch.batch_index + 1,
                         "total_batches": resource_plan.num_batches,
-                        "completed_group_ids": self._completed_canonical_group_ids(
-                            aggregate,
-                            resource_plan,
-                        ),
+                        "completed_group_ids": completed_group_ids,
                     },
                 )
             if child_checkpoint_path and child_checkpoint_path.exists():
@@ -938,6 +961,293 @@ class ExperimentRunner:
             if point_ids and point_ids <= completed_points:
                 completed_groups.append(str(getattr(group, "group_id", "")))
         return completed_groups
+
+    def _write_canonical_scan_readme(
+        self,
+        output_path: Path,
+        *,
+        config: ExperimentConfig,
+        scan_plan: Any,
+        resource_plan: Any,
+        output_options: Optional[Dict[str, Any]],
+    ) -> None:
+        output_path.mkdir(parents=True, exist_ok=True)
+        axes = []
+        for axis in getattr(scan_plan, "axes", []) or []:
+            values = list(getattr(axis, "values", []) or [])
+            preview = ", ".join(str(value) for value in values[:8])
+            if len(values) > 8:
+                preview += ", ..."
+            axes.append(f"- `{axis.key}` -> `{getattr(axis, 'path', None)}`: {len(values)} values [{preview}]")
+        group_cfg = self._canonical_group_results_config(output_options)
+        lines = [
+            "# Canonical Scan Run",
+            "",
+            "这个目录是一次多轴 scan 的总目录。完整最终结果在 run 结束后写入根目录；运行中可查看 `partial/` 和 `groups/`。",
+            "",
+            "## Summary",
+            "",
+            f"- algorithm: `{getattr(config, 'algorithm_key', '<unknown>')}`",
+            f"- matrix: `{config.N1}x{config.N2}, M={config.M}`",
+            f"- samples_per_alpha: `{config.S}`",
+            f"- max configured steps: `{config.training.max_steps}`",
+            f"- scan points: `{getattr(scan_plan, 'num_points', 0)}`",
+            f"- groups: `{len(getattr(resource_plan, 'groups', []) or [])}`",
+            f"- resource batches: `{getattr(resource_plan, 'num_batches', 0)}`",
+            "",
+            "## Axes",
+            "",
+            *(axes or ["- <none>"]),
+            "",
+            "## Output Layout",
+            "",
+            "- `partial/metrics_partial.json`: 运行中持续覆盖写入的轻量 partial ResultCube。",
+            "- `metrics.partial.json`: 同一份 partial metrics 的根目录快捷文件。",
+            "- `groups/<idx>_<group>/`: 当某个外层组能独立形成完整曲线时，组完成后立即生成的子结果。",
+            "- `metrics.json`: 整个 scan 全部结束后的正式完整结果。",
+            "",
+            "## Group Results Policy",
+            "",
+            f"- enabled: `{group_cfg.get('enabled')}`",
+            f"- save_tensors: `{group_cfg.get('save_tensors')}`",
+            f"- enable_heatmap: `{group_cfg.get('enable_heatmap')}`",
+            f"- write_plots: `{group_cfg.get('write_plots')}`",
+            "",
+            "如果某个图需要跨组比较，例如把不同 damping 画在同一张图上，这类图只会在最终完整 ResultCube 可用后生成。",
+        ]
+        (output_path / "SCAN.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _save_canonical_group_result(
+        self,
+        output_path: Path,
+        *,
+        aggregate: ExperimentResult,
+        group: Any,
+        group_index: int,
+        scan_plan: Any,
+        output_options: Optional[Dict[str, Any]],
+    ) -> None:
+        if not self._should_save_canonical_group_result(output_options, group):
+            return
+        import copy
+
+        point_ids = [str(point_id) for point_id in getattr(group, "point_ids", []) or []]
+        if not point_ids or any(point_id not in aggregate.result_cube.points for point_id in point_ids):
+            return
+        if any(point_id not in aggregate.results for point_id in point_ids):
+            return
+
+        scan_points_by_id = {point.point_id: point for point in getattr(scan_plan, "points", []) or []}
+        group_scan_points = [
+            scan_points_by_id[point_id]
+            for point_id in point_ids
+            if point_id in scan_points_by_id
+        ]
+        if not group_scan_points:
+            return
+
+        group_id = str(getattr(group, "group_id", f"group_{group_index}"))
+        group_dir = (
+            output_path
+            / "groups"
+            / f"{group_index:03d}_{self._slugify_for_path(group_id)}"
+        )
+        group_config = self._effective_config_for_scan_group(aggregate.config, group_scan_points)
+        group_result = ExperimentResult(
+            experiment_id=group_config.experiment_name,
+            config=group_config,
+            scan_dimension="alpha",
+            scan_values=[
+                float(point.alpha)
+                for point in sorted(group_scan_points, key=lambda item: float(item.alpha or 0.0))
+                if point.alpha is not None
+            ],
+            metadata=ExperimentMetadata.create_now(),
+        )
+        group_result.metadata.contract = copy.deepcopy(aggregate.metadata.contract)
+        group_result.metadata.contract["canonical_group"] = {
+            "group_id": group_id,
+            "group_index": group_index,
+            "coordinates": dict(getattr(group, "coordinates", {}) or {}),
+            "point_ids": point_ids,
+        }
+        group_result.result_cube.axes = copy.deepcopy(aggregate.result_cube.axes)
+        group_result.result_cube.metric_semantics = copy.deepcopy(aggregate.result_cube.metric_semantics)
+
+        for point in sorted(group_scan_points, key=lambda item: float(item.alpha or 0.0)):
+            source_single = aggregate.results[point.point_id]
+            alpha_value = float(point.alpha) if point.alpha is not None else point.point_id
+            group_single = SingleRunResult(
+                scan_value=alpha_value,
+                metrics=dict(source_single.metrics or {}),
+                W_students=None,
+                X_students=None,
+                mask=None,
+                observation_indices=None,
+                history=copy.deepcopy(source_single.history),
+                metric_contract=copy.deepcopy(source_single.metric_contract),
+                duration_seconds=source_single.duration_seconds,
+            )
+            group_result.add_result(alpha_value, group_single)
+            group_result.result_cube.add_point(
+                point.point_id,
+                point.coordinates,
+                source_single.metrics,
+                overrides=point.overrides,
+                effective_config_hash=point.effective_config_hash,
+                group_id=point.group_id,
+                metric_contract=source_single.metric_contract,
+            )
+
+        group_output_options = self._canonical_group_output_options(output_options, group)
+        group_result.save(
+            group_dir,
+            save_tensors=bool(group_output_options.get("save_tensors", False)),
+            rsb_ordering=bool(group_output_options.get("rsb_ordering", False)),
+            uniform_colormap=bool(group_output_options.get("uniform_colormap", False)),
+            output_options=group_output_options,
+        )
+        self._write_canonical_group_readme(
+            group_dir,
+            group_id=group_id,
+            group_index=group_index,
+            coordinates=dict(getattr(group, "coordinates", {}) or {}),
+            result=group_result,
+        )
+
+    @staticmethod
+    def _canonical_group_results_config(output_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        raw = (output_options or {}).get("group_results", {})
+        raw = raw if isinstance(raw, dict) else {}
+        return {
+            "enabled": raw.get("enabled", "auto"),
+            "save_tensors": bool(raw.get("save_tensors", False)),
+            "enable_heatmap": bool(raw.get("enable_heatmap", False)),
+            "write_plots": bool(raw.get("write_plots", True)),
+        }
+
+    def _should_save_canonical_group_result(
+        self,
+        output_options: Optional[Dict[str, Any]],
+        group: Any,
+    ) -> bool:
+        cfg = self._canonical_group_results_config(output_options)
+        enabled = cfg.get("enabled", "auto")
+        if enabled in {False, "false", "False", "off", "never", "none"}:
+            return False
+        if enabled in {True, "true", "True", "always"}:
+            return True
+        point_ids = list(getattr(group, "point_ids", []) or [])
+        coordinates = dict(getattr(group, "coordinates", {}) or {})
+        return bool(point_ids) and "alpha" not in coordinates
+
+    def _canonical_group_output_options(
+        self,
+        output_options: Optional[Dict[str, Any]],
+        group: Any,
+    ) -> Dict[str, Any]:
+        import copy
+
+        opts = copy.deepcopy(output_options or {})
+        cfg = self._canonical_group_results_config(output_options)
+        opts["save_tensors"] = bool(cfg.get("save_tensors", False))
+        opts["enable_heatmap"] = bool(cfg.get("enable_heatmap", False))
+        if cfg.get("write_plots", True):
+            opts["plots"] = self._group_independent_plot_configs(
+                opts.get("plots", []),
+                dict(getattr(group, "coordinates", {}) or {}),
+            )
+        else:
+            opts["plots"] = []
+        opts["group_results"] = cfg
+        return opts
+
+    @staticmethod
+    def _group_independent_plot_configs(
+        plots: Any,
+        group_coordinates: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        independent: List[Dict[str, Any]] = []
+        for plot in plots or []:
+            if not isinstance(plot, dict):
+                continue
+            if "curves" in plot:
+                independent.append(dict(plot))
+                continue
+            if plot.get("x") != "alpha" or "y" not in plot:
+                continue
+            where = dict(plot.get("where") or {})
+            if any(group_coordinates.get(axis) != value for axis, value in where.items() if axis != "alpha"):
+                continue
+            compare = plot.get("compare") or []
+            if compare:
+                keep = True
+                for item in compare:
+                    if not isinstance(item, dict):
+                        keep = False
+                        break
+                    for axis, value in item.items():
+                        if axis != "alpha" and group_coordinates.get(axis) != value:
+                            keep = False
+                            break
+                    if not keep:
+                        break
+                if not keep:
+                    continue
+            independent.append(dict(plot))
+        return independent
+
+    @staticmethod
+    def _write_canonical_group_readme(
+        group_dir: Path,
+        *,
+        group_id: str,
+        group_index: int,
+        coordinates: Dict[str, Any],
+        result: ExperimentResult,
+    ) -> None:
+        metric_lines = []
+        for metric_key in ["Q_Y_mean", "Q_Y_observed_mean", "Q_Y_unobserved_mean", "Q_W_GRAM_ROOT_mean", "Q_X_GRAM_ROOT_mean"]:
+            values = [
+                (scan_value, single.metrics.get(metric_key))
+                for scan_value, single in result.results.items()
+                if metric_key in single.metrics
+            ]
+            if not values:
+                continue
+            best_alpha, best_value = max(values, key=lambda item: float(item[1]))
+            metric_lines.append(f"- `{metric_key}` max `{float(best_value):.6g}` at alpha `{best_alpha}`")
+        lines = [
+            f"# Scan Group {group_index:03d}",
+            "",
+            f"- group_id: `{group_id}`",
+            f"- points: `{result.num_completed}`",
+            "",
+            "## Coordinates",
+            "",
+            *[f"- `{key}`: `{value}`" for key, value in coordinates.items()],
+            "",
+            "## Quick Metrics",
+            "",
+            *(metric_lines or ["- <no scalar metric summary available>"]),
+            "",
+            "## Files",
+            "",
+            "- `metrics.json`: 这个外层组的完整 alpha 曲线数据。",
+            "- `plots/`: 这个外层组能独立生成的曲线图。",
+        ]
+        (group_dir / "GROUP.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _slugify_for_path(value: Any) -> str:
+        token = str(value).strip().replace("|", "_").replace("=", "-")
+        out = []
+        for char in token:
+            if char.isalnum() or char in {"-", "_", "."}:
+                out.append(char)
+            else:
+                out.append("-")
+        return "".join(out).strip("-")[:120] or "group"
 
     def _execution_plan_from_forced_resource_batch(
         self,
