@@ -912,6 +912,83 @@ class ExperimentResult:
 
         self._write_json(path / 'manifest.json', self.to_artifact_manifest(path))
 
+    def save_partial_snapshot(
+        self,
+        path: Union[str, Path],
+        *,
+        output_options: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write a lightweight canonical-scan snapshot during a long run.
+
+        This intentionally avoids plots, heatmaps, and tensor payloads.  It is
+        a recovery/inspection surface for long local scans where the final
+        ExperimentResult is only saved after every scan point completes.
+        """
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        partial_dir = path / "partial"
+        partial_dir.mkdir(exist_ok=True)
+
+        if hasattr(self.config, "save") and not (path / "config.json").exists():
+            self.config.save(path / "config.json")
+
+        self.metadata.duration_total_seconds = sum(
+            r.duration_seconds for r in self.results.values()
+        )
+        metadata = self.metadata.to_dict()
+        metadata["partial_snapshot"] = True
+        metadata["partial_extra"] = dict(extra or {})
+        self._write_json(partial_dir / "metadata_partial.json", metadata)
+
+        payload = {
+            "schema_version": 3,
+            "partial_snapshot": True,
+            "experiment_id": self.experiment_id,
+            "status": "complete" if self.is_complete else "partial",
+            "completed": self.num_completed,
+            "total": len(self.scan_values),
+            "completion_ratio": self.completion_ratio,
+            "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
+            "contract": self.metadata.contract,
+            "factor_payload_contract": self.factor_payload_contract(),
+            "scan_dimension": self.scan_dimension,
+            "scan_values": [str(v) for v in self.scan_values],
+            "result_cube": self.result_cube.to_dict(),
+            "available_metric_keys": sorted(self._available_metric_keys()),
+            "metric_schema": self.metric_schema(),
+            "metric_semantics": self.metric_semantics(),
+            "metric_contracts": self.metric_contracts(),
+            "metrics": self.to_metrics_dict(),
+            "results": self.to_results_dict(),
+            "output_options": dict(output_options or {}),
+            "extra": dict(extra or {}),
+            "generated_at": datetime.now().isoformat(),
+        }
+        self._write_json(partial_dir / "metrics_partial.json", payload)
+        self._write_json(path / "metrics.partial.json", payload)
+
+        manifest = self.to_artifact_manifest(path)
+        manifest["status"] = "complete" if self.is_complete else "partial"
+        manifest["partial_snapshot"] = True
+        manifest["partial"] = {
+            "metrics": "partial/metrics_partial.json",
+            "metadata": "partial/metadata_partial.json",
+            "completed": self.num_completed,
+            "total": len(self.scan_values),
+            "extra": dict(extra or {}),
+        }
+        self._write_json(partial_dir / "manifest_partial.json", manifest)
+
+        with open(path / "events.jsonl", "a") as f:
+            f.write(json.dumps({
+                "type": "partial_snapshot_saved",
+                "timestamp": datetime.now().isoformat(),
+                "completed": self.num_completed,
+                "total": len(self.scan_values),
+                "extra": dict(extra or {}),
+            }, default=self._json_default) + "\n")
+
     def _plot_result_cube_queries(self, plot_queries: List[Dict[str, Any]], plots_dir: Path) -> None:
         """Render PlotQuery-style plots from ResultCube."""
         import matplotlib.pyplot as plt

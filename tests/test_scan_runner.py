@@ -1,3 +1,5 @@
+import json
+
 from matrix_factorization.core.experiment.config import (
     AlgorithmParams,
     ExperimentConfig,
@@ -106,6 +108,35 @@ def test_canonical_lightweight_aggregate_does_not_retain_factor_tensors():
     assert result.W_teacher is None
     assert all(single.W_students is None for single in result.results.values())
     assert all(single.X_students is None for single in result.results.values())
+
+
+def test_canonical_scan_writes_partial_snapshot_after_batch(tmp_path):
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+    run_dir = tmp_path / "run"
+
+    result = ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+            "checkpoint_path": str(run_dir / "checkpoints" / "latest.pt"),
+        },
+    )
+
+    partial_path = run_dir / "partial" / "metrics_partial.json"
+    assert partial_path.exists()
+    payload = json.loads(partial_path.read_text())
+    assert payload["partial_snapshot"] is True
+    assert payload["completed"] == result.num_completed == 2
+    assert payload["total"] == 2
+    assert set(payload["result_cube"]["points"]) == set(result.result_cube.points)
+    assert (run_dir / "metrics.partial.json").exists()
 
 
 def test_size_axis_runs_as_isolated_groups():

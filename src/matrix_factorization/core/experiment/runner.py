@@ -377,6 +377,7 @@ class ExperimentRunner:
         shared_teacher_shape = None
         teacher_shape_mismatch = False
         retain_canonical_tensors = self._canonical_scan_should_retain_tensors(output_options)
+        partial_output_path = self._canonical_partial_output_path(output_options)
 
         for resource_batch in resource_plan.batches:
             batch_points = [points_by_id[item.scan_point_id] for item in resource_batch.work_items]
@@ -447,6 +448,21 @@ class ExperimentRunner:
                             group_id=point.group_id,
                             metric_contract=child_single.metric_contract,
                         )
+            if partial_output_path is not None:
+                aggregate.save_partial_snapshot(
+                    partial_output_path,
+                    output_options=output_options,
+                    extra={
+                        "last_batch_index": resource_batch.batch_index,
+                        "last_group_id": resource_batch.group_id,
+                        "completed_batches": resource_batch.batch_index + 1,
+                        "total_batches": resource_plan.num_batches,
+                        "completed_group_ids": self._completed_canonical_group_ids(
+                            aggregate,
+                            resource_plan,
+                        ),
+                    },
+                )
             if child_checkpoint_path and child_checkpoint_path.exists():
                 child_checkpoint_path.unlink()
             del child_result
@@ -900,6 +916,28 @@ class ExperimentRunner:
         if tensor is None or not hasattr(tensor, "detach"):
             return tensor
         return tensor.detach().cpu()
+
+    @staticmethod
+    def _canonical_partial_output_path(output_options: Optional[Dict[str, Any]]) -> Optional[Path]:
+        if not output_options:
+            return None
+        checkpoint_path = output_options.get("checkpoint_path")
+        if checkpoint_path:
+            return Path(checkpoint_path).parent.parent
+        return None
+
+    @staticmethod
+    def _completed_canonical_group_ids(
+        aggregate: ExperimentResult,
+        resource_plan: Any,
+    ) -> List[str]:
+        completed_points = {str(key) for key in aggregate.results.keys()}
+        completed_groups: List[str] = []
+        for group in getattr(resource_plan, "groups", []) or []:
+            point_ids = {str(point_id) for point_id in getattr(group, "point_ids", [])}
+            if point_ids and point_ids <= completed_points:
+                completed_groups.append(str(getattr(group, "group_id", "")))
+        return completed_groups
 
     def _execution_plan_from_forced_resource_batch(
         self,
