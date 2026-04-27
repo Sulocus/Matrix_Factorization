@@ -57,9 +57,14 @@ teacher: 2
 
 teacher_config:
   # init_distribution:
-  #   1 | gaussian   = Gaussian teacher
-  #   2 | rademacher = ±1 teacher / Ising-like
+  #   1 | gaussian        = Gaussian teacher, N(0, 1/sqrt(M))
+  #   2 | rademacher      = ±1 teacher / Ising-like
+  #   3 | biased_gaussian = Gaussian teacher shifted by mean_scale/sqrt(M)
   init_distribution: 1
+  # mean_scale:
+  #   Only used when init_distribution=3. It is scan-able via
+  #   path: teacher_config.mean_scale.
+  mean_scale: 0.0
 
 
 # =============================================================================
@@ -249,6 +254,7 @@ seeds:
 algorithm_params:
   # damping:
   #   BiGAMP / tensor AMP damping。
+  #   语义是 BiGAMP beta-new-weight：1=完全采用新状态，0=冻结旧状态。
   #   物理敏感，改它会改变算法轨迹。
   damping: 0.2
 
@@ -265,9 +271,19 @@ algorithm_params:
   #   false = 关闭 compile，更适合先调试
   use_compile: true
 
-  # use_bf16:
-  #   true  = 尝试 BF16，省显存/加速，但要注意数值
-  #   false = FP32
+  # precision_profile:
+  #   safe       = active state / Y / variance / metric reductions 主要保持 FP32。
+  #   fast       = student state / large workspace 用 BF16；metric reductions 仍 FP32。
+  #   aggressive = 在 fast 基础上允许 large observation / Gaussian F 用 BF16 storage。
+  #
+  # precision_fallback_policy:
+  #   allow = 设备不支持 BF16 时回退 FP32。
+  #   error = 设备不支持 BF16 时直接报错，适合严格对比。
+  precision_profile: fast
+  precision_fallback_policy: allow
+
+  # Legacy alias:
+  #   use_bf16 会继续被读取，但新配置优先使用 precision_profile。
   use_bf16: true
 
   # use_tf32:
@@ -288,9 +304,9 @@ algorithm_params:
   adaptive_damping: false
   step_min: 0.05
   step_max: 0.5
-  step_incr: 1.05
+  step_incr: 1.1
   step_decr: 0.5
-  step_window: 5
+  step_window: 1
   max_bad_steps: 10
 
   adaptive_restart: false
@@ -396,6 +412,9 @@ output:
   #
   #   B.w = Q_W_GRAM_ROOT_mean
   #   B.x = Q_X_GRAM_ROOT_mean
+  #
+  #   D.w = Q_W_SIGN_ALIGNED_mean
+  #   D.x = Q_X_SIGN_ALIGNED_mean
   #
   #   C.o = Q_Y_observed_mean
   #   C.u = Q_Y_unobserved_mean

@@ -75,6 +75,68 @@ class ResourceSpec:
 
 
 @dataclass(frozen=True)
+class NormalizationSpec:
+    algorithm_key: str
+    profiles: List[str] = field(default_factory=lambda: ["paper_sparse_sampling", "internal_normalized_legacy"])
+    default_profile: str = "paper_sparse_sampling"
+    latent_scale: str = "O(1)"
+    teacher_init_variance: str = "1"
+    student_init_variance: str = "1"
+    prior_precision_base: str = "1"
+    interaction_scale: str = "inverse_sqrt_M"
+    alpha_edge_scale: str = ""
+    metric_rescale_policy: str = "none"
+    schema_version: int = 5
+    status: str = "active"
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class TensorRoleDTypeContract:
+    role: str
+    safe_storage_dtype: str
+    fast_storage_dtype: str
+    aggressive_storage_dtype: str
+    compute_dtype: str = "float32"
+    accumulator_dtype: str = "float32"
+    required_exact: bool = False
+    physical_sensitive: bool = False
+    scope: str = ""
+    notes: str = ""
+
+    def storage_dtype_for(self, profile: str) -> str:
+        if profile == "safe":
+            return self.safe_storage_dtype
+        if profile == "aggressive":
+            return self.aggressive_storage_dtype
+        return self.fast_storage_dtype
+
+
+@dataclass(frozen=True)
+class PrecisionPolicySpec:
+    algorithm_key: str
+    profiles: List[str] = field(default_factory=lambda: ["safe", "fast", "aggressive"])
+    default_profile: str = "fast"
+    role_contracts: List[TensorRoleDTypeContract] = field(default_factory=list)
+    bf16_profiles: List[str] = field(default_factory=lambda: ["fast", "aggressive"])
+    tf32_policy: str = "allowed"
+    fallback_policy: str = "allow"
+    status: str = "active"
+    notes: str = ""
+
+    def role_dtype_map(self, profile: str) -> Dict[str, Dict[str, str]]:
+        return {
+            role.role: {
+                "storage": role.storage_dtype_for(profile),
+                "compute": role.compute_dtype,
+                "accumulator": role.accumulator_dtype,
+                "scope": role.scope,
+            }
+            for role in self.role_contracts
+        }
+
+
+@dataclass(frozen=True)
 class BatchingSpec:
     algorithm_key: str
     planner_layers: List[str] = field(default_factory=list)
@@ -337,6 +399,7 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("algorithm", "int|str", 2, "algorithm", ["cli.load_yaml_config"], True),
         ParameterSpec("teacher", "int|str", 1, "teacher", ["cli.load_yaml_config"], True),
         ParameterSpec("teacher_config.init_distribution", "int|str", 1, "teacher", ["DataFactory.create"], True),
+        ParameterSpec("teacher_config.mean_scale", "float", 0.0, "teacher", ["DataFactory.create", "student_initialization"], True),
         ParameterSpec("matrix.N1", "int", 200, "model", ["MatrixParams"], True),
         ParameterSpec("matrix.N2", "int", 200, "model", ["MatrixParams"], True),
         ParameterSpec("matrix.M", "int", 50, "model", ["MatrixParams"], True),
@@ -359,8 +422,11 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("algorithm_params.learning_rate", "float", 1e-2, "algorithm", ["AGDAlgorithm"], True),
         ParameterSpec("algorithm_params.use_compile", "bool", True, "algorithm", ["bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], False),
         ParameterSpec("algorithm_params.compile_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], False),
-        ParameterSpec("algorithm_params.use_bf16", "bool", True, "algorithm", ["agd", "bigamp_spreading", "bigamp_tensor_parallel"], False),
-        ParameterSpec("algorithm_params.dtype_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["agd", "bigamp_spreading", "bigamp_tensor_parallel"], False),
+        ParameterSpec("algorithm_params.normalization_profile", "enum[paper_sparse_sampling,internal_normalized_legacy]", "paper_sparse_sampling", "algorithm", ["NormalizationSpec", "DataFactory", "algorithms"], True),
+        ParameterSpec("algorithm_params.precision_profile", "enum[safe,fast,aggressive]", "fast", "algorithm", ["PrecisionPolicySpec", "algorithms", "MemoryEstimator"], False),
+        ParameterSpec("algorithm_params.precision_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["PrecisionPolicySpec", "algorithms"], False),
+        ParameterSpec("algorithm_params.use_bf16", "bool", True, "algorithm", ["precision_profile compatibility alias"], False, "legacy"),
+        ParameterSpec("algorithm_params.dtype_fallback_policy", "enum[allow,error]", "allow", "algorithm", ["precision_fallback_policy compatibility alias"], False, "legacy"),
         ParameterSpec("algorithm_params.use_tf32", "bool", True, "algorithm", ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], False),
         ParameterSpec("algorithm_params.seed_partition_policy", "enum[legacy,partition_invariant]", "legacy", "algorithm", ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], True),
         ParameterSpec("algorithm_params.use_early_stop", "bool", False, "algorithm", ["AGDAlgorithm"], False),
@@ -369,9 +435,9 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("algorithm_params.adaptive_damping", "bool", False, "algorithm", ["BiGAMPSpreading"], True),
         ParameterSpec("algorithm_params.step_min", "float", 0.05, "algorithm", ["BiGAMPSpreading"], True),
         ParameterSpec("algorithm_params.step_max", "float", 0.5, "algorithm", ["BiGAMPSpreading"], True),
-        ParameterSpec("algorithm_params.step_incr", "float", 1.05, "algorithm", ["BiGAMPSpreading"], True),
+        ParameterSpec("algorithm_params.step_incr", "float", 1.1, "algorithm", ["BiGAMPSpreading"], True),
         ParameterSpec("algorithm_params.step_decr", "float", 0.5, "algorithm", ["BiGAMPSpreading"], True),
-        ParameterSpec("algorithm_params.step_window", "int", 5, "algorithm", ["BiGAMPSpreading"], True),
+        ParameterSpec("algorithm_params.step_window", "int", 1, "algorithm", ["BiGAMPSpreading"], True),
         ParameterSpec("algorithm_params.max_bad_steps", "int", 10, "algorithm", ["BiGAMPSpreading"], True),
         ParameterSpec("algorithm_params.adaptive_restart", "bool", False, "intervention", ["adaptive_restart"], True),
         ParameterSpec("algorithm_params.restart_patience", "int", 50, "intervention", ["adaptive_restart"], True),
@@ -522,10 +588,10 @@ def get_teacher_specs() -> Dict[str, TeacherSpec]:
         TeacherSpec(
             "standard",
             "active",
-            ["teacher_config.init_distribution", "matrix.N1", "matrix.N2", "matrix.M"],
+            ["teacher_config.init_distribution", "teacher_config.mean_scale", "matrix.N1", "matrix.N2", "matrix.M"],
             ["W_teacher", "X_teacher", "Y_teacher"],
             ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"],
-            "DataFactory scale: W/X drawn at 1/sqrt(M), Y=(1/sqrt(M))*W@X.",
+            "DataFactory scale follows algorithm_params.normalization_profile: paper_sparse_sampling gives Var(W/X)=1; internal_normalized_legacy gives Var(W/X)=1/M. Y=(1/sqrt(M))*W@X.",
         ),
         TeacherSpec(
             "orthogonal",
@@ -533,7 +599,7 @@ def get_teacher_specs() -> Dict[str, TeacherSpec]:
             ["matrix.N1", "matrix.N2", "matrix.M"],
             ["W_teacher", "X_teacher", "Y_teacher"],
             ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"],
-            "DataFactory orthogonal teacher: SVD factors scaled by sqrt(M), Y=(1/sqrt(M))*W@X.",
+            "DataFactory orthogonal teacher: SVD factors scaled to the selected normalization_profile entry variance, Y=(1/sqrt(M))*W@X.",
         ),
         TeacherSpec("orthogonal_unit", "legacy_reference", notes="Registered legacy teacher with O(1) scaling."),
         TeacherSpec("scaled_variance", "legacy_reference", notes="Registered exploratory variance-scaling teacher."),
@@ -557,14 +623,123 @@ def get_graph_specs() -> Dict[str, GraphSpec]:
 
 def get_resource_specs() -> Dict[str, ResourceSpec]:
     specs = [
-        ResourceSpec("agd", "runner.MemoryEstimator", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Matrix AGD path; no algorithm-local memory probe."),
-        ResourceSpec("bigamp", "runner.MemoryEstimator", ["cpu", "cuda"], ["float32"], "torch.compile optional", "none", "none", "Dense matrix BiG-AMP uses batched alpha tensors."),
-        ResourceSpec("bigamp_spreading", "runner.MemoryEstimator + spreading chunk_size", ["cpu", "cuda"], ["float32", "bf16 storage"], "torch.compile optional", "none", "between_batches", "Spreading path has chunked edge streaming and per-batch graph creation."),
-        ResourceSpec("bigamp_tensor", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Serial tensor/reference path; alpha/sample loops are serial."),
-        ResourceSpec("bigamp_tensor_parallel", "runner.MemoryEstimator + tensor_memory.probe_tensor_super_memory", ["cpu", "cuda"], ["float32", "bf16 storage", "tf32 matmul"], "torch.compile default optional", "A=1 tensor supergraph probe", "between_batches", "TensorSuperGraph path uses algorithm-internal probe-based alpha batching."),
+        ResourceSpec("agd", "runner.MemoryEstimator", ["cpu", "cuda"], ["precision_profile:safe/fast/aggressive"], "none", "none", "none", "Matrix AGD path; no algorithm-local memory probe."),
+        ResourceSpec("bigamp", "runner.MemoryEstimator", ["cpu", "cuda"], ["precision_profile:safe/fast/aggressive"], "torch.compile optional", "none", "none", "Dense matrix BiG-AMP uses batched alpha tensors."),
+        ResourceSpec("bigamp_spreading", "runner.MemoryEstimator + spreading chunk_size", ["cpu", "cuda"], ["precision_profile:safe/fast/aggressive"], "torch.compile optional", "none", "between_batches", "Spreading path has chunked edge streaming and per-batch graph creation."),
+        ResourceSpec("bigamp_tensor", "none", ["cpu", "cuda"], ["precision_profile:safe/fast/aggressive"], "none", "none", "none", "Serial tensor/reference path; alpha/sample loops are serial."),
+        ResourceSpec("bigamp_tensor_parallel", "runner.MemoryEstimator + tensor_memory.probe_tensor_super_memory", ["cpu", "cuda"], ["precision_profile:safe/fast/aggressive", "tf32 matmul"], "torch.compile default optional", "A=1 tensor supergraph probe", "between_batches", "TensorSuperGraph path uses algorithm-internal probe-based alpha batching."),
         ResourceSpec("agd_tensor", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Experimental tensor AGD path."),
         ResourceSpec("agd_spreading", "none", ["cpu", "cuda"], ["float32"], "none", "none", "none", "Legacy broken spreading AGD path."),
         ResourceSpec("combined", "none", [], [], "none", "none", "none", "Non-trainable helper."),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
+
+
+def _common_precision_roles(*, gaussian_f_aggressive: str = "bfloat16", y_aggressive: str = "bfloat16") -> List[TensorRoleDTypeContract]:
+    return [
+        TensorRoleDTypeContract(
+            "teacher_factors", "float32", "float32", "float32",
+            physical_sensitive=True, scope="teacher",
+            notes="Teacher generation, warm-start anchor, and norm references stay FP32.",
+        ),
+        TensorRoleDTypeContract(
+            "student_factors", "float32", "bfloat16", "bfloat16",
+            physical_sensitive=True, scope="state",
+        ),
+        TensorRoleDTypeContract(
+            "factor_variances", "float32", "bfloat16", "bfloat16",
+            physical_sensitive=True, scope="state",
+        ),
+        TensorRoleDTypeContract(
+            "observations_Y", "float32", "float32", y_aggressive,
+            physical_sensitive=True, scope="observation",
+            notes="Fast keeps observations FP32; aggressive may store large observation tensors in BF16.",
+        ),
+        TensorRoleDTypeContract(
+            "F_rademacher", "int8", "int8", "int8",
+            compute_dtype="bfloat16", accumulator_dtype="float32",
+            required_exact=True, scope="random",
+        ),
+        TensorRoleDTypeContract(
+            "F_gaussian", "float32", "float32", gaussian_f_aggressive,
+            physical_sensitive=True, scope="random",
+        ),
+        TensorRoleDTypeContract(
+            "onsager_residual", "float32", "float32", "float32",
+            physical_sensitive=True, scope="state",
+        ),
+        TensorRoleDTypeContract(
+            "metric_reductions", "float32", "float32", "float32",
+            accumulator_dtype="float32", physical_sensitive=True, scope="metric",
+        ),
+        TensorRoleDTypeContract(
+            "saved_artifacts", "float16", "float16", "float16",
+            compute_dtype="float32", accumulator_dtype="float32", scope="artifact",
+        ),
+        TensorRoleDTypeContract(
+            "indices", "int64", "int64", "int64",
+            compute_dtype="int64", accumulator_dtype="int64",
+            required_exact=True, scope="index",
+        ),
+        TensorRoleDTypeContract(
+            "masks", "bool", "bool", "bool",
+            compute_dtype="bool", accumulator_dtype="bool",
+            required_exact=True, scope="mask",
+        ),
+    ]
+
+
+def get_precision_policy_specs() -> Dict[str, PrecisionPolicySpec]:
+    specs = [
+        PrecisionPolicySpec(
+            "agd",
+            role_contracts=[
+                TensorRoleDTypeContract("teacher_factors", "float32", "float32", "float32", physical_sensitive=True, scope="teacher"),
+                TensorRoleDTypeContract("student_factors", "float32", "float32", "float32", physical_sensitive=True, scope="state", notes="AGD keeps parameter storage FP32; fast/aggressive use BF16 autocast only."),
+                TensorRoleDTypeContract("gradients", "float32", "bfloat16", "bfloat16", physical_sensitive=True, scope="workspace"),
+                TensorRoleDTypeContract("metric_reductions", "float32", "float32", "float32", physical_sensitive=True, scope="metric"),
+                TensorRoleDTypeContract("saved_artifacts", "float16", "float16", "float16", scope="artifact"),
+            ],
+            notes="AGD precision profiles control autocast/workspace first; parameter state remains FP32.",
+        ),
+        PrecisionPolicySpec("bigamp", role_contracts=_common_precision_roles(y_aggressive="float32"), notes="Dense BigAMP starts with conservative BF16 student/workspace support; dense Y remains FP32."),
+        PrecisionPolicySpec("bigamp_spreading", role_contracts=_common_precision_roles(), notes="Spreading fast uses BF16 student state; aggressive also permits BF16 Gaussian F/Y storage."),
+        PrecisionPolicySpec("bigamp_tensor", role_contracts=_common_precision_roles(), notes="Serial tensor path supports profile metadata; aggressive is explicit opt-in."),
+        PrecisionPolicySpec("bigamp_tensor_parallel", role_contracts=_common_precision_roles(), notes="Tensor parallel fast/aggressive use BF16 state; rademacher F remains int8."),
+        PrecisionPolicySpec("agd_tensor", status="experimental", role_contracts=_common_precision_roles(), notes="Experimental path; precision policy is metadata only."),
+        PrecisionPolicySpec("agd_spreading", status="legacy", role_contracts=_common_precision_roles(), notes="Legacy broken path."),
+        PrecisionPolicySpec("combined", profiles=["safe"], default_profile="safe", status="non_trainable_helper", role_contracts=[], notes="Non-trainable helper."),
+    ]
+    return {spec.algorithm_key: spec for spec in specs}
+
+
+def get_normalization_specs() -> Dict[str, NormalizationSpec]:
+    common = dict(
+        profiles=["paper_sparse_sampling", "internal_normalized_legacy"],
+        default_profile="paper_sparse_sampling",
+        latent_scale="O(1)",
+        teacher_init_variance="1",
+        student_init_variance="1",
+        prior_precision_base="1",
+        interaction_scale="inverse_sqrt_M",
+        metric_rescale_policy="none",
+        schema_version=5,
+        status="active",
+    )
+    specs = [
+        NormalizationSpec("agd", alpha_edge_scale="dense_mask_alpha_MN", notes="Default paper_sparse_sampling uses Var(x)=1; legacy profile remains available.", **common),
+        NormalizationSpec("bigamp", alpha_edge_scale="dense_mask_alpha_MN", notes="Default paper_sparse_sampling uses unit prior precision; legacy profile remains available.", **common),
+        NormalizationSpec("bigamp_spreading", alpha_edge_scale="supergraph_C_alpha_M_N1", notes="Default paper_sparse_sampling uses Var(x)=1 and paper interaction scale.", **common),
+        NormalizationSpec("bigamp_tensor", alpha_edge_scale="tensor_hypergraph_alpha_sumNd_M", notes="Serial tensor default uses paper_sparse_sampling latent/prior scale.", **common),
+        NormalizationSpec("bigamp_tensor_parallel", alpha_edge_scale="tensor_supergraph_alpha_M_N", notes="Parallel tensor default uses paper_sparse_sampling latent/prior scale.", **common),
+        NormalizationSpec(
+            "agd_tensor",
+            status="experimental",
+            alpha_edge_scale="experimental",
+            notes="Experimental path reads normalization_profile but is not a stable active contract.",
+        ),
+        NormalizationSpec("agd_spreading", status="legacy", alpha_edge_scale="legacy", notes="Legacy broken path."),
+        NormalizationSpec("combined", status="non_trainable_helper", alpha_edge_scale="none", notes="Non-trainable helper."),
     ]
     return {spec.algorithm_key: spec for spec in specs}
 
@@ -835,8 +1010,8 @@ def get_metric_specs() -> Dict[str, MetricSpec]:
         MetricSpec("tensor.serial_observed.Q_Y", ["tensor_observations"], ["Q_Y_mean", "Q_Y_std", "Q_Y_observed_mean", "Q_Y_observed_std"], "measurement", "observed", "teacher-student", "absolute_projection_teacher_norm_squared", "Serial tensor observed-hyperedge projection stored under Q_Y flat keys.", ["bigamp_tensor"]),
         MetricSpec("tensor.observed.Q_Y", ["tensor_observations"], ["Q_Y_observed_mean", "Q_Y_observed_std"], "measurement", "observed", "teacher-student", "absolute_projection_teacher_norm_squared", "Observed tensor-hyperedge projection.", ["bigamp_tensor_parallel", "agd_tensor"]),
         MetricSpec("tensor.unobserved.Q_Y", ["tensor_heldout_observations"], ["Q_Y_unobserved_mean", "Q_Y_unobserved_std"], "measurement", "unobserved", "teacher-student", "absolute_projection_teacher_norm_squared", "Deterministic heldout tensor-hyperedge projection.", ["bigamp_tensor_parallel"]),
-        MetricSpec("matrix.factor.Q_W", ["W_students", "W_teacher"], ["Q_W_mean", "Q_W_std", "Q_W_GRAM_ROOT_mean", "Q_W_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_and_gram_root", "W coordinate projection plus Gram-root diagnostic.", ["agd", "bigamp", "bigamp_spreading", "agd_spreading"]),
-        MetricSpec("matrix.factor.Q_X", ["X_students", "X_teacher"], ["Q_X_mean", "Q_X_std", "Q_X_GRAM_ROOT_mean", "Q_X_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_and_gram_root", "X coordinate projection plus Gram-root diagnostic.", ["agd", "bigamp", "bigamp_spreading"]),
+        MetricSpec("matrix.factor.Q_W", ["W_students", "W_teacher"], ["Q_W_mean", "Q_W_std", "Q_W_SIGN_ALIGNED_mean", "Q_W_SIGN_ALIGNED_std", "Q_W_GRAM_ROOT_mean", "Q_W_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_sign_aligned_and_gram_root", "W coordinate projection plus sign-aligned and Gram-root diagnostics.", ["agd", "bigamp", "bigamp_spreading", "agd_spreading"]),
+        MetricSpec("matrix.factor.Q_X", ["X_students", "X_teacher"], ["Q_X_mean", "Q_X_std", "Q_X_SIGN_ALIGNED_mean", "Q_X_SIGN_ALIGNED_std", "Q_X_GRAM_ROOT_mean", "Q_X_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_sign_aligned_and_gram_root", "X coordinate projection plus sign-aligned and Gram-root diagnostics.", ["agd", "bigamp", "bigamp_spreading"]),
         MetricSpec("tensor.factor.Q_N", ["tensor_student_factors", "tensor_teacher_factors"], ["Q_N_mean", "Q_N_std", "Q_N_mode0_mean", "Q_N_mode0_std", "Q_N_mode1_mean", "Q_N_mode1_std", "Q_N_mode2_mean", "Q_N_mode2_std", "Q_N_mode3_mean", "Q_N_mode3_std"], "latent_factor", "full", "teacher-student", "absolute_projection_teacher_norm_squared", "Tensor latent node/spin/factor projection per mode and aggregate.", ["bigamp_tensor", "bigamp_tensor_parallel"]),
         MetricSpec("replica.factor", ["student_replicas"], ["Q_W_replica_mean", "Q_X_replica_mean", "Q_W_prime_replica_mean", "Q_X_prime_replica_mean"], "latent_factor", "replica", "student-student", "Gram cosine", "Replica overlap diagnostic.", ["agd", "bigamp", "bigamp_spreading"]),
     ]
@@ -943,6 +1118,21 @@ def get_metric_semantic_classes() -> Dict[str, MetricSemanticClass]:
             description="Positive square root of baseline-corrected W Gram overlap; rotation/gauge-insensitive learning diagnostic.",
         ),
         MetricSemanticClass(
+            "latent.W.teacher_student.Q_W_SIGN_ALIGNED",
+            "latent_factor_sign_aligned_projection",
+            "Q_W sign-aligned diagnostic",
+            ["Q_W_SIGN_ALIGNED_mean", "Q_W_SIGN_ALIGNED_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "sum_channel_abs_projection_teacher_norm_squared;clipped=false",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="W latent factor projection after quotienting per-channel sign gauge; rotation/permutation sensitive.",
+        ),
+        MetricSemanticClass(
             "latent.X.teacher_student.Q_X_GRAM_ROOT",
             "latent_factor_gram_root",
             "Q_X Gram-root diagnostic",
@@ -956,6 +1146,21 @@ def get_metric_semantic_classes() -> Dict[str, MetricSemanticClass]:
             "medium",
             "approved",
             description="Positive square root of baseline-corrected X Gram overlap; rotation/gauge-insensitive learning diagnostic.",
+        ),
+        MetricSemanticClass(
+            "latent.X.teacher_student.Q_X_SIGN_ALIGNED",
+            "latent_factor_sign_aligned_projection",
+            "Q_X sign-aligned diagnostic",
+            ["Q_X_SIGN_ALIGNED_mean", "Q_X_SIGN_ALIGNED_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "sum_channel_abs_projection_teacher_norm_squared;clipped=false",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="X latent factor projection after quotienting per-channel sign gauge; rotation/permutation sensitive.",
         ),
         MetricSemanticClass(
             "latent.N.teacher_student.Q_N_projection",
@@ -1326,8 +1531,12 @@ def _metric_flat_key_canonical_key(metric_spec_key: str, flat_key: str, default:
     overrides = {
         ("matrix.factor.Q_W", "Q_W_GRAM_ROOT_mean"): "latent.W.teacher_student.Q_W_GRAM_ROOT",
         ("matrix.factor.Q_W", "Q_W_GRAM_ROOT_std"): "latent.W.teacher_student.Q_W_GRAM_ROOT",
+        ("matrix.factor.Q_W", "Q_W_SIGN_ALIGNED_mean"): "latent.W.teacher_student.Q_W_SIGN_ALIGNED",
+        ("matrix.factor.Q_W", "Q_W_SIGN_ALIGNED_std"): "latent.W.teacher_student.Q_W_SIGN_ALIGNED",
         ("matrix.factor.Q_X", "Q_X_GRAM_ROOT_mean"): "latent.X.teacher_student.Q_X_GRAM_ROOT",
         ("matrix.factor.Q_X", "Q_X_GRAM_ROOT_std"): "latent.X.teacher_student.Q_X_GRAM_ROOT",
+        ("matrix.factor.Q_X", "Q_X_SIGN_ALIGNED_mean"): "latent.X.teacher_student.Q_X_SIGN_ALIGNED",
+        ("matrix.factor.Q_X", "Q_X_SIGN_ALIGNED_std"): "latent.X.teacher_student.Q_X_SIGN_ALIGNED",
         ("replica.factor", "Q_W_replica_mean"): "factor.W.replica.student_student.gram_cosine",
         ("replica.factor", "Q_X_replica_mean"): "factor.X.replica.student_student.gram_cosine",
         ("replica.factor", "Q_W_prime_replica_mean"): "factor.W.replica.student_student.baseline_corrected_gram_cosine",
@@ -1622,7 +1831,7 @@ def get_output_specs() -> Dict[str, OutputSpec]:
 def get_intervention_specs() -> Dict[str, InterventionSpec]:
     specs = [
         InterventionSpec("cold_start", "before_initialize", [], ["student_factors"], ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"], True, "Random initialization."),
-        InterventionSpec("warm_start", "before_initialize", ["teacher_factors"], ["student_factors"], ["bigamp_spreading", "bigamp_tensor_parallel"], True, "Teacher-assisted initialization."),
+        InterventionSpec("warm_start", "before_initialize", ["teacher_factors"], ["student_factors"], ["bigamp", "bigamp_spreading", "bigamp_tensor_parallel"], True, "Teacher-assisted initialization."),
         InterventionSpec("adaptive_restart", "on_plateau", ["student_factors"], ["student_factors"], ["bigamp_spreading"], True, "Existing adaptive restart behavior."),
         InterventionSpec("metropolis_kick", "after_step", ["current_student_state", "current_metric_or_energy"], ["student_factors"], [], True, "Reserved framework slot; not active by default."),
     ]
@@ -1705,6 +1914,7 @@ def get_algorithm_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/combined.py", "algorithm_entry", "combined", "non_trainable_helper"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/legacy/agd_spreading.py", "legacy", "agd_spreading", "legacy_broken"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/__init__.py", "package"),
+        SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/conventions.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/core.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/f_gen.py", "support_module"),
         SourceInventorySpec("src/matrix_factorization/modules/algorithms/bigamp/standard.py", "algorithm_entry", "bigamp"),
@@ -1734,6 +1944,7 @@ def get_auxiliary_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("scripts/analysis/generate_final_plot.py", "local_analysis", status="local_experiment"),
         SourceInventorySpec("scripts/analysis/generate_qy_scan.py", "local_analysis", status="local_experiment"),
         SourceInventorySpec("scripts/analysis/inspect_results.py", "local_analysis", status="local_experiment"),
+        SourceInventorySpec("scripts/analysis/posthoc_scale_gauge.py", "local_analysis", status="local_experiment"),
         SourceInventorySpec("scripts/debug/debug_edge_count.py", "debug_only", status="debug_only"),
         SourceInventorySpec("scripts/debug/debug_graph.py", "debug_only", status="debug_only"),
         SourceInventorySpec("scripts/debug/debug_tensor_agd_autograd.py", "debug_only", status="debug_only"),
@@ -1899,6 +2110,9 @@ def get_trial_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("trials/active/scan_mixed_axes_quick/trial.yaml", "trial_manifest", "scan_mixed_axes_quick", "active_path"),
         SourceInventorySpec("trials/active/scan_mixed_axes_quick/config.yaml", "trial_config", "scan_mixed_axes_quick", "active_path"),
         SourceInventorySpec("trials/active/scan_mixed_axes_quick/summary.md", "trial_summary", "scan_mixed_axes_quick", "active_path"),
+        SourceInventorySpec("trials/active/onsager_cold_200_m50/trial.yaml", "trial_manifest", "onsager_cold_200_m50", "active_path"),
+        SourceInventorySpec("trials/active/onsager_cold_200_m50/config.yaml", "trial_config", "onsager_cold_200_m50", "active_path"),
+        SourceInventorySpec("trials/active/onsager_cold_200_m50/summary.md", "trial_summary", "onsager_cold_200_m50", "active_path"),
     ]
     return {spec.path: spec for spec in specs}
 

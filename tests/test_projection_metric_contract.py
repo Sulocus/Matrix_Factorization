@@ -17,6 +17,7 @@ from matrix_factorization.modules.metrics.overlap import (
     gram_overlap_root,
     projection_abs,
     projection_abs_diagnostics,
+    sign_aligned_projection_abs,
 )
 from matrix_factorization.modules.metrics.qy_unobserved import compute_qy_split
 from matrix_factorization.modules.metrics.spreading import compute_all_metrics_spreading
@@ -39,6 +40,22 @@ def test_projection_abs_uses_teacher_norm_squared_and_does_not_clip():
     assert diagnostics["degenerate_teacher_norm"] is True
     assert diagnostics["clipped"] is False
     assert diagnostics["formula"] == "absolute_projection_teacher_norm_squared"
+
+
+def test_sign_aligned_projection_abs_quotients_channel_sign_gauge():
+    W_teacher = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    W_student = W_teacher.clone()
+    W_student[:, 1] *= -1.0
+
+    X_teacher = torch.tensor([[1.0, -2.0, 3.0], [4.0, -5.0, 6.0]])
+    X_student = X_teacher.clone()
+    X_student[0, :] *= -1.0
+
+    assert projection_abs(W_student, W_teacher) < 1.0
+    assert projection_abs(X_student, X_teacher) < 1.0
+    assert sign_aligned_projection_abs(W_student, W_teacher, latent_axis=-1) == pytest.approx(1.0)
+    assert sign_aligned_projection_abs(X_student, X_teacher, latent_axis=0) == pytest.approx(1.0)
+    assert sign_aligned_projection_abs(2.0 * W_student, W_teacher, latent_axis=-1) == pytest.approx(2.0)
 
 
 def test_matrix_projection_payload_matches_hand_calculation():
@@ -65,6 +82,8 @@ def test_matrix_projection_payload_matches_hand_calculation():
 
     assert metrics["Q_W_mean"] == pytest.approx(2.0)
     assert metrics["Q_X_mean"] == pytest.approx(1.0)
+    assert metrics["Q_W_SIGN_ALIGNED_mean"] == pytest.approx(2.0)
+    assert metrics["Q_X_SIGN_ALIGNED_mean"] == pytest.approx(1.0)
     assert metrics["Q_Y_mean"] == pytest.approx(2.0)
     assert metrics["Q_Y_observed_mean"] == pytest.approx(2.0)
     assert metrics["Q_Y_unobserved_mean"] == pytest.approx(2.0)

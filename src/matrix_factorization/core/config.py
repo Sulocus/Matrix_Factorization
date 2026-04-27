@@ -63,6 +63,7 @@ class AlgorithmConfig:
     convergence_threshold: float = 1e-6
     # Acceleration
     use_compile: bool = True  # Enable torch.compile for kernel fusion
+    normalization_profile: str = "paper_sparse_sampling"  # paper_sparse_sampling | internal_normalized_legacy
     # Onsager correction (for BiGAMP Spreading)
     onsager_enabled: bool = True  # Enable Onsager correction for AMP de-correlation
 
@@ -77,7 +78,15 @@ class ExecutionConfig:
     """
     # Metrics to compute during evaluation
     metrics_to_compute: List[str] = field(
-        default_factory=lambda: ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']
+        default_factory=lambda: [
+            'Q_Y',
+            'Q_W',
+            'Q_X',
+            'Q_W_SIGN_ALIGNED',
+            'Q_X_SIGN_ALIGNED',
+            'Q_W_GRAM_ROOT',
+            'Q_X_GRAM_ROOT',
+        ]
     )
 
     # Plot configurations (each dict has: type, metrics, filename)
@@ -140,7 +149,7 @@ class Config:
         exec_data = data.get('execution', {})
         execution = ExecutionConfig(
             metrics_to_compute=exec_data.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_ALIGNED', 'Q_X_SIGN_ALIGNED', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),

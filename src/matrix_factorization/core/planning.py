@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import re
 import yaml
 
 from .contracts import (
@@ -15,8 +16,10 @@ from .contracts import (
     BatchingSpec,
     MetricSpec,
     MemoryModelSpec,
+    NormalizationSpec,
     OutputSpec,
     ParameterSpec,
+    PrecisionPolicySpec,
     ProbeSpec,
     ResourceSpec,
     SeedPolicySpec,
@@ -29,8 +32,10 @@ from .contracts import (
     get_intervention_specs,
     get_memory_model_specs,
     get_metric_specs,
+    get_normalization_specs,
     get_output_specs,
     get_parameter_specs,
+    get_precision_policy_specs,
     get_probe_specs,
     get_resource_specs,
     get_seed_policy_specs,
@@ -75,6 +80,8 @@ class ExperimentPlan:
     batching_spec: Optional[BatchingSpec] = None
     memory_model_spec: Optional[MemoryModelSpec] = None
     seed_policy_spec: Optional[SeedPolicySpec] = None
+    normalization_spec: Optional[NormalizationSpec] = None
+    precision_policy_spec: Optional[PrecisionPolicySpec] = None
     resource_plan: Dict[str, Any] = field(default_factory=dict)
     scan_plan: Optional[ScanPlan] = None
     metric_specs: List[MetricSpec] = field(default_factory=list)
@@ -149,6 +156,30 @@ class ExperimentPlan:
                 "sample_range_policy": self.memory_model_spec.sample_range_policy,
                 "drives_execution": self.memory_model_spec.drives_execution,
             } if self.memory_model_spec else None,
+            "normalization_spec": {
+                "algorithm_key": self.normalization_spec.algorithm_key,
+                "schema_version": self.normalization_spec.schema_version,
+                "profiles": list(self.normalization_spec.profiles),
+                "default_profile": self.normalization_spec.default_profile,
+                "latent_scale": self.normalization_spec.latent_scale,
+                "teacher_init_variance": self.normalization_spec.teacher_init_variance,
+                "student_init_variance": self.normalization_spec.student_init_variance,
+                "prior_precision_base": self.normalization_spec.prior_precision_base,
+                "interaction_scale": self.normalization_spec.interaction_scale,
+                "alpha_edge_scale": self.normalization_spec.alpha_edge_scale,
+                "metric_rescale_policy": self.normalization_spec.metric_rescale_policy,
+                "status": self.normalization_spec.status,
+            } if self.normalization_spec else None,
+            "precision_policy_spec": {
+                "algorithm_key": self.precision_policy_spec.algorithm_key,
+                "profiles": list(self.precision_policy_spec.profiles),
+                "default_profile": self.precision_policy_spec.default_profile,
+                "requested_profile": getattr(getattr(self.config, "algorithm_params", None), "precision_profile", None),
+                "role_dtypes": self.precision_policy_spec.role_dtype_map(
+                    getattr(getattr(self.config, "algorithm_params", None), "precision_profile", self.precision_policy_spec.default_profile)
+                ),
+                "status": self.precision_policy_spec.status,
+            } if self.precision_policy_spec else None,
             "seed_policy_spec": {
                 "algorithm_key": self.seed_policy_spec.algorithm_key,
                 "policy_key": self.seed_policy_spec.policy_key,
@@ -238,6 +269,25 @@ class ExperimentPlan:
             lines.append(f"teacher status: {self.teacher_spec.status}")
             if self.teacher_spec.scale_convention:
                 lines.append(f"teacher scale: {self.teacher_spec.scale_convention}")
+        if self.normalization_spec:
+            lines.append(
+                "normalization: "
+                f"{self.normalization_spec.latent_scale}, "
+                f"prior={self.normalization_spec.prior_precision_base}, "
+                f"schema=v{self.normalization_spec.schema_version}"
+            )
+        if self.precision_policy_spec:
+            params = getattr(self.config, "algorithm_params", None)
+            profile = getattr(params, "precision_profile", self.precision_policy_spec.default_profile)
+            lines.append(f"precision profile: {profile}")
+            role_map = self.precision_policy_spec.role_dtype_map(profile)
+            for role in ["student_factors", "factor_variances", "observations_Y", "F_rademacher", "F_gaussian", "metric_reductions"]:
+                if role in role_map:
+                    dtypes = role_map[role]
+                    lines.append(
+                        f"  {role}: storage={dtypes.get('storage')}, "
+                        f"compute={dtypes.get('compute')}, accumulator={dtypes.get('accumulator')}"
+                    )
         if self.scan_plan:
             lines.append("")
             lines.append("scan plan:")
@@ -466,6 +516,38 @@ class ExperimentPlan:
                 "consumption_status": consumption_status,
             })
             emitted_paths.add(path)
+        for path in [
+            "algorithm_params.normalization_profile",
+            "algorithm_params.precision_profile",
+            "algorithm_params.precision_fallback_policy",
+        ]:
+            if path in emitted_paths or path not in parameter_specs:
+                continue
+            spec = parameter_specs[path]
+            effective_value, effective_source, derived_effect = _parameter_effective_trace(self, path)
+            if effective_source is None and derived_effect is None:
+                continue
+            active_in_current_plan = _path_active_in_current_plan(self, path)
+            chain.append({
+                "path": path,
+                "registered": True,
+                "value": None,
+                "owner": spec.owner,
+                "status": spec.status,
+                "physical_sensitive": spec.physical_sensitive,
+                "consumers": list(spec.consumers),
+                "value_type": spec.value_type,
+                "active_in_current_plan": active_in_current_plan,
+                "effective_value": effective_value,
+                "effective_source": effective_source,
+                "derived_effect": derived_effect,
+                "consumption_status": _parameter_consumption_status(
+                    spec=spec,
+                    active_in_current_plan=active_in_current_plan,
+                    effective_source=effective_source,
+                    derived_effect=derived_effect,
+                ),
+            })
         return chain
 
 
@@ -498,6 +580,8 @@ def build_experiment_plan(
     batching_specs = get_batching_specs()
     memory_model_specs = get_memory_model_specs()
     seed_policy_specs = get_seed_policy_specs()
+    normalization_specs = get_normalization_specs()
+    precision_policy_specs = get_precision_policy_specs()
 
     _validate_raw_paths(plan, parameter_specs)
     _validate_scan_axis_paths(plan, parameter_specs)
@@ -523,6 +607,8 @@ def build_experiment_plan(
     plan.batching_spec = batching_specs.get(algorithm_key)
     plan.memory_model_spec = memory_model_specs.get(algorithm_key)
     plan.seed_policy_spec = seed_policy_specs.get(algorithm_key)
+    plan.normalization_spec = normalization_specs.get(algorithm_key)
+    plan.precision_policy_spec = precision_policy_specs.get(algorithm_key)
     _build_resource_plan(plan)
 
     teacher_key = getattr(config, "teacher_key", None)
@@ -538,8 +624,14 @@ def build_experiment_plan(
         plan.errors.append(f"algorithm_key 未注册 MemoryModelSpec: {algorithm_key}")
     if not plan.seed_policy_spec:
         plan.errors.append(f"algorithm_key 未注册 SeedPolicySpec: {algorithm_key}")
+    if not plan.normalization_spec:
+        plan.errors.append(f"algorithm_key 未注册 NormalizationSpec: {algorithm_key}")
+    if not plan.precision_policy_spec:
+        plan.errors.append(f"algorithm_key 未注册 PrecisionPolicySpec: {algorithm_key}")
 
     _validate_required_config_paths(plan, parameter_specs)
+    _validate_normalization_profile(plan)
+    _validate_precision_policy(plan)
 
     if plan.algorithm_spec.status != "active":
         allow_experimental = bool(raw_config.get("allow_experimental", False)) if isinstance(raw_config, dict) else False
@@ -566,7 +658,19 @@ def build_experiment_plan(
     _warn_for_soft_parameters(plan, parameter_specs, strict=strict)
     _warn_for_parameter_consumption(plan, strict=strict)
     _warn_for_route_overrides(plan)
+    _warn_for_parameterized_output_name(plan)
     return plan
+
+
+def _warn_for_parameterized_output_name(plan: ExperimentPlan) -> None:
+    output_name = str(plan.output_options.get("name") or "")
+    if not output_name:
+        return
+    if re.search(r"(^|[_-])(?:S|N|M|steps?|alpha|a)\d+|(?:^|[_-])\d+x\d+", output_name, re.IGNORECASE):
+        plan.warnings.append(
+            "output.name 看起来包含尺寸/样本数/步数等参数事实；运行目录会使用实际 config 自动生成这些 token，"
+            "建议 output.name 只写短标签。"
+        )
 
 
 def _validate_required_config_paths(
@@ -593,6 +697,59 @@ def _validate_required_config_paths(
             continue
         if value is None and derived_effect is None:
             plan.errors.append(f"{owner} requires {path}，但 effective value is None。")
+
+
+def _validate_precision_policy(plan: ExperimentPlan) -> None:
+    if not plan.precision_policy_spec:
+        return
+    algorithm_params = getattr(plan.config, "algorithm_params", None)
+    profile = getattr(algorithm_params, "precision_profile", plan.precision_policy_spec.default_profile)
+    if profile not in plan.precision_policy_spec.profiles:
+        plan.errors.append(
+            f"algorithm '{plan.algorithm_spec.key if plan.algorithm_spec else '<unknown>'}' "
+            f"不支持 precision_profile={profile!r}; "
+            f"允许值: {plan.precision_policy_spec.profiles}"
+        )
+    fallback = getattr(algorithm_params, "precision_fallback_policy", "allow")
+    if fallback not in {"allow", "error"}:
+        plan.errors.append(
+            f"algorithm_params.precision_fallback_policy 必须是 'allow' 或 'error'，got {fallback!r}"
+        )
+    raw_algorithm_params = {}
+    if isinstance(plan.raw_config, dict):
+        raw_algorithm_params = plan.raw_config.get("algorithm_params") or {}
+        if not isinstance(raw_algorithm_params, dict):
+            raw_algorithm_params = {}
+    if "precision_fallback_policy" in raw_algorithm_params and "dtype_fallback_policy" in raw_algorithm_params:
+        message = "同时设置了 precision_fallback_policy 和 legacy dtype_fallback_policy；precision_fallback_policy 优先。"
+        if plan.strict:
+            plan.errors.append(message)
+        else:
+            plan.warnings.append(message)
+    if "precision_profile" in raw_algorithm_params and "use_bf16" in raw_algorithm_params:
+        expected_use_bf16 = profile in {"fast", "aggressive"}
+        if bool(raw_algorithm_params.get("use_bf16")) != expected_use_bf16:
+            message = (
+                "同时设置了 precision_profile 和 legacy use_bf16，且语义冲突；"
+                "precision_profile 优先。"
+            )
+            if plan.strict:
+                plan.errors.append(message)
+            else:
+                plan.warnings.append(message)
+
+
+def _validate_normalization_profile(plan: ExperimentPlan) -> None:
+    if not plan.normalization_spec:
+        return
+    algorithm_params = getattr(plan.config, "algorithm_params", None)
+    profile = getattr(algorithm_params, "normalization_profile", plan.normalization_spec.default_profile)
+    if profile not in plan.normalization_spec.profiles:
+        plan.errors.append(
+            f"algorithm '{plan.algorithm_spec.key if plan.algorithm_spec else '<unknown>'}' "
+            f"不支持 normalization_profile={profile!r}; "
+            f"允许值: {plan.normalization_spec.profiles}"
+        )
 
 
 def _load_raw_config(raw_yaml: str) -> Dict[str, Any]:
@@ -645,6 +802,10 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
         "teacher_config.init_distribution": (
             "teacher.init_distribution",
             getattr(getattr(config, "teacher", None), "init_distribution", None),
+        ),
+        "teacher_config.mean_scale": (
+            "teacher.mean_scale",
+            getattr(getattr(config, "teacher", None), "mean_scale", None),
         ),
     }
     if path in direct_map:
@@ -771,8 +932,11 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
         return algorithm_key in {"bigamp", "bigamp_spreading", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.use_bf16",
+        "algorithm_params.normalization_profile",
+        "algorithm_params.precision_profile",
+        "algorithm_params.precision_fallback_policy",
     }:
-        return algorithm_key in {"agd", "bigamp_spreading", "bigamp_tensor_parallel"}
+        return algorithm_key in {"agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"}
     if path in {
         "algorithm_params.use_tf32",
     }:
@@ -951,6 +1115,7 @@ def _effective_parameter_summary(
         "algorithm_key": getattr(config, "algorithm_key", None),
         "teacher_key": getattr(config, "teacher_key", None),
         "teacher.init_distribution": getattr(teacher, "init_distribution", None),
+        "teacher.mean_scale": getattr(teacher, "mean_scale", None),
         "tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
         "spreading.f_distribution": getattr(spreading, "f_distribution", None) if spreading else None,
         "spreading.onsager_correction": getattr(spreading, "onsager_correction", None) if spreading else None,
@@ -965,6 +1130,9 @@ def _effective_parameter_summary(
         "algorithm_params.noise_var": getattr(algorithm_params, "noise_var", None),
         "algorithm_params.use_compile": getattr(algorithm_params, "use_compile", None),
         "algorithm_params.compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
+        "algorithm_params.normalization_profile": getattr(algorithm_params, "normalization_profile", None),
+        "algorithm_params.precision_profile": getattr(algorithm_params, "precision_profile", None),
+        "algorithm_params.precision_fallback_policy": getattr(algorithm_params, "precision_fallback_policy", None),
         "algorithm_params.use_bf16": getattr(algorithm_params, "use_bf16", None),
         "algorithm_params.dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
         "algorithm_params.use_tf32": getattr(algorithm_params, "use_tf32", None),
@@ -1029,6 +1197,32 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "sample_range_policy": plan.memory_model_spec.sample_range_policy if plan.memory_model_spec else "",
             "drives_execution": plan.memory_model_spec.drives_execution if plan.memory_model_spec else False,
         },
+        "normalization": {
+            "algorithm_key": plan.normalization_spec.algorithm_key if plan.normalization_spec else None,
+            "schema_version": plan.normalization_spec.schema_version if plan.normalization_spec else None,
+            "profiles": list(plan.normalization_spec.profiles) if plan.normalization_spec else [],
+            "default_profile": plan.normalization_spec.default_profile if plan.normalization_spec else None,
+            "requested_profile": getattr(algorithm_params, "normalization_profile", None),
+            "latent_scale": plan.normalization_spec.latent_scale if plan.normalization_spec else "",
+            "teacher_init_variance": plan.normalization_spec.teacher_init_variance if plan.normalization_spec else "",
+            "student_init_variance": plan.normalization_spec.student_init_variance if plan.normalization_spec else "",
+            "prior_precision_base": plan.normalization_spec.prior_precision_base if plan.normalization_spec else "",
+            "interaction_scale": plan.normalization_spec.interaction_scale if plan.normalization_spec else "",
+            "alpha_edge_scale": plan.normalization_spec.alpha_edge_scale if plan.normalization_spec else "",
+            "metric_rescale_policy": plan.normalization_spec.metric_rescale_policy if plan.normalization_spec else "",
+            "status": plan.normalization_spec.status if plan.normalization_spec else "",
+        },
+        "precision": {
+            "algorithm_key": plan.precision_policy_spec.algorithm_key if plan.precision_policy_spec else None,
+            "profiles": list(plan.precision_policy_spec.profiles) if plan.precision_policy_spec else [],
+            "default_profile": plan.precision_policy_spec.default_profile if plan.precision_policy_spec else None,
+            "requested_profile": getattr(algorithm_params, "precision_profile", None),
+            "fallback_policy": getattr(algorithm_params, "precision_fallback_policy", None),
+            "role_dtypes": (
+                plan.precision_policy_spec.role_dtype_map(getattr(algorithm_params, "precision_profile", plan.precision_policy_spec.default_profile))
+                if plan.precision_policy_spec else {}
+            ),
+        },
         "seed_policy": seed_policy_summary,
         "scan_plan": plan.scan_plan.to_dict() if plan.scan_plan else None,
         "scan_execution_constraints": (
@@ -1045,6 +1239,9 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "max_steps": getattr(training, "max_steps", None),
             "use_compile": getattr(algorithm_params, "use_compile", None),
             "compile_fallback_policy": getattr(algorithm_params, "compile_fallback_policy", None),
+            "normalization_profile": getattr(algorithm_params, "normalization_profile", None),
+            "precision_profile": getattr(algorithm_params, "precision_profile", None),
+            "precision_fallback_policy": getattr(algorithm_params, "precision_fallback_policy", None),
             "use_bf16": getattr(algorithm_params, "use_bf16", None),
             "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
             "use_tf32": getattr(algorithm_params, "use_tf32", None),

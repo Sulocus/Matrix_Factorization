@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from matrix_factorization.cli import load_yaml_config
+from matrix_factorization.cli import load_yaml_config, _build_run_directory_name
 from matrix_factorization.core.experiment.config import (
     AlgorithmParams,
     ExperimentConfig,
@@ -15,6 +15,7 @@ from matrix_factorization.core.experiment.config import (
 )
 from matrix_factorization.core.experiment.result import ExperimentResult, SingleRunResult
 from matrix_factorization.core.experiment.runner import ExperimentRunner
+from matrix_factorization.core.experiment.data_factory import DataFactory
 from matrix_factorization.modules.algorithms.bigamp.tensor_spreading_parallel import (
     BiGAMPTensorSpreadingParallel,
 )
@@ -86,6 +87,100 @@ def test_tensor_order_routes_to_parallel_tensor_algorithm(tmp_path):
     assert output_options["enable_heatmap"] is False
 
 
+def test_run_directory_uses_effective_config_not_stale_output_label(tmp_path):
+    config_path = tmp_path / "named.yaml"
+    _write_config(config_path, tensor_order=2, algorithm=2)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "output:\n  save_tensors: false",
+        "output:\n  name: stale_S100_steps9999\n  save_tensors: false",
+    )
+    config_path.write_text(text, encoding="utf-8")
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+
+    run_dir = _build_run_directory_name("20260428_000000", config, output_options, raw_yaml)
+
+    assert "stale" not in run_dir
+    assert "S100" not in run_dir
+    assert "steps9999" not in run_dir
+    assert "S1" in run_dir
+    assert "steps2" in run_dir
+
+
+def test_biased_gaussian_teacher_config_and_mean_scale_are_loaded(tmp_path):
+    config_path = tmp_path / "biased.yaml"
+    _write_config(config_path, tensor_order=2, algorithm=1)
+    text = config_path.read_text(encoding="utf-8").replace(
+        "teacher_config:\n  init_distribution: 2",
+        "teacher_config:\n  init_distribution: 3\n  mean_scale: 0.4",
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    from matrix_factorization.core.planning import build_experiment_plan
+
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+
+    assert config.teacher.init_distribution == "biased_gaussian"
+    assert config.teacher.mean_scale == 0.4
+    assert chain["teacher_config.mean_scale"]["effective_value"] == 0.4
+
+
+def test_biased_gaussian_teacher_adds_exact_mean_shift_with_same_seed():
+    factory = DataFactory(device=torch.device("cpu"))
+    W0, X0, _ = factory.create_teacher(
+        N1=4,
+        N2=4,
+        M=4,
+        teacher_key="standard",
+        seed=123,
+        init_distribution="gaussian",
+    )
+    Wb, Xb, _ = factory.create_teacher(
+        N1=4,
+        N2=4,
+        M=4,
+        teacher_key="standard",
+        seed=123,
+        init_distribution="biased_gaussian",
+        mean_scale=0.5,
+    )
+
+    expected_shift = torch.full_like(W0, 0.5)
+    assert torch.allclose(Wb - W0, expected_shift)
+    assert torch.allclose(Xb - X0, expected_shift[: Xb.shape[0], : Xb.shape[1]])
+
+
+def test_biased_gaussian_student_init_mean_is_visible_to_algorithms():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=4, N2=4, M=4),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(use_compile=False, use_bf16=False),
+        teacher_key="standard",
+        teacher=TeacherConfig(init_distribution="biased_gaussian", mean_scale=0.5),
+    )
+    algo_config = ExperimentRunner(device=torch.device("cpu"), verbose=False)._build_algorithm_config(config)
+    standard_algorithm = BiGAMPAlgorithm(algo_config, device=torch.device("cpu"))
+    spreading_algorithm = BiGAMPSpreading(
+        ExperimentConfig(
+            matrix=config.matrix,
+            training=config.training,
+            algorithm_key="bigamp_spreading",
+            scan=config.scan,
+            algorithm_params=config.algorithm_params,
+            spreading=SpreadingConfig(tensor_order=2),
+            teacher_key="standard",
+            teacher=config.teacher,
+        ),
+        device=torch.device("cpu"),
+    )
+
+    assert standard_algorithm._student_init_mean(1.0) == pytest.approx(0.5)
+    assert spreading_algorithm._student_init_mean() == pytest.approx(0.5)
+
+
 def test_tensor_order_one_enables_general_spreading(tmp_path):
     config_path = tmp_path / "general.yaml"
     _write_config(config_path, tensor_order=1, algorithm=2)
@@ -114,6 +209,62 @@ def test_spreading_respects_use_bf16_false(monkeypatch, tmp_path):
     assert algorithm.dtype_status == "bf16_disabled_by_config"
     assert algorithm._contract_execution_metadata["requested_use_bf16"] is False
     assert algorithm._contract_execution_metadata["dtype_status"] == "bf16_disabled_by_config"
+
+
+def test_spreading_compile_uses_legacy_fast_policy_for_medium_problem(monkeypatch):
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=4, N2=4, M=2),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(use_compile=True, use_bf16=False),
+        spreading=SpreadingConfig(tensor_order=2, onsager_correction=True),
+        teacher_key="standard",
+    )
+    calls = []
+
+    def fake_compile(fn, *args, **kwargs):
+        calls.append(kwargs)
+        return fn
+
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+
+    assert calls
+    assert calls[0].get("mode") == "reduce-overhead"
+    assert algorithm._contract_execution_metadata["compile_cuda_graphs_enabled"] is True
+
+
+def test_spreading_cuda_compile_keeps_user_requested_compile(monkeypatch):
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=4, N2=4, M=2),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(use_compile=True, use_bf16=False),
+        spreading=SpreadingConfig(tensor_order=2, onsager_correction=False),
+        teacher_key="standard",
+    )
+    calls = []
+
+    def fake_compile(fn, *args, **kwargs):
+        calls.append(kwargs)
+        return fn
+
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    algorithm = BiGAMPSpreading(config, device=torch.device("cuda"))
+
+    assert algorithm.requested_use_compile is True
+    assert algorithm.use_compile is True
+    assert calls
+    assert calls[0].get("mode") == "reduce-overhead"
+    assert algorithm._contract_execution_metadata["compile_disabled_reason"] == ""
 
 
 def test_agd_respects_use_bf16_false_on_cuda_device():

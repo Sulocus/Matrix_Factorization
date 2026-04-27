@@ -7,21 +7,253 @@ Key difference from standard metrics:
 - Q_W/Q_X are coordinate projection overlaps; Gram-root metrics are diagnostics.
 """
 
+from dataclasses import dataclass
 from typing import Dict, TYPE_CHECKING
 import torch
 
 from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
+from .overlap import sign_aligned_projection_abs
 
 if TYPE_CHECKING:
     from ..teachers.random_spreading import SpreadingDataParallel
+
+PROJECTION_NORM_EPS = 1e-12
+
+
+@dataclass
+class BatchMetricPayload:
+    """GPU-resident metric vectors for one alpha batch.
+
+    Values stay as tensors while the batch is being processed.  The only
+    intended CPU materialization point is to_metrics_by_alpha(), which converts
+    the compact per-alpha scalar vectors for JSON/result bookkeeping.
+    """
+
+    alpha_values: torch.Tensor
+    metrics: Dict[str, torch.Tensor]
+    metadata: Dict[str, object] | None = None
+
+    def to_metrics_by_alpha(self) -> Dict[float, Dict[str, float]]:
+        alpha_cpu = self.alpha_values.detach().float().cpu().tolist()
+        metric_cpu = {
+            key: value.detach().float().cpu().reshape(-1).tolist()
+            for key, value in self.metrics.items()
+            if key != "alpha_values"
+        }
+        result: Dict[float, Dict[str, float]] = {}
+        for idx, alpha in enumerate(alpha_cpu):
+            result[float(alpha)] = {
+                key: float(values[idx])
+                for key, values in metric_cpu.items()
+                if idx < len(values)
+            }
+        return result
 
 
 @torch.no_grad()
 def _projection_abs_values(student: torch.Tensor, teacher: torch.Tensor) -> torch.Tensor:
     norm_teacher_sq = (teacher.flatten() ** 2).sum()
-    if float(norm_teacher_sq.abs().item()) < 1e-12:
+    if float(norm_teacher_sq.abs().item()) < PROJECTION_NORM_EPS:
         return torch.zeros((), device=student.device, dtype=torch.float32)
-    return ((student.flatten() * teacher.flatten()).sum().abs() / (norm_teacher_sq + 1e-12)).float()
+    return ((student.flatten() * teacher.flatten()).sum().abs() / (norm_teacher_sq + PROJECTION_NORM_EPS)).float()
+
+
+@torch.no_grad()
+def _projection_abs_batch(student: torch.Tensor, teacher: torch.Tensor, reduce_dims: tuple[int, ...]) -> torch.Tensor:
+    norm_teacher_sq = (teacher * teacher).sum(dim=reduce_dims)
+    dot = (student * teacher).sum(dim=reduce_dims).abs()
+    return torch.where(
+        norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
+        torch.zeros_like(dot, dtype=torch.float32),
+        (dot / (norm_teacher_sq + PROJECTION_NORM_EPS)).float(),
+    )
+
+
+@torch.no_grad()
+def _sign_aligned_projection_abs_batch(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    channel_sum_dim: int,
+    channel_axis_after_sum: int = -1,
+) -> torch.Tensor:
+    """Batched per-channel sign-gauge-aligned projection.
+
+    student is expected to carry leading sample/alpha axes followed by the
+    factor axes.  teacher is broadcast to student shape by the caller.  The
+    reduction first sums over the coordinate dimension within each latent
+    channel, then takes abs per channel and sums channels.
+    """
+    norm_teacher_sq = (teacher * teacher).sum()
+    if float(norm_teacher_sq.abs().item()) < PROJECTION_NORM_EPS:
+        return torch.zeros(student.shape[:2], device=student.device, dtype=torch.float32)
+    per_channel_dot = (student * teacher).sum(dim=channel_sum_dim).abs()
+    if channel_axis_after_sum != -1:
+        per_channel_dot = per_channel_dot.movedim(channel_axis_after_sum, -1)
+    return (per_channel_dot.sum(dim=-1) / (norm_teacher_sq + PROJECTION_NORM_EPS)).float()
+
+
+@torch.no_grad()
+def _projection_abs_from_sums(dot: torch.Tensor, norm_teacher_sq: torch.Tensor) -> torch.Tensor:
+    return torch.where(
+        norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
+        torch.zeros_like(dot, dtype=torch.float32),
+        (dot.abs() / (norm_teacher_sq + PROJECTION_NORM_EPS)).float(),
+    )
+
+
+@torch.no_grad()
+def _observed_edge_projection_sums(
+    W_a: torch.Tensor,
+    X_a_t: torch.Tensor,
+    i_idx: torch.Tensor,
+    j_idx: torch.Tensor,
+    F_values: torch.Tensor,
+    Y_teacher: torch.Tensor,
+    *,
+    sqrt_m_inv: float,
+    edge_chunk_size: int,
+    sample_chunk_size: int = 16,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Accumulate spreading measurement projection sums on GPU in edge chunks."""
+
+    S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
+    dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    chunk = max(1, int(edge_chunk_size))
+    sample_chunk = max(1, min(int(sample_chunk_size), S))
+    for sample_start in range(0, S, sample_chunk):
+        sample_stop = min(S, sample_start + sample_chunk)
+        block = sample_stop - sample_start
+        W_block = W_a[sample_start:sample_stop]
+        X_block = X_a_t[sample_start:sample_stop]
+        for start in range(0, C, chunk):
+            stop = min(C, start + chunk)
+            i_chunk = i_idx[sample_start:sample_stop, start:stop]
+            j_chunk = j_idx[sample_start:sample_stop, start:stop]
+            F_chunk = F_values[sample_start:sample_stop, start:stop]
+            if not torch.is_floating_point(F_chunk):
+                F_chunk = F_chunk.float()
+            W_selected = W_block.gather(1, i_chunk.unsqueeze(-1).expand(block, stop - start, W_block.shape[-1]))
+            X_selected = X_block.gather(1, j_chunk.unsqueeze(-1).expand(block, stop - start, X_block.shape[-1]))
+            Y_student = sqrt_m_inv * (F_chunk * W_selected * X_selected).sum(dim=-1)
+            Y_teacher_chunk = Y_teacher[sample_start:sample_stop, start:stop]
+            dot[sample_start:sample_stop] += (Y_student * Y_teacher_chunk).sum(dim=-1).float()
+            norm_teacher_sq[sample_start:sample_stop] += (Y_teacher_chunk * Y_teacher_chunk).sum(dim=-1).float()
+    return dot, norm_teacher_sq
+
+
+@torch.no_grad()
+def _heldout_edge_projection_sums(
+    W_a: torch.Tensor,
+    X_a_t: torch.Tensor,
+    W_teacher: torch.Tensor,
+    X_teacher_t: torch.Tensor,
+    i_idx: torch.Tensor,
+    j_idx: torch.Tensor,
+    F_values: torch.Tensor,
+    *,
+    sqrt_m_inv: float,
+    edge_chunk_size: int,
+    sample_chunk_size: int = 16,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Accumulate heldout spreading measurement projection sums on GPU."""
+
+    S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
+    dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    chunk = max(1, int(edge_chunk_size))
+    sample_chunk = max(1, min(int(sample_chunk_size), S))
+    for sample_start in range(0, S, sample_chunk):
+        sample_stop = min(S, sample_start + sample_chunk)
+        block = sample_stop - sample_start
+        W_block = W_a[sample_start:sample_stop]
+        X_block = X_a_t[sample_start:sample_stop]
+        for start in range(0, C, chunk):
+            stop = min(C, start + chunk)
+            i_chunk = i_idx[sample_start:sample_stop, start:stop]
+            j_chunk = j_idx[sample_start:sample_stop, start:stop]
+            F_chunk = F_values[sample_start:sample_stop, start:stop]
+            if not torch.is_floating_point(F_chunk):
+                F_chunk = F_chunk.float()
+
+            W_teacher_chunk = W_teacher[i_chunk]
+            X_teacher_chunk = X_teacher_t[j_chunk]
+            Y_teacher = sqrt_m_inv * (F_chunk * W_teacher_chunk * X_teacher_chunk).sum(dim=-1)
+
+            W_student_chunk = W_block.gather(1, i_chunk.unsqueeze(-1).expand(block, stop - start, W_block.shape[-1]))
+            X_student_chunk = X_block.gather(1, j_chunk.unsqueeze(-1).expand(block, stop - start, X_block.shape[-1]))
+            Y_student = sqrt_m_inv * (F_chunk * W_student_chunk * X_student_chunk).sum(dim=-1)
+
+            dot[sample_start:sample_stop] += (Y_student * Y_teacher).sum(dim=-1).float()
+            norm_teacher_sq[sample_start:sample_stop] += (Y_teacher * Y_teacher).sum(dim=-1).float()
+    return dot, norm_teacher_sq
+
+
+@torch.no_grad()
+def _masked_projection_abs_batch(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    mask_f = mask.to(dtype=student.dtype)
+    dot = (student * teacher * mask_f).sum(dim=-1).abs()
+    norm_teacher_sq = ((teacher * teacher) * mask_f).sum(dim=-1)
+    return torch.where(
+        norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
+        torch.zeros_like(dot, dtype=torch.float32),
+        (dot / (norm_teacher_sq + PROJECTION_NORM_EPS)).float(),
+    )
+
+
+@torch.no_grad()
+def _mean_std(values: torch.Tensor, dim: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    return values.mean(dim=dim), values.std(dim=dim) if values.shape[dim] > 1 else torch.zeros_like(values.mean(dim=dim))
+
+
+@torch.no_grad()
+def _gram_root_and_replica_by_alpha(
+    factors: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    use_left: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return teacher-student Gram-root and student-student Gram diagnostics.
+
+    factors is (S, N, M) for W when use_left=True, or (S, M, N) for X when
+    use_left=False.  The computation stays on the device and vectorizes the
+    former S^2 Python pair loop.
+    """
+    if use_left:
+        grams = torch.matmul(factors, factors.transpose(-1, -2))
+        teacher_gram = teacher @ teacher.T
+        n, m = int(factors.shape[-2]), int(factors.shape[-1])
+    else:
+        grams = torch.matmul(factors.transpose(-1, -2), factors)
+        teacher_gram = teacher.T @ teacher
+        n, m = int(factors.shape[-1]), int(factors.shape[-2])
+
+    flat = grams.reshape(grams.shape[0], -1).float()
+    teacher_flat = teacher_gram.reshape(-1).float()
+    teacher_norm = teacher_flat.norm() + PROJECTION_NORM_EPS
+    q = (flat * teacher_flat).sum(dim=1) / ((flat.norm(dim=1) * teacher_norm) + PROJECTION_NORM_EPS)
+    baseline = float(m) / float(m + n + 1)
+    corrected = ((q - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
+    gram_root = corrected.sqrt()
+
+    if factors.shape[0] < 2:
+        zero = torch.zeros((), device=factors.device, dtype=torch.float32)
+        return gram_root.float(), zero, zero
+
+    normalized = flat / (flat.norm(dim=1, keepdim=True) + PROJECTION_NORM_EPS)
+    pair_cos = normalized @ normalized.T
+    pair_corrected = ((pair_cos - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
+    upper = torch.triu_indices(factors.shape[0], factors.shape[0], offset=1, device=factors.device)
+    return (
+        gram_root.float(),
+        pair_cos[upper[0], upper[1]].mean().float(),
+        pair_corrected[upper[0], upper[1]].mean().float(),
+    )
 
 
 @torch.no_grad()
@@ -258,6 +490,8 @@ def compute_all_metrics_spreading(
 
     results['Q_W'] = projection_abs(W_s, W_teacher)
     results['Q_X'] = projection_abs(X_s, X_teacher)
+    results['Q_W_SIGN_ALIGNED'] = sign_aligned_projection_abs(W_s, W_teacher, latent_axis=-1)
+    results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_s, X_teacher, latent_axis=0)
     results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_s, W_teacher, use_left=True)
     results['Q_X_GRAM_ROOT'] = gram_overlap_root(X_s, X_teacher, use_left=False)
 
@@ -273,6 +507,8 @@ def compute_all_metrics_spreading_parallel(
     X_students: torch.Tensor,
     spreading_data: 'SpreadingDataParallel',
     target_alpha_idx: int = None,
+    edge_chunk_size: int = 32768,
+    sample_chunk_size: int = 16,
 ) -> Dict[str, torch.Tensor]:
     """
     Compute all evaluation metrics for spreading model in parallel or for a single alpha.
@@ -288,161 +524,200 @@ def compute_all_metrics_spreading_parallel(
         Dictionary of metrics averaged across samples.
         If target_alpha_idx is set, tensors will have size (1,) instead of (A,).
     """
-    from .overlap import compute_cosine_similarity, gram_overlap_normalized, gram_overlap_root, projection_abs
-    from ..teachers.random_spreading import compute_sparse_Y
+    if W_students.dim() != 4 or X_students.dim() != 4:
+        raise ValueError("spreading batch metrics require 4D W/X tensors")
+    if W_students.shape[0] != spreading_data.S and W_students.shape[1] == spreading_data.S:
+        W_students = W_students.transpose(0, 1)
+        X_students = X_students.transpose(0, 1)
 
-    S = W_students.shape[0]
+    S = int(W_students.shape[0])
     W_teacher = spreading_data.W_teacher
     X_teacher = spreading_data.X_teacher
     device = spreading_data.device
-
     alpha_values = spreading_data.alpha_values
     A = len(alpha_values)
-    
-    # Determine loop range and tensor access
+
     if target_alpha_idx is not None:
         if target_alpha_idx < 0 or target_alpha_idx >= A:
             raise ValueError(f"target_alpha_idx {target_alpha_idx} out of range [0, {A})")
-        
-        loop_indices = [target_alpha_idx]
-        output_A = 1
-        # If target_alpha_idx is used, we assume W_students is (S, 1, N, M) 
-        # so we always access index 0.
-        w_idx_map = {target_alpha_idx: 0}
+        actual_alpha_indices = [int(target_alpha_idx)]
+        local_alpha_indices = [0]
     else:
-        loop_indices = range(A)
-        output_A = A
-        # Normal case: W_students is (S, A, N, M), access index a
-        w_idx_map = {a: a for a in range(A)}
+        actual_alpha_indices = list(range(A))
+        local_alpha_indices = list(range(len(actual_alpha_indices)))
 
-    # Initialize result tensors
-    Q_Y_all = torch.zeros(S, output_A, device=device)
-    Q_W_all = torch.zeros(S, output_A, device=device)
-    Q_X_all = torch.zeros(S, output_A, device=device)
+    output_A = len(actual_alpha_indices)
+    W_local = W_students[:, local_alpha_indices]
+    X_local = X_students[:, local_alpha_indices]
+
+    Q_W_all = _projection_abs_batch(
+        W_local,
+        W_teacher.unsqueeze(0).unsqueeze(0),
+        reduce_dims=(-2, -1),
+    )
+    Q_X_all = _projection_abs_batch(
+        X_local,
+        X_teacher.unsqueeze(0).unsqueeze(0),
+        reduce_dims=(-2, -1),
+    )
+    Q_W_sign_aligned_all = _sign_aligned_projection_abs_batch(
+        W_local,
+        W_teacher.unsqueeze(0).unsqueeze(0),
+        channel_sum_dim=-2,
+    )
+    Q_X_sign_aligned_all = _sign_aligned_projection_abs_batch(
+        X_local,
+        X_teacher.unsqueeze(0).unsqueeze(0),
+        channel_sum_dim=-1,
+    )
+
     Q_W_gram_root_all = torch.zeros(S, output_A, device=device)
     Q_X_gram_root_all = torch.zeros(S, output_A, device=device)
-    
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_full_all = torch.zeros(S, output_A, device=device)
-
-    for s in range(S):
-        # Pre-calculate indices for this sample
-        s_i_idx, s_j_idx = spreading_data.supergraph.get_sample_indices(s)
-        F_sample = spreading_data.get_F(s)
-        
-        for out_idx, a in enumerate(loop_indices):
-            # Access W/X using mapped index
-            w_idx = w_idx_map[a]
-            
-            W_s = W_students[s, w_idx]
-            X_s = X_students[s, w_idx]
-            
-            # --- 1. Compute Q_Y (observed / spreading) ---
-            # Use same F as teacher for observed positions
-            C_k = spreading_data.supergraph.get_active_edges(a)
-            
-            # Indices and F for active edges
-            i_current = s_i_idx[:C_k]
-            j_current = s_j_idx[:C_k]
-            F_current = F_sample[:C_k]
-            
-            # Teacher Y at observed positions
-            Y_teacher_obs = spreading_data.get_Y_masked(s, a)
-            
-            # Student Y at observed positions (with same F)
-            Y_student_obs = compute_sparse_Y(
-                W_s, X_s, F_current, i_current.long(), j_current.long()
-            )
-            
-            qy_obs = _projection_abs_values(Y_student_obs, Y_teacher_obs)
-            Q_Y_observed_all[s, out_idx] = qy_obs
-
-            # --- 2. Overlap Metrics (Q_W, Q_X, etc) ---
-            Q_W_all[s, out_idx] = projection_abs(W_s, W_teacher)
-            Q_X_all[s, out_idx] = projection_abs(X_s, X_teacher)
-            Q_W_gram_root_all[s, out_idx] = gram_overlap_root(W_s, W_teacher, use_left=True)
-            Q_X_gram_root_all[s, out_idx] = gram_overlap_root(X_s, X_teacher, use_left=False)
-
-            # --- 3. Heldout F-aware measurement projection ---
-            N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
-            h_i, h_j = _deterministic_heldout_edges(
-                N1=N1,
-                N2=N2,
-                observed_i=i_current.long(),
-                observed_j=j_current.long(),
-                count=int(C_k),
-                seed=int(spreading_data.supergraph.seeds[s].item()) + 7919 * (int(a) + 1),
-                device=device,
-            )
-            if h_i.numel() > 0:
-                gen = torch.Generator(device=device).manual_seed(
-                    int(spreading_data.supergraph.seeds[s].item()) + 104729 * (int(a) + 1)
-                )
-                if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian":
-                    F_holdout = torch.randn(h_i.numel(), spreading_data.M, generator=gen, device=device)
-                else:
-                    F_holdout = (torch.randint(0, 2, (h_i.numel(), spreading_data.M), generator=gen, device=device, dtype=torch.int8) * 2 - 1).float()
-                Y_teacher_holdout = compute_sparse_Y(W_teacher, X_teacher, F_holdout, h_i.long(), h_j.long())
-                Y_student_holdout = compute_sparse_Y(W_s, X_s, F_holdout, h_i.long(), h_j.long())
-                Q_Y_unobserved_all[s, out_idx] = _projection_abs_values(Y_student_holdout, Y_teacher_holdout)
-                Q_Y_full_all[s, out_idx] = _projection_abs_values(
-                    torch.cat([Y_student_obs.flatten(), Y_student_holdout.flatten()]),
-                    torch.cat([Y_teacher_obs.flatten(), Y_teacher_holdout.flatten()]),
-                )
-            else:
-                Q_Y_unobserved_all[s, out_idx] = 0.0
-                Q_Y_full_all[s, out_idx] = qy_obs
-
-    # ===== Replica metrics (student-student) =====
     Q_W_replica_all = torch.zeros(output_A, device=device)
     Q_X_replica_all = torch.zeros(output_A, device=device)
     Q_W_prime_replica_all = torch.zeros(output_A, device=device)
     Q_X_prime_replica_all = torch.zeros(output_A, device=device)
-    
-    if S >= 2:
-        for out_idx, a in enumerate(loop_indices):
-            w_idx = w_idx_map[a]
-            w_pairs, x_pairs, wp_pairs, xp_pairs = [], [], [], []
-            for i in range(S):
-                for j in range(i+1, S):
-                    ws_i, ws_j = W_students[i, w_idx], W_students[j, w_idx]
-                    xs_i, xs_j = X_students[i, w_idx], X_students[j, w_idx]
-                    
-                    w_pairs.append(compute_cosine_similarity(ws_i, ws_j, use_left=True))
-                    x_pairs.append(compute_cosine_similarity(xs_i, xs_j, use_left=False))
-                    wp_pairs.append(gram_overlap_normalized(ws_i, ws_j, use_left=True))
-                    xp_pairs.append(gram_overlap_normalized(xs_i, xs_j, use_left=False))
-            
-            Q_W_replica_all[out_idx] = sum(w_pairs) / len(w_pairs)
-            Q_X_replica_all[out_idx] = sum(x_pairs) / len(x_pairs)
-            Q_W_prime_replica_all[out_idx] = sum(wp_pairs) / len(wp_pairs)
-            Q_X_prime_replica_all[out_idx] = sum(xp_pairs) / len(xp_pairs)
 
-    # Aggregate across samples
-    results = {
-        'Q_Y_mean': Q_Y_full_all.mean(dim=0),
-        'Q_Y_std': Q_Y_full_all.std(dim=0),
-        'Q_Y_observed_mean': Q_Y_observed_all.mean(dim=0),
-        'Q_Y_observed_std': Q_Y_observed_all.std(dim=0),
-        'Q_Y_unobserved_mean': Q_Y_unobserved_all.mean(dim=0),
-        'Q_Y_unobserved_std': Q_Y_unobserved_all.std(dim=0),
-        'Q_W_mean': Q_W_all.mean(dim=0),
-        'Q_W_std': Q_W_all.std(dim=0),
-        'Q_X_mean': Q_X_all.mean(dim=0),
-        'Q_X_std': Q_X_all.std(dim=0),
-        'Q_W_GRAM_ROOT_mean': Q_W_gram_root_all.mean(dim=0),
-        'Q_W_GRAM_ROOT_std': Q_W_gram_root_all.std(dim=0),
-        'Q_X_GRAM_ROOT_mean': Q_X_gram_root_all.mean(dim=0),
-        'Q_X_GRAM_ROOT_std': Q_X_gram_root_all.std(dim=0),
+    sqrt_m_inv = 1.0 / (float(spreading_data.M) ** 0.5)
+    i_idx_all = spreading_data.supergraph.i_idx.long()
+    j_idx_all = spreading_data.supergraph.j_idx.long()
+    F_super = spreading_data.F_super
+
+    for out_idx, (actual_alpha_idx, local_alpha_idx) in enumerate(zip(actual_alpha_indices, local_alpha_indices)):
+        C_k = spreading_data.supergraph.get_active_edges(actual_alpha_idx)
+        if C_k > 0:
+            i_current = i_idx_all[:, :C_k]
+            j_current = j_idx_all[:, :C_k]
+            F_current = F_super[:, :C_k]
+            W_a = W_students[:, local_alpha_idx]
+            X_a_t = X_students[:, local_alpha_idx].transpose(1, 2)
+
+            Y_teacher_obs = spreading_data.Y_super[:, :C_k]
+            dot_obs, norm_obs = _observed_edge_projection_sums(
+                W_a,
+                X_a_t,
+                i_current,
+                j_current,
+                F_current,
+                Y_teacher_obs,
+                sqrt_m_inv=sqrt_m_inv,
+                edge_chunk_size=edge_chunk_size,
+                sample_chunk_size=sample_chunk_size,
+            )
+            Q_Y_observed_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
+
+            N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
+            h_i_all = torch.empty(S, C_k, dtype=torch.long, device=device)
+            h_j_all = torch.empty(S, C_k, dtype=torch.long, device=device)
+            f_dtype = torch.float32 if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian" else torch.int8
+            F_holdout = torch.empty(S, C_k, spreading_data.M, dtype=f_dtype, device=device)
+            valid_samples = torch.ones(S, dtype=torch.bool, device=device)
+            for s in range(S):
+                seed_base = int(spreading_data.supergraph.seeds[s].item())
+                h_i, h_j = _deterministic_heldout_edges(
+                    N1=N1,
+                    N2=N2,
+                    observed_i=i_current[s],
+                    observed_j=j_current[s],
+                    count=int(C_k),
+                    seed=seed_base + 7919 * (int(actual_alpha_idx) + 1),
+                    device=device,
+                )
+                if h_i.numel() < C_k:
+                    valid_samples[s] = False
+                    if h_i.numel() == 0:
+                        h_i = torch.zeros(C_k, dtype=torch.long, device=device)
+                        h_j = torch.zeros(C_k, dtype=torch.long, device=device)
+                    else:
+                        pad = C_k - h_i.numel()
+                        h_i = torch.cat([h_i, h_i[-1:].expand(pad)])
+                        h_j = torch.cat([h_j, h_j[-1:].expand(pad)])
+                h_i_all[s] = h_i[:C_k]
+                h_j_all[s] = h_j[:C_k]
+                gen = torch.Generator(device=device).manual_seed(seed_base + 104729 * (int(actual_alpha_idx) + 1))
+                if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian":
+                    F_holdout[s].normal_(0, 1, generator=gen)
+                else:
+                    F_holdout[s] = torch.randint(
+                        0,
+                        2,
+                        (C_k, spreading_data.M),
+                        generator=gen,
+                        device=device,
+                        dtype=torch.int8,
+                    ) * 2 - 1
+
+            dot_unobs, norm_unobs = _heldout_edge_projection_sums(
+                W_a,
+                X_a_t,
+                W_teacher,
+                X_teacher.T,
+                h_i_all,
+                h_j_all,
+                F_holdout,
+                sqrt_m_inv=sqrt_m_inv,
+                edge_chunk_size=edge_chunk_size,
+                sample_chunk_size=sample_chunk_size,
+            )
+            q_unobs = _projection_abs_from_sums(dot_unobs, norm_unobs)
+            Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs, torch.zeros_like(q_unobs))
+            Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
+
+        w_root, w_replica, w_prime = _gram_root_and_replica_by_alpha(
+            W_students[:, local_alpha_idx],
+            W_teacher,
+            use_left=True,
+        )
+        x_root, x_replica, x_prime = _gram_root_and_replica_by_alpha(
+            X_students[:, local_alpha_idx],
+            X_teacher,
+            use_left=False,
+        )
+        Q_W_gram_root_all[:, out_idx] = w_root
+        Q_X_gram_root_all[:, out_idx] = x_root
+        Q_W_replica_all[out_idx] = w_replica
+        Q_X_replica_all[out_idx] = x_replica
+        Q_W_prime_replica_all[out_idx] = w_prime
+        Q_X_prime_replica_all[out_idx] = x_prime
+
+    qy_mean, qy_std = _mean_std(Q_Y_full_all, dim=0)
+    qy_obs_mean, qy_obs_std = _mean_std(Q_Y_observed_all, dim=0)
+    qy_unobs_mean, qy_unobs_std = _mean_std(Q_Y_unobserved_all, dim=0)
+    qw_mean, qw_std = _mean_std(Q_W_all, dim=0)
+    qx_mean, qx_std = _mean_std(Q_X_all, dim=0)
+    qw_sign_aligned_mean, qw_sign_aligned_std = _mean_std(Q_W_sign_aligned_all, dim=0)
+    qx_sign_aligned_mean, qx_sign_aligned_std = _mean_std(Q_X_sign_aligned_all, dim=0)
+    qw_gram_root_mean, qw_gram_root_std = _mean_std(Q_W_gram_root_all, dim=0)
+    qx_gram_root_mean, qx_gram_root_std = _mean_std(Q_X_gram_root_all, dim=0)
+
+    return {
+        'Q_Y_mean': qy_mean,
+        'Q_Y_std': qy_std,
+        'Q_Y_observed_mean': qy_obs_mean,
+        'Q_Y_observed_std': qy_obs_std,
+        'Q_Y_unobserved_mean': qy_unobs_mean,
+        'Q_Y_unobserved_std': qy_unobs_std,
+        'Q_W_mean': qw_mean,
+        'Q_W_std': qw_std,
+        'Q_X_mean': qx_mean,
+        'Q_X_std': qx_std,
+        'Q_W_SIGN_ALIGNED_mean': qw_sign_aligned_mean,
+        'Q_W_SIGN_ALIGNED_std': qw_sign_aligned_std,
+        'Q_X_SIGN_ALIGNED_mean': qx_sign_aligned_mean,
+        'Q_X_SIGN_ALIGNED_std': qx_sign_aligned_std,
+        'Q_W_GRAM_ROOT_mean': qw_gram_root_mean,
+        'Q_W_GRAM_ROOT_std': qw_gram_root_std,
+        'Q_X_GRAM_ROOT_mean': qx_gram_root_mean,
+        'Q_X_GRAM_ROOT_std': qx_gram_root_std,
         'Q_W_replica_mean': Q_W_replica_all,
         'Q_X_replica_mean': Q_X_replica_all,
         'Q_W_prime_replica_mean': Q_W_prime_replica_all,
         'Q_X_prime_replica_mean': Q_X_prime_replica_all,
-        'alpha_values': alpha_values[list(loop_indices)] if target_alpha_idx is not None else alpha_values,
+        'alpha_values': alpha_values[actual_alpha_indices],
     }
-
-    return results
 
 
 @torch.no_grad()

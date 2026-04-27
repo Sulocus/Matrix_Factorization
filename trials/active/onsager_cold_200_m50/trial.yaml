@@ -1,0 +1,19 @@
+key: onsager_cold_200_m50
+status: active
+runtime_class: gpu_heavy
+purpose: 验证 paper normalization 下 matrix spreading cold-start corrected Onsager 与 no-Onsager baseline 的差异
+owner_area: bigamp_onsager
+config: trials/active/onsager_cold_200_m50/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/onsager_cold_200_m50
+expected_metrics:
+  - Q_Y_mean
+  - Q_W_mean
+  - Q_X_mean
+  - Q_W_GRAM_ROOT_mean
+  - Q_X_GRAM_ROOT_mean
+  - Q_W_SIGN_ALIGNED_mean
+  - Q_X_SIGN_ALIGNED_mean
+promotion_target:
+  - corrected_onsager_spreading
+notes: 200x200x50, Gaussian teacher, Rademacher F, S=10, 完全 cold start。alpha 点先保持稀疏，不作为最终论文曲线。

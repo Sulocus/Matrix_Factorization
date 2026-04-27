@@ -86,7 +86,7 @@ results/latest
 
 - 新 scalar 或 per-alpha 数值：必须进入 `MetricSpec`，再进入 `metrics.json`。
 - 新 matrix/tensor diagnostic：必须声明 artifact/metric semantics，不能只塞进 plot。
-- 新大 payload：默认进入 ignored artifact workspace，或进入 `artifacts/results.pt` 并写 `factor_payload_contract`/manifest。
+- 新大 payload：默认进入 ignored artifact workspace，或进入 `artifacts/results.pt` / 共享 artifact，并写 `factor_payload_contract`/manifest。
 - 新展示图：必须经过 `OutputSpec` 和 `output_contract.json`，不能作为正式分析输入。
 
 ## metrics.json
@@ -128,7 +128,7 @@ metrics.json
 - `metric_schema`：把本次实际 flat key 映射到 canonical semantic class。
 - `metric_semantics`：当前 algorithm 可能产生的 metric 语义表。
 - `metric_contracts`：每个 scan point 的 metric payload 是由哪些 `MetricSpec` 覆盖。
-- `factor_payload_contract`：声明 `W_students/X_students` 是否是真实 matrix factor。tensor metrics-only 路径这里会明确标记 unavailable。
+- `factor_payload_contract`：声明 `W_students/X_students/W_teacher/X_teacher` 是否是真实 matrix factor。tensor metrics-only 路径这里会明确标记 unavailable。
 - `result_cube`：canonical multi-axis result schema，形式是 `point_id -> coordinates/metrics/artifacts`；alpha-only 结果也会保留该字段。
 - `metrics`：旧兼容 flat dict，形式是 `scan_value -> metric dict`。
 - `results`：轻量 `SingleRunResult` 展开，不包含 tensor payload。
@@ -179,6 +179,13 @@ output_contract.json
 - matrix algorithm 有真实 `W_students/X_students` 时才保存这些 factor。
 - tensor metrics-only algorithm 不再保存 dummy zero `W/X`。
 - `factor_payload_contract` 必须同步写入 `.pt`，让本地分析脚本知道哪些字段不可用。
+
+## artifacts/teacher_factors.pt
+
+`artifacts/teacher_factors.pt` 是可选共享 teacher factor payload。当前只保存
+`W_teacher/X_teacher`，用于 posthoc sign/scale-gauge 诊断读取真实 teacher；
+canonical multi-axis 的每个 `artifacts/points/<point_id>/results.pt` 只保存
+`teacher_factors_path` 引用，不重复复制 teacher。
 
 ## 正式结果、诊断和展示
 

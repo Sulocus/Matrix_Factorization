@@ -30,6 +30,42 @@ def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = PR
 
 
 @torch.no_grad()
+def sign_aligned_projection_abs(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    latent_axis: int,
+    eps: float = PROJECTION_NORM_EPS,
+) -> float:
+    """
+    Projection overlap after quotienting the per-channel sign gauge.
+
+    Q = sum_k |<student_k, teacher_k>| / sum_k <teacher_k, teacher_k>
+
+    This diagnostic keeps the same projection-first normalization and
+    no-clipping policy as Q_W/Q_X, but removes the paired sign ambiguity of
+    matrix factors. It does not remove rotations or permutations.
+    """
+    if student.shape != teacher.shape:
+        raise ValueError(
+            "sign_aligned_projection_abs requires student and teacher to have "
+            f"the same shape, got {tuple(student.shape)} and {tuple(teacher.shape)}"
+        )
+    if student.dim() == 0:
+        return projection_abs(student, teacher, eps=eps)
+
+    latent_axis = latent_axis % student.dim()
+    perm = [axis for axis in range(student.dim()) if axis != latent_axis] + [latent_axis]
+    student_by_channel = student.permute(perm).reshape(-1, student.shape[latent_axis])
+    teacher_by_channel = teacher.permute(perm).reshape(-1, teacher.shape[latent_axis])
+    norm_teacher_sq = (teacher_by_channel * teacher_by_channel).sum()
+    if float(norm_teacher_sq.abs().item()) < eps:
+        return 0.0
+    per_channel_dot = (student_by_channel * teacher_by_channel).sum(dim=0).abs()
+    return float(per_channel_dot.sum() / (norm_teacher_sq + eps))
+
+
+@torch.no_grad()
 def projection_abs_diagnostics(
     student: torch.Tensor,
     teacher: torch.Tensor,
@@ -197,7 +233,8 @@ def compute_all_metrics(
         mask: Observation mask (required for Q_Y_unobserved/Q_Y_observed)
         metrics_to_compute: List of metric names to compute.
             If None, computes all standard metrics.
-            Valid names: Q_W, Q_X, Q_W_GRAM_ROOT, Q_X_GRAM_ROOT, Q_Y,
+            Valid names: Q_W, Q_X, Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED,
+                        Q_W_GRAM_ROOT, Q_X_GRAM_ROOT, Q_Y,
                         Q_Y_unobserved, Q_Y_observed
 
     Returns:
@@ -205,7 +242,15 @@ def compute_all_metrics(
     """
     # Default: all standard metrics
     if metrics_to_compute is None:
-        metrics_to_compute = ['Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT', 'Q_Y']
+        metrics_to_compute = [
+            'Q_W',
+            'Q_X',
+            'Q_W_SIGN_ALIGNED',
+            'Q_X_SIGN_ALIGNED',
+            'Q_W_GRAM_ROOT',
+            'Q_X_GRAM_ROOT',
+            'Q_Y',
+        ]
 
     if Y_teacher is None:
         Y_teacher = W_teacher @ X_teacher
@@ -220,6 +265,12 @@ def compute_all_metrics(
 
     if 'Q_X' in metrics_to_compute:
         results['Q_X'] = projection_abs(X_student, X_teacher)
+
+    if 'Q_W_SIGN_ALIGNED' in metrics_to_compute:
+        results['Q_W_SIGN_ALIGNED'] = sign_aligned_projection_abs(W_student, W_teacher, latent_axis=-1)
+
+    if 'Q_X_SIGN_ALIGNED' in metrics_to_compute:
+        results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_student, X_teacher, latent_axis=0)
 
     if 'Q_W_GRAM_ROOT' in metrics_to_compute:
         results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_student, W_teacher, use_left=True)

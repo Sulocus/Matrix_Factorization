@@ -10,6 +10,7 @@ import torch
 
 from ..registry import register_teacher
 from .base import TeacherBase
+from ...core.experiment.config import resolve_normalization_profile
 
 
 @register_teacher(
@@ -39,6 +40,7 @@ class OrthogonalTeacher(TeacherBase):
         M: int,
         device: torch.device,
         seed: int = 42,
+        normalization_profile: str = "paper_sparse_sampling",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Create orthogonal teacher matrices.
@@ -73,11 +75,10 @@ class OrthogonalTeacher(TeacherBase):
         X_ortho_T, _ = torch.linalg.qr(X_raw.T, mode='reduced')
         X_ortho = X_ortho_T.T
 
-        # Scale to match expected Frobenius norm of standard teacher
-        # Standard: E[||W||_F^2] = N1 * M * (1/M) = N1
-        # Orthogonal: ||W_ortho||_F^2 = M (since orthonormal columns)
-        # Scale factor: sqrt(N1/M) to get ||W||_F^2 = N1
-        W_true = W_ortho * (N1 / M) ** 0.5
-        X_true = X_ortho * (N2 / M) ** 0.5
+        # Scale to the selected entry variance.  paper_sparse_sampling gives
+        # Var(entry)=1; internal_normalized_legacy gives Var(entry)=1/M.
+        latent_std = resolve_normalization_profile(normalization_profile, M).latent_std
+        W_true = W_ortho * (N1 ** 0.5) * latent_std
+        X_true = X_ortho * (N2 ** 0.5) * latent_std
 
         return W_true, X_true

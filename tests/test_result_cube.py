@@ -1,4 +1,5 @@
 import json
+import torch
 
 from matrix_factorization.core.experiment.config import (
     AlgorithmParams,
@@ -68,3 +69,81 @@ def test_alpha_only_result_cube_keeps_legacy_metrics_payload(tmp_path):
     payload = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
     assert payload["metrics"]["0.0"]["Q_Y_mean"] == 0.7
     assert payload["result_cube"]["metrics"]["p0000"]["Q_Y_mean"] == 0.7
+
+
+def test_precision_scan_writes_comparison_report(tmp_path):
+    config = _config({
+        "axes": {
+            "precision": {"path": "algorithm_params.precision_profile", "values": ["fast", "aggressive"]},
+            "alpha": {"path": "alpha", "values": [0.5]},
+        }
+    })
+    result = ExperimentResult("precision_cube", config, scan_dimension="scan", scan_values=["fast", "aggressive"])
+    result.result_cube = ResultCube(
+        axes={
+            "precision": {"key": "precision", "path": "algorithm_params.precision_profile", "values": ["fast", "aggressive"]},
+            "alpha": {"key": "alpha", "path": "alpha", "values": [0.5]},
+        }
+    )
+    fast = SingleRunResult(scan_value="fast", metrics={"Q_Y_mean": 0.8, "Q_W_mean": 0.7})
+    aggressive = SingleRunResult(scan_value="aggressive", metrics={"Q_Y_mean": 0.78, "Q_W_mean": 0.71})
+    result.add_result("fast", fast)
+    result.add_result("aggressive", aggressive)
+    result.result_cube.add_point("p_fast", {"precision": "fast", "alpha": 0.5}, fast.metrics)
+    result.result_cube.add_point("p_aggressive", {"precision": "aggressive", "alpha": 0.5}, aggressive.metrics)
+
+    result.save(tmp_path, save_tensors=False, output_options={"enable_heatmap": False})
+
+    report = (tmp_path / "precision_comparison.md").read_text(encoding="utf-8")
+    assert "Precision comparison" in report
+    assert "Q_Y_mean" in report
+    assert "No NaN/Inf" in report
+
+
+def test_canonical_heatmap_uses_alpha_coordinate_for_point_ids(tmp_path, monkeypatch):
+    import numpy as np
+    from matrix_factorization.modules.outputs import plotting
+
+    config = _config({
+        "axes": {
+            "mean_scale": {"path": "teacher_config.mean_scale", "values": [0.4]},
+            "alpha": {"path": "alpha", "values": [0.2]},
+        }
+    })
+    result = ExperimentResult("cube_heatmap", config, scan_dimension="scan", scan_values=["p0000"])
+    result.result_cube = ResultCube(
+        axes={
+            "mean_scale": {"key": "mean_scale", "path": "teacher_config.mean_scale", "values": [0.4]},
+            "alpha": {"key": "alpha", "path": "alpha", "values": [0.2]},
+        }
+    )
+    single = SingleRunResult(
+        scan_value="p0000",
+        metrics={"Q_Y_mean": 1.0, "Q_W_mean": 1.0},
+        W_students=torch.ones(2, 2, 1),
+    )
+    result.W_teacher = torch.ones(2, 1)
+    result.add_result("p0000", single)
+    result.result_cube.add_point(
+        "p0000",
+        {"mean_scale": 0.4, "alpha": 0.2},
+        single.metrics,
+        group_id="mean_scale=0.4",
+    )
+    captured = {}
+
+    def fake_heatmap(matrix, alpha, output_dir, metric_name="Q_W", filename_prefix="heatmap", **kwargs):
+        captured["alpha"] = alpha
+        captured["prefix"] = filename_prefix
+        assert np.asarray(matrix).shape == (3, 3)
+        path = output_dir / f"{filename_prefix}_alpha_{alpha:.6f}.png"
+        path.write_text("fake", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(plotting, "plot_replica_heatmap", fake_heatmap)
+    monkeypatch.setattr(plotting, "create_gif", lambda paths, output_path, duration=0.2: output_path)
+
+    result.save(tmp_path, save_tensors=False, output_options={"enable_heatmap": True, "heatmap_metric": "Q_W"})
+
+    assert captured["alpha"] == 0.2
+    assert captured["prefix"].startswith("heatmap_W_mean_scale_0.4_p0000")

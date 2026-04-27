@@ -12,6 +12,67 @@ from typing import List, Any, Optional, Dict
 from enum import Enum
 import json
 from pathlib import Path
+import math
+
+
+NORMALIZATION_PROFILE_PAPER = "paper_sparse_sampling"
+NORMALIZATION_PROFILE_LEGACY = "internal_normalized_legacy"
+VALID_NORMALIZATION_PROFILES = {
+    NORMALIZATION_PROFILE_PAPER,
+    NORMALIZATION_PROFILE_LEGACY,
+}
+
+
+@dataclass(frozen=True)
+class NormalizationProfileValues:
+    """Resolved numerical constants for a normalization profile."""
+
+    profile: str
+    latent_std: float
+    latent_variance: float
+    student_init_std: float
+    student_init_variance: float
+    prior_precision_base: float
+    prior_variance: float
+    interaction_scale: float
+    convention_label: str
+    schema_version: int = 5
+
+
+def resolve_normalization_profile(profile: str, M: int) -> NormalizationProfileValues:
+    """Resolve YAML normalization_profile into runtime scale constants."""
+    profile = str(profile or NORMALIZATION_PROFILE_PAPER)
+    if profile not in VALID_NORMALIZATION_PROFILES:
+        raise ValueError(
+            "algorithm_params.normalization_profile must be one of "
+            f"{sorted(VALID_NORMALIZATION_PROFILES)}, got {profile!r}"
+        )
+    if M <= 0:
+        raise ValueError(f"M must be positive, got {M}")
+
+    interaction_scale = 1.0 / math.sqrt(float(M))
+    if profile == NORMALIZATION_PROFILE_LEGACY:
+        latent_variance = 1.0 / float(M)
+        latent_std = math.sqrt(latent_variance)
+        prior_precision = float(M)
+        label = "internal_normalized_legacy_inverse_sqrt_M_latent_M_prior"
+    else:
+        latent_variance = 1.0
+        latent_std = 1.0
+        prior_precision = 1.0
+        label = "paper_sparse_sampling_var1_latent_unit_prior"
+
+    return NormalizationProfileValues(
+        profile=profile,
+        latent_std=latent_std,
+        latent_variance=latent_variance,
+        student_init_std=latent_std,
+        student_init_variance=latent_variance,
+        prior_precision_base=prior_precision,
+        prior_variance=latent_variance,
+        interaction_scale=interaction_scale,
+        convention_label=label,
+    )
 
 
 class ScanDimension(Enum):
@@ -140,10 +201,11 @@ class SpreadingConfig:
 @dataclass
 class TeacherConfig:
     """Configuration specific to teacher model initialization."""
-    init_distribution: str = "gaussian"  # "gaussian" or "rademacher"
+    init_distribution: str = "gaussian"  # "gaussian", "rademacher", or "biased_gaussian"
+    mean_scale: float = 0.0  # biased_gaussian mean is mean_scale / sqrt(M)
     
     def __post_init__(self):
-        valid = ["gaussian", "rademacher"]
+        valid = ["gaussian", "rademacher", "biased_gaussian"]
         if self.init_distribution not in valid:
             raise ValueError(
                 f"Invalid init_distribution: {self.init_distribution}. "
@@ -165,7 +227,7 @@ class AlgorithmParams:
     - BiGAMPSpreading: damping, noise_var, f_distribution
     """
     # Common
-    damping: float = 0.5
+    damping: float = 0.5  # BiG-AMP beta: 1 accepts new state, 0 freezes old state
     noise_var: float = 1e-10
     
     # AGD specific
@@ -174,6 +236,9 @@ class AlgorithmParams:
     # Optimization
     use_compile: bool = True
     compile_fallback_policy: str = "allow"  # "allow" keeps eager fallback; "error" fails if compile fails
+    normalization_profile: str = NORMALIZATION_PROFILE_PAPER  # "paper_sparse_sampling" / "internal_normalized_legacy"
+    precision_profile: str = "fast"  # "safe" / "fast" / "aggressive"
+    precision_fallback_policy: str = "allow"  # "allow" keeps FP32 fallback; "error" fails if requested profile is unavailable
     use_bf16: bool = True
     dtype_fallback_policy: str = "allow"  # "allow" keeps FP32 fallback; "error" fails if BF16 is unavailable
     use_tf32: bool = True
@@ -190,9 +255,9 @@ class AlgorithmParams:
     adaptive_damping: bool = False
     step_min: float = 0.05
     step_max: float = 0.5
-    step_incr: float = 1.05
+    step_incr: float = 1.1
     step_decr: float = 0.5
-    step_window: int = 5
+    step_window: int = 1
     max_bad_steps: int = 10
     
     # Adaptive Warm Restart
@@ -209,6 +274,54 @@ class AlgorithmParams:
     
     # Debugging
     debug_verbose: bool = False    # Enable expensive per-step metrics logging
+
+    def __post_init__(self):
+        if not (0.0 <= float(self.damping) <= 1.0):
+            raise ValueError(
+                "algorithm_params.damping uses BiG-AMP beta-new-weight semantics and must be in [0, 1], "
+                f"got {self.damping!r}"
+            )
+        if float(self.noise_var) < 0.0:
+            raise ValueError(f"algorithm_params.noise_var must be non-negative, got {self.noise_var!r}")
+        if not (0.0 <= float(self.step_min) <= float(self.step_max) <= 1.0):
+            raise ValueError(
+                "algorithm_params adaptive damping bounds must satisfy 0 <= step_min <= step_max <= 1, "
+                f"got step_min={self.step_min!r}, step_max={self.step_max!r}"
+            )
+        if float(self.step_incr) < 1.0:
+            raise ValueError(f"algorithm_params.step_incr must be >= 1, got {self.step_incr!r}")
+        if not (0.0 < float(self.step_decr) <= 1.0):
+            raise ValueError(f"algorithm_params.step_decr must be in (0, 1], got {self.step_decr!r}")
+        if int(self.step_window) < 0:
+            raise ValueError(f"algorithm_params.step_window must be non-negative, got {self.step_window!r}")
+        if int(self.max_bad_steps) < 0:
+            raise ValueError(f"algorithm_params.max_bad_steps must be non-negative, got {self.max_bad_steps!r}")
+        if float(self.acceptance_tolerance) < 0.0:
+            raise ValueError(
+                f"algorithm_params.acceptance_tolerance must be non-negative, got {self.acceptance_tolerance!r}"
+            )
+        if self.normalization_profile not in VALID_NORMALIZATION_PROFILES:
+            raise ValueError(
+                "algorithm_params.normalization_profile must be one of "
+                f"{sorted(VALID_NORMALIZATION_PROFILES)}, got {self.normalization_profile!r}"
+            )
+        valid_profiles = {"safe", "fast", "aggressive"}
+        if self.precision_profile not in valid_profiles:
+            raise ValueError(
+                "algorithm_params.precision_profile must be one of "
+                f"{sorted(valid_profiles)}, got {self.precision_profile!r}"
+            )
+        valid_fallback = {"allow", "error"}
+        if self.precision_fallback_policy not in valid_fallback:
+            raise ValueError(
+                "algorithm_params.precision_fallback_policy must be 'allow' or 'error', "
+                f"got {self.precision_fallback_policy!r}"
+            )
+        if self.dtype_fallback_policy not in valid_fallback:
+            raise ValueError(
+                "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
+                f"got {self.dtype_fallback_policy!r}"
+            )
     
     def to_dict(self) -> Dict:
         return asdict(self)

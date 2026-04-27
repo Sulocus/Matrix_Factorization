@@ -24,6 +24,7 @@ import torch
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.core.experiment.config import resolve_normalization_profile
 from matrix_factorization.modules.graphs.supergraph import SuperGraphData, create_supergraph
 from matrix_factorization.modules.graphs.supergraph_general import SuperGraphDataGeneral, create_supergraph_general, EDGE_TYPE_WW, EDGE_TYPE_WX, EDGE_TYPE_XX
 from matrix_factorization.modules.teachers.random_spreading import SpreadingDataParallel
@@ -39,7 +40,8 @@ from .core import (
 from .step import (
     bigamp_spreading_step, bigamp_step_disjoint_union,
     compute_log_likelihood, bigamp_step_disjoint_union_flat_adaptive,
-    bigamp_step_disjoint_union_flat, bigamp_step_general_chunked,
+    bigamp_step_disjoint_union_flat, bigamp_step_disjoint_union_flat_legacy_fast,
+    bigamp_step_disjoint_union_flat_adaptive_legacy_fast, bigamp_step_general_chunked,
     bigamp_step_disjoint_union_flat_general, compute_offset_indices,
     clear_step_cache
 )
@@ -136,6 +138,8 @@ class BiGAMPSpreading(AlgorithmBase):
         self.noise_var = config.algorithm_params.noise_var
         self.max_steps = config.training.max_steps
         self.debug_verbose = getattr(config.algorithm_params, 'debug_verbose', False)
+        self.normalization_profile = getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling")
+        self._norm = resolve_normalization_profile(self.normalization_profile, config.matrix.M)
         self.seed_partition_policy = getattr(config.algorithm_params, 'seed_partition_policy', 'legacy')
         if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
             raise ValueError(
@@ -178,9 +182,9 @@ class BiGAMPSpreading(AlgorithmBase):
                 f"Available: {list(F_GENERATORS.keys())}"
             )
 
-        # torch.compile for kernel fusion (Phase 1 optimization - upgraded)
-        # NOTE: max-autotune and reduce-overhead use CUDA Graphs which can cause issues
-        # For large problems, we use 'default' mode (no CUDA Graphs, still has Triton kernels)
+        # torch.compile for kernel fusion.  Restore the legacy fast policy:
+        # medium problems try reduce-overhead first; very large problems use
+        # default mode to avoid excessive CUDA graph memory capture.
         self.requested_use_compile = getattr(config.algorithm_params, 'use_compile', True)
         self.compile_fallback_policy = getattr(config.algorithm_params, 'compile_fallback_policy', 'allow')
         if self.compile_fallback_policy not in {'allow', 'error'}:
@@ -190,27 +194,23 @@ class BiGAMPSpreading(AlgorithmBase):
             )
         self.use_compile = bool(self.requested_use_compile)
         self.compile_attempts = []
+        self.compile_disabled_reason = ""
+        self.compile_cuda_graphs_enabled = False
         if self.use_compile and BiGAMPSpreading._compiled_step is None:
-            # Determine if problem is "large" (needs memory-safe mode)
             N1 = config.matrix.N1
             N2 = config.matrix.N2
             M = config.matrix.M
-            is_large_problem = (N1 * N2 * M > 50_000_000)  # ~50M elements
-            
-            if is_large_problem:
-                # Large problem: use 'default' mode to avoid CUDA Graph issues
-                compile_modes = ['default']
-            else:
-                # Normal size: try more aggressive modes first
-                compile_modes = ['reduce-overhead', 'default']
+            is_large_problem = (N1 * N2 * M > 50_000_000)
+            compile_modes = ['default'] if is_large_problem else ['reduce-overhead', 'default']
             last_exc = None
             for mode in compile_modes:
                 try:
                     BiGAMPSpreading._compiled_step = torch.compile(
-                        bigamp_step_disjoint_union_flat,
+                        bigamp_step_disjoint_union_flat_legacy_fast,
                         mode=mode,
                         fullgraph=False,
                     )
+                    self.compile_cuda_graphs_enabled = (mode == 'reduce-overhead')
                     self._record_compile_attempt("bigamp_step_disjoint_union_flat", True, "")
                     break
                 except Exception as exc:
@@ -228,8 +228,8 @@ class BiGAMPSpreading(AlgorithmBase):
         if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is None:
             try:
                 BiGAMPSpreading._compiled_step_adaptive = torch.compile(
-                    bigamp_step_disjoint_union_flat_adaptive,
-                    mode='default',  # Use safe mode for adaptive (more intermediates)
+                    bigamp_step_disjoint_union_flat_adaptive_legacy_fast,
+                    mode='default',
                     fullgraph=False,
                 )
                 self._record_compile_attempt("bigamp_step_disjoint_union_flat_adaptive", True, "")
@@ -241,9 +241,23 @@ class BiGAMPSpreading(AlgorithmBase):
                 )
                 self._handle_compile_failure("bigamp_step_disjoint_union_flat_adaptive", exc)
 
-        # Phase 3: BF16 mixed precision (auto-detect hardware support)
-        self.requested_use_bf16 = getattr(config.algorithm_params, 'use_bf16', True)
-        self.dtype_fallback_policy = getattr(config.algorithm_params, 'dtype_fallback_policy', 'allow')
+        # Precision policy: profile is the source of truth; legacy use_bf16 is an alias.
+        self.precision_profile = getattr(
+            config.algorithm_params,
+            'precision_profile',
+            'fast' if getattr(config.algorithm_params, 'use_bf16', True) else 'safe',
+        )
+        if self.precision_profile == 'fast' and getattr(config.algorithm_params, 'use_bf16', True) is False:
+            self.precision_profile = 'safe'
+        self.precision_fallback_policy = getattr(
+            config.algorithm_params,
+            'precision_fallback_policy',
+            'allow',
+        )
+        if self.precision_fallback_policy == 'allow' and getattr(config.algorithm_params, 'dtype_fallback_policy', 'allow') == 'error':
+            self.precision_fallback_policy = 'error'
+        self.requested_use_bf16 = self.precision_profile in {'fast', 'aggressive'}
+        self.dtype_fallback_policy = self.precision_fallback_policy
         if self.dtype_fallback_policy not in {'allow', 'error'}:
             raise ValueError(
                 "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
@@ -295,8 +309,15 @@ class BiGAMPSpreading(AlgorithmBase):
         dynamic_batches: Optional[List[Tuple[int, int, float]]] = None,
     ) -> Dict[str, Any]:
         chunk_size = int(getattr(self, "chunk_size", 0) or 0)
+        norm = getattr(self, "_norm", None)
+        normalization_profile = getattr(self, "normalization_profile", "paper_sparse_sampling")
         return {
             "path": "bigamp_spreading_general",
+            "normalization_schema_version": getattr(norm, "schema_version", 5),
+            "normalization_profile": normalization_profile,
+            "normalization_convention": getattr(norm, "convention_label", "paper_sparse_sampling_var1_latent_unit_prior"),
+            "precision_profile": getattr(self, "precision_profile", "fast"),
+            "precision_fallback_policy": getattr(self, "precision_fallback_policy", "allow"),
             "chunk_size": chunk_size,
             "chunking_enabled": chunk_size > 0,
             "chunk_policy": "manual_config" if chunk_size > 0 else "disabled_legacy_unchunked",
@@ -306,6 +327,8 @@ class BiGAMPSpreading(AlgorithmBase):
             ),
             "compile_fallback_policy": getattr(self, "compile_fallback_policy", "allow"),
             "compile_status": self._compile_status_for_spreading_path(),
+            "compile_cuda_graphs_enabled": bool(getattr(self, "compile_cuda_graphs_enabled", False)),
+            "compile_disabled_reason": getattr(self, "compile_disabled_reason", ""),
             "compile_attempts": list(getattr(self, "compile_attempts", [])),
             "requested_use_tf32": bool(getattr(self, "requested_use_tf32", True)),
             "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
@@ -364,6 +387,7 @@ class BiGAMPSpreading(AlgorithmBase):
         seed: int,
         role: str,
         scale: float,
+        mean: float = 0.0,
     ) -> torch.Tensor:
         alpha_blocks = []
         for alpha in alpha_values:
@@ -387,9 +411,17 @@ class BiGAMPSpreading(AlgorithmBase):
                         dtype=self.storage_dtype,
                     )
                     * scale
+                    + mean
                 )
             alpha_blocks.append(torch.stack(sample_blocks, dim=0).reshape(sample_count * node_count, latent_dim))
         return torch.stack(alpha_blocks, dim=0)
+
+    def _student_init_mean(self) -> float:
+        teacher_cfg = getattr(self.config, "teacher", None)
+        if getattr(teacher_cfg, "init_distribution", "gaussian") != "biased_gaussian":
+            return 0.0
+        scale = self._norm.student_init_std
+        return float(getattr(teacher_cfg, "mean_scale", 0.0)) * scale
 
     def _initialize_near_teacher_partitioned(
         self,
@@ -471,6 +503,7 @@ class BiGAMPSpreading(AlgorithmBase):
         S: int,
         device: torch.device,
         dtype: torch.dtype,
+        noise_scale: float = 1.0,
     ) -> torch.Tensor:
         """
         Generate initial estimate close to the teacher for Hysteresis Analysis.
@@ -500,7 +533,7 @@ class BiGAMPSpreading(AlgorithmBase):
         teacher_flat = teacher_expanded.reshape(B, SN, M_dim).to(device, dtype=dtype)
         
         # Generate noise with same shape
-        noise = torch.randn(target_shape, device=device, dtype=dtype)
+        noise = torch.randn(target_shape, device=device, dtype=dtype) * noise_scale
         
         # Combine with variance preservation formula
         coeff_signal = m_init
@@ -588,6 +621,11 @@ class BiGAMPSpreading(AlgorithmBase):
                 F_super=F_super,
             )
 
+        if getattr(self, "precision_profile", "fast") == "aggressive" and getattr(self, "use_bf16", False):
+            if torch.is_floating_point(F_super):
+                F_super = F_super.to(self.storage_dtype)
+            Y_super = Y_super.to(self.storage_dtype)
+
         return SpreadingDataParallel(
             supergraph=supergraph,
             F_super=F_super,
@@ -633,19 +671,20 @@ class BiGAMPSpreading(AlgorithmBase):
         j_idx = j_idx.long()
         alpha_mask = spreading_data.supergraph.alpha_mask  # (A, C_max)
 
-        # Initialize student variables
-        # Initialize student variables (Mean Field Scaling: N(0,1))
-        # scale = 1.0 / math.sqrt(M)  # Removed for Mean Field
-        W_hat = torch.randn(A, N1, M, device=self.device) * 0.1
-        X_hat = torch.randn(A, M, N2, device=self.device) * 0.1
-        W_var = torch.ones(A, N1, M, device=self.device)
-        X_var = torch.ones(A, M, N2, device=self.device)
+        # Initialize student variables in the selected normalization profile.
+        norm = resolve_normalization_profile(self.normalization_profile, M)
+        scale = norm.student_init_std
+        W_hat = torch.randn(A, N1, M, device=self.device) * scale
+        X_hat = torch.randn(A, M, N2, device=self.device) * scale
+        W_var = torch.ones(A, N1, M, device=self.device) * norm.prior_variance
+        X_var = torch.ones(A, M, N2, device=self.device) * norm.prior_variance
 
         prev_s = None
+        prev_svar = None
 
         # BiG-AMP iterations
         for step in range(self.max_steps):
-            W_hat, X_hat, W_var, X_var, prev_s = bigamp_spreading_step(
+            W_hat, X_hat, W_var, X_var, next_prev_s, next_prev_svar = bigamp_spreading_step(
                 W_hat=W_hat,
                 X_hat=X_hat,
                 W_var=W_var,
@@ -657,8 +696,17 @@ class BiGAMPSpreading(AlgorithmBase):
                 alpha_mask=alpha_mask,
                 damping=self.damping,
                 noise_var=self.noise_var,
+                prior_precision_base=norm.prior_precision_base,
+                prior_variance=norm.prior_variance,
                 prev_s=prev_s,
+                prev_svar=prev_svar,
             )
+            if self.onsager_correction:
+                prev_s = next_prev_s
+                prev_svar = next_prev_svar
+            else:
+                prev_s = None
+                prev_svar = None
 
             if verbose and (step + 1) % 100 == 0:
                 print(f"  Step {step + 1}/{self.max_steps}")
@@ -796,6 +844,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # ===== INITIALIZATION (Teacher-Assisted or Random) =====
         init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
         init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+        init_mean = self._student_init_mean()
 
         if init_mode == 'teacher' and self._uses_partition_invariant_seed_policy():
             W_flat = self._initialize_near_teacher_partitioned(
@@ -824,7 +873,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 init_overlap,
                 S,
                 self.device,
-                self.storage_dtype
+                self.storage_dtype,
             )
             X_flat = self._initialize_near_teacher(
                 (B, S * N2, M),
@@ -832,7 +881,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 init_overlap,
                 S,
                 self.device,
-                self.storage_dtype
+                self.storage_dtype,
             )
             if verbose:
                 print(f"  [Init] Teacher-Assisted (m={init_overlap})")
@@ -847,6 +896,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     seed=base_seed,
                     role="W_student",
                     scale=0.1,
+                    mean=init_mean,
                 )
                 X_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
@@ -856,31 +906,36 @@ class BiGAMPSpreading(AlgorithmBase):
                     seed=base_seed,
                     role="X_student",
                     scale=0.1,
+                    mean=init_mean,
                 )
             else:
-                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1 + init_mean
+                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1 + init_mean
 
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
 
 
         prev_s = None
+        prev_svar = None
         is_rademacher = (self.f_distribution == 'rademacher')
 
         # ===== OPTIMIZATION 3: Use compiled step if available =====
-        step_fn = BiGAMPSpreading._compiled_step if self.use_compile and BiGAMPSpreading._compiled_step is not None else bigamp_step_disjoint_union_flat
+        step_fn = (
+            BiGAMPSpreading._compiled_step
+            if self.use_compile and BiGAMPSpreading._compiled_step is not None
+            else bigamp_step_disjoint_union_flat_legacy_fast
+        )
 
         # Use provided max_steps or fall back to config
         steps = max_steps if max_steps is not None else self.max_steps
 
         # BiG-AMP iterations with optimized flat function
         for step in range(steps):
-            # CRITICAL FIX: Mark new CUDA Graph step to prevent "tensor overwritten" error
             if self.use_compile and BiGAMPSpreading._compiled_step is not None:
                 torch.compiler.cudagraph_mark_step_begin()
-            
-            W_flat, X_flat, W_var_flat, X_var_flat, next_prev_s = step_fn(
+
+            W_flat, X_flat, W_var_flat, X_var_flat, next_prev_s, next_prev_svar = step_fn(
                 W_flat=W_flat,
                 X_flat=X_flat,
                 W_var_flat=W_var_flat,
@@ -895,24 +950,22 @@ class BiGAMPSpreading(AlgorithmBase):
                 N2=N2,
                 damping=self.damping,
                 noise_var=self.noise_var,
+                prior_precision_base=self._norm.prior_precision_base,
+                prior_variance=self._norm.prior_variance,
                 is_rademacher=is_rademacher,
                 prev_s=prev_s,
+                prev_svar=prev_svar,
             )
             
             # --- ONSAGER CONTROL FIX (Non-Adaptive) ---
             # Strictly respect config flag. If False, prev_s must be None.
             if self.onsager_correction:
                 prev_s = next_prev_s
+                prev_svar = next_prev_svar
             else:
                 prev_s = None
-            
-            # CLONE STRATEGY: Break CUDA Graph address dependency
-            # When using torch.compile with reduce-overhead mode, CUDA Graphs captures
-            # input tensor memory addresses during recording. The iterative pattern
-            # `W_flat = step_fn(W_flat=W_flat)` causes outputs to overwrite input vars,
-            # Graph thinks addresses are "polluted" and raises error:
-            # "accessing tensor output of CUDAGraphs that has been overwritten"
-            # Solution: Clone output tensors to allocate new memory, breaking the chain.
+                prev_svar = None
+
             if self.use_compile and BiGAMPSpreading._compiled_step is not None:
                 W_flat = W_flat.clone()
                 X_flat = X_flat.clone()
@@ -981,7 +1034,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # Determine params
         params = self.config.algorithm_params
         step_min = getattr(params, 'step_min', 0.05)
-        step_max = getattr(params, 'step_max', 1.0)
+        step_max = getattr(params, 'step_max', 0.5)
         step_incr = getattr(params, 'step_incr', 1.1)
         step_decr = getattr(params, 'step_decr', 0.5)
         max_bad = getattr(params, 'max_bad_steps', 10)
@@ -1006,6 +1059,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # ===== INITIALIZATION (Teacher-Assisted or Random) =====
         init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
         init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+        init_mean = self._student_init_mean()
 
         if init_mode == 'teacher' and self._uses_partition_invariant_seed_policy():
             W_flat = self._initialize_near_teacher_partitioned(
@@ -1034,7 +1088,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 init_overlap,
                 S,
                 self.device,
-                self.storage_dtype
+                self.storage_dtype,
             )
             X_flat = self._initialize_near_teacher(
                 (B, S * N2, M),
@@ -1042,7 +1096,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 init_overlap,
                 S,
                 self.device,
-                self.storage_dtype
+                self.storage_dtype,
             )
             if verbose:
                 print(f"  [Init] Teacher-Assisted Adaptive (m={init_overlap})")
@@ -1057,6 +1111,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     seed=base_seed,
                     role="W_student",
                     scale=0.1,
+                    mean=init_mean,
                 )
                 X_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
@@ -1066,10 +1121,11 @@ class BiGAMPSpreading(AlgorithmBase):
                     seed=base_seed,
                     role="X_student",
                     scale=0.1,
+                    mean=init_mean,
                 )
             else:
-                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1
-                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1
+                W_flat = torch.randn(B, S * N1, M, device=self.device, dtype=self.storage_dtype) * 0.1 + init_mean
+                X_flat = torch.randn(B, S * N2, M, device=self.device, dtype=self.storage_dtype) * 0.1 + init_mean
 
         W_var_flat = torch.ones(B, S * N1, M, device=self.device, dtype=self.storage_dtype)
         X_var_flat = torch.ones(B, S * N2, M, device=self.device, dtype=self.storage_dtype)
@@ -1082,15 +1138,17 @@ class BiGAMPSpreading(AlgorithmBase):
         W_var_safe = W_var_flat.clone()
         X_var_safe = X_var_flat.clone()
         s_safe = None
+        svar_safe = None
         
         prev_s = None
+        prev_svar = None
         current_val = -float('inf')
         
         # Use compiled step function if available (like train_full_parallel L1337)
         if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is not None:
             step_fn = BiGAMPSpreading._compiled_step_adaptive
         else:
-            step_fn = bigamp_step_disjoint_union_flat_adaptive
+            step_fn = bigamp_step_disjoint_union_flat_adaptive_legacy_fast
         
         is_rademacher = (self.f_distribution == 'rademacher')
         steps = max_steps if max_steps is not None else self.max_steps
@@ -1108,15 +1166,19 @@ class BiGAMPSpreading(AlgorithmBase):
             damp_history = torch.zeros(steps, B, dtype=torch.float32, device=self.device)
 
         for step in range(steps):
-            # CUDA Graph compatibility mark (like train_full_parallel L1345-1346)
-            if self.use_compile and BiGAMPSpreading._compiled_step is not None:
+            if self.use_compile and BiGAMPSpreading._compiled_step_adaptive is not None:
                 torch.compiler.cudagraph_mark_step_begin()
+
+            beta_current = damping
             
             # Run step function to get raw updates
-            W_raw, X_raw, W_var_raw, X_var_raw, s_vals, Z_hat, V = step_fn(
+            W_raw, X_raw, W_var_raw, X_var_raw, s_vals, svar_vals, Z_hat, V = step_fn(
                 W_flat, X_flat, W_var_flat, X_var_flat,
                 Y_flat, F_flat, i_offset, j_offset, alpha_mask_exp,
-                S, N1, N2, self.noise_var, is_rademacher, prev_s
+                S, N1, N2, self.noise_var,
+                self._norm.prior_precision_base,
+                self._norm.prior_variance,
+                is_rademacher, prev_s, prev_svar
             )
             
             new_val = compute_log_likelihood(Y_flat, Z_hat, V, self.noise_var)
@@ -1144,6 +1206,8 @@ class BiGAMPSpreading(AlgorithmBase):
             # Initialize safely if first step
             if s_safe is None:
                  s_safe = torch.zeros_like(s_vals)
+            if svar_safe is None:
+                 svar_safe = torch.zeros_like(svar_vals)
             
             W_safe = torch.where(pass_mask_3d, W_flat, W_safe)
             X_safe = torch.where(pass_mask_3d, X_flat, X_safe)
@@ -1151,19 +1215,21 @@ class BiGAMPSpreading(AlgorithmBase):
             X_var_safe = torch.where(pass_mask_3d, X_var_flat, X_var_safe)
             if prev_s is not None and s_safe is not None:
                 s_safe = torch.where(pass_mask_2d, prev_s, s_safe)
+            if prev_svar is not None and svar_safe is not None:
+                svar_safe = torch.where(pass_mask_2d, prev_svar, svar_safe)
             
             # --- 2. Update Likelihood & Damping ---
             current_val = torch.where(pass_mask, new_val, current_val)
             
-            damping = torch.where(pass_mask, 
-                                  torch.clamp(damping * step_incr, max=step_max),
-                                  torch.clamp(damping * step_decr, min=step_min))
+            damping_next = torch.where(pass_mask,
+                                       torch.clamp(damping * step_incr, max=step_max),
+                                       torch.clamp(damping * step_decr, min=step_min))
             
             # --- 3. Compute Next State (Main Update) ---
             # If Accepted: New = Damping * Raw + (1-Damping) * Old
             # If Rejected: New = Safe (Backtrack)
             
-            d_view = damping.view(B, 1, 1)
+            d_view = beta_current.view(B, 1, 1)
             
             # Candidate if accepted (Damped Update)
             W_accepted = d_view * W_raw + (1 - d_view) * W_flat
@@ -1184,20 +1250,28 @@ class BiGAMPSpreading(AlgorithmBase):
             
             # Onsager Scaling (Vectorized)
             # prev_s logic:
-            # If accepted: prev_s = s_vals * damping
+            # If accepted: prev_s follows the same beta used for the accepted state.
             # If rejected: prev_s = s_safe (Backtrack)
             
             # --- ONSAGER CONTROL FIX (Adaptive) ---
             if self.onsager_correction:
                 if prev_s is None:
-                     prev_s = torch.zeros_like(s_vals)
-                     
-                prev_s_accepted = s_vals * damping.view(B, 1)
+                    prev_s_accepted = s_vals
+                else:
+                    prev_s_accepted = beta_current.view(B, 1) * s_vals + (1 - beta_current).view(B, 1) * prev_s
+                if prev_svar is None:
+                    prev_svar_accepted = svar_vals
+                else:
+                    prev_svar_accepted = beta_current.view(B, 1) * svar_vals + (1 - beta_current).view(B, 1) * prev_svar
                 prev_s_rejected = s_safe
+                prev_svar_rejected = svar_safe
                 prev_s = torch.where(pass_mask_2d, prev_s_accepted, prev_s_rejected)
+                prev_svar = torch.where(pass_mask_2d, prev_svar_accepted, prev_svar_rejected)
             else:
                 prev_s = None
+                prev_svar = None
 
+            damping = damping_next
 
             # --- WARM RESTART LOGIC (Optimized) ---
             restart_msg = ""
@@ -1428,11 +1502,14 @@ class BiGAMPSpreading(AlgorithmBase):
         masks: Optional[torch.Tensor],
         alpha_values: List[float],
         seed: int,
+        spreading_data: Optional[SpreadingDataParallel] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         step_callback: Optional[Callable[[int, int], None]] = None,
         **kwargs,
     ):
         """Return spreading BiGAMP output as a native matrix AlgorithmResult."""
+        import time
+
         call_kwargs = self._filter_train_batch_kwargs({
             "W_teacher": W_teacher,
             "X_teacher": X_teacher,
@@ -1444,13 +1521,62 @@ class BiGAMPSpreading(AlgorithmBase):
             "step_callback": step_callback,
             **kwargs,
         })
+        train_start = time.perf_counter()
         W_students, X_students = self.train_batch_alphas(**call_kwargs)
-        return self.coerce_native_matrix_result(
+        train_seconds = time.perf_counter() - train_start
+        result = self.coerce_native_matrix_result(
             algorithm_key=algorithm_key,
             W_students=W_students,
             X_students=X_students,
             result_source="native_bigamp_spreading_algorithm_result",
+            metadata={
+                "batch_metric_path": (
+                    "gpu_resident_batch_metric_payload"
+                    if spreading_data is not None else "runner_metric_fallback"
+                ),
+            },
         )
+        if spreading_data is not None:
+            from ...metrics.spreading import BatchMetricPayload, compute_all_metrics_spreading_parallel
+
+            W_for_metrics = W_students.transpose(0, 1) if W_students.shape[0] == len(alpha_values) else W_students
+            X_for_metrics = X_students.transpose(0, 1) if X_students.shape[0] == len(alpha_values) else X_students
+            metric_start = time.perf_counter()
+            metric_tensors = compute_all_metrics_spreading_parallel(
+                W_for_metrics,
+                X_for_metrics,
+                spreading_data,
+                edge_chunk_size=min(max(int(getattr(self, "chunk_size", 0) or 8192), 1024), 8192),
+                sample_chunk_size=16,
+            )
+            if torch.cuda.is_available() and W_for_metrics.is_cuda:
+                torch.cuda.synchronize(W_for_metrics.device)
+            metric_seconds = time.perf_counter() - metric_start
+            alpha_tensor = metric_tensors.get("alpha_values", spreading_data.alpha_values)
+            payload = BatchMetricPayload(
+                alpha_values=alpha_tensor,
+                metrics={key: value for key, value in metric_tensors.items() if key != "alpha_values"},
+                metadata={
+                    "path": "bigamp_spreading_gpu_batch_metrics",
+                    "materialization": "single_batch_cpu_transfer",
+                },
+            )
+            materialize_start = time.perf_counter()
+            result.metrics_by_alpha = payload.to_metrics_by_alpha()
+            materialize_seconds = time.perf_counter() - materialize_start
+            result.diagnostics["batch_metric_payload"] = dict(payload.metadata or {})
+            result.diagnostics["batch_timing_seconds"] = {
+                "train_gpu_wall": train_seconds,
+                "metric_gpu_wall": metric_seconds,
+                "metric_materialize_cpu": materialize_seconds,
+            }
+        else:
+            result.diagnostics["batch_timing_seconds"] = {
+                "train_gpu_wall": train_seconds,
+                "metric_gpu_wall": 0.0,
+                "metric_materialize_cpu": 0.0,
+            }
+        return result
 
     def train_single_alpha(
         self,
@@ -1550,6 +1676,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # ===== INITIALIZATION (Teacher-Assisted or Random) =====
         init_mode = getattr(self.config.algorithm_params, 'init_mode', 'random')
         init_overlap = getattr(self.config.algorithm_params, 'init_overlap', 0.95)
+        init_mean = self._student_init_mean()
 
         if init_mode == 'teacher':
             # Teacher-Assisted Initialization for General Graph
@@ -1574,7 +1701,8 @@ class BiGAMPSpreading(AlgorithmBase):
                     init_overlap,
                     S,
                     self.device,
-                    self.storage_dtype
+                    self.storage_dtype,
+                    noise_scale=self._norm.student_init_std,
                 )
             if verbose:
                 print(f"  [Init] Teacher-Assisted General (m={init_overlap})")
@@ -1588,14 +1716,16 @@ class BiGAMPSpreading(AlgorithmBase):
                     latent_dim=M,
                     seed=base_seed,
                     role="V_student",
-                    scale=0.1,
+                    scale=self._norm.student_init_std,
+                    mean=init_mean,
                 )
             else:
-                V_flat = torch.randn(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * 0.1
+                V_flat = torch.randn(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * self._norm.student_init_std + init_mean
 
-        V_var_flat = torch.ones(B, S * N_total, M, device=self.device, dtype=self.storage_dtype)
+        V_var_flat = torch.ones(B, S * N_total, M, device=self.device, dtype=self.storage_dtype) * self._norm.prior_variance
 
         prev_s = None
+        prev_svar = None
         is_rademacher = (self.f_distribution == 'rademacher')
 
         steps = max_steps if max_steps is not None else self.max_steps
@@ -1619,8 +1749,10 @@ class BiGAMPSpreading(AlgorithmBase):
                     try:
                         torch._dynamo.reset()
                         BiGAMPSpreading._compiled_step_general = torch.compile(
-                            bigamp_step_disjoint_union_flat_general, 
-                            mode="default"
+                            bigamp_step_disjoint_union_flat_general,
+                            backend='inductor',
+                            fullgraph=False,
+                            options={'triton.cudagraphs': False},
                         )
                     except Exception:
                         BiGAMPSpreading._compiled_step_general = bigamp_step_disjoint_union_flat_general
@@ -1630,27 +1762,30 @@ class BiGAMPSpreading(AlgorithmBase):
         for step in range(steps):
             if use_chunked:
                 # Chunked version: pass chunk_size and use_compile
-                V_flat, V_var_flat, s_values, _, _ = step_fn(
+                V_flat, V_var_flat, s_values, svar_values, _, _ = step_fn(
                     V_flat, V_var_flat, Y_flat, F_flat, i_offset, j_offset,
                     alpha_mask_exp, S, N_total, self.damping, self.noise_var,
-                    is_rademacher, prev_s, self.chunk_size, self.use_compile
+                    self._norm.prior_precision_base,
+                    self._norm.prior_variance,
+                    is_rademacher, prev_s, prev_svar, self.chunk_size, self.use_compile
                 )
             else:
                 # Legacy version
-                if self.use_compile and BiGAMPSpreading._compiled_step_general is not None:
-                    torch.compiler.cudagraph_mark_step_begin()
-                
-                V_flat, V_var_flat, s_values, _, _ = step_fn(
+                V_flat, V_var_flat, s_values, svar_values, _, _ = step_fn(
                     V_flat, V_var_flat, Y_flat, F_flat, i_offset, j_offset,
                     alpha_mask_exp, S, N_total, self.damping, self.noise_var,
-                    is_rademacher, prev_s
+                    self._norm.prior_precision_base,
+                    self._norm.prior_variance,
+                    is_rademacher, prev_s, prev_svar
                 )
 
             # Onsager
             if self.onsager_correction:
                 prev_s = s_values
+                prev_svar = svar_values
             else:
                 prev_s = None
+                prev_svar = None
 
             if verbose and (step + 1) % 100 == 0:
                 print(f"  Step {step + 1}/{steps}")
@@ -1727,7 +1862,17 @@ def run_spreading_parallel(
     # Create teacher using existing system
     teacher_cls = get_teacher(config.teacher_key).cls
     teacher = teacher_cls()
-    W_teacher, X_teacher = teacher.create(m.N1, m.N2, m.M, device, seed)
+    try:
+        W_teacher, X_teacher = teacher.create(
+            m.N1,
+            m.N2,
+            m.M,
+            device,
+            seed,
+            normalization_profile=getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling"),
+        )
+    except TypeError:
+        W_teacher, X_teacher = teacher.create(m.N1, m.N2, m.M, device, seed)
 
     if verbose:
         print(f"  Teacher type: {config.teacher_key}")

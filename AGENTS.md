@@ -47,3 +47,11 @@ and the `mf trial ...` commands. Do not edit
 `src/matrix_factorization/config.yaml` for trial/debug runs unless the user
 explicitly asks to change the formal default config. Trial outputs must stay in
 `runs/trials/`, `artifacts/trials/`, or `results/trials/`.
+
+Canonical scan UI rule: child runners inside a canonical `scan.axes` execution
+must not restart the terminal progress UI or emit their own top-level
+experiment lifecycle to `ProgressBridge`. Wrap child progress events with the
+current scan coordinates, group index, resource batch, alpha range, and point
+progress so crashes can be traced to the exact scan point. Keep `output.name`
+as a short human label only; run directories must derive dimensions, samples,
+steps, scan axes, and hash from the effective config.

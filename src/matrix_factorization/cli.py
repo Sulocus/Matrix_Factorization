@@ -110,6 +110,14 @@ def load_yaml_config(yaml_path: Path):
         key: value for key, value in a.items()
         if key in known_algorithm_param_fields
     })
+    if 'precision_fallback_policy' in a:
+        algo_params.dtype_fallback_policy = str(a['precision_fallback_policy'])
+    elif 'dtype_fallback_policy' in a:
+        algo_params.precision_fallback_policy = str(a['dtype_fallback_policy'])
+    if 'precision_profile' in a:
+        algo_params.use_bf16 = algo_params.precision_profile in {'fast', 'aggressive'}
+    elif 'use_bf16' in a:
+        algo_params.precision_profile = 'fast' if bool(algo_params.use_bf16) else 'safe'
 
     # Spreading 配置
     spreading = None
@@ -130,12 +138,22 @@ def load_yaml_config(yaml_path: Path):
             tensor_order=tensor_order,
         )
 
-    INIT_DIST_MAP = {1: 'gaussian', 2: 'rademacher', 'gaussian': 'gaussian', 'rademacher': 'rademacher'}
+    INIT_DIST_MAP = {
+        1: 'gaussian',
+        2: 'rademacher',
+        3: 'biased_gaussian',
+        'gaussian': 'gaussian',
+        'rademacher': 'rademacher',
+        'biased_gaussian': 'biased_gaussian',
+    }
 
     # Teacher Config (Fixed Bug: was ignored previously)
     teacher_cfg_dict = cfg.get('teacher_config', {})
     init_dist = INIT_DIST_MAP.get(teacher_cfg_dict.get('init_distribution', 1), 'gaussian')
-    teacher_config = TeacherConfig(init_distribution=init_dist)
+    teacher_config = TeacherConfig(
+        init_distribution=init_dist,
+        mean_scale=float(teacher_cfg_dict.get('mean_scale', 0.0)),
+    )
 
     # 输出选项 (完整解析)
     output_cfg = cfg.get('output', {})
@@ -728,8 +746,22 @@ def _short_axis_name(axis_name: str) -> str:
         "init": "init",
         "size": "sz",
         "onsager": "ons",
+        "onsager_policy": "ons",
     }
     return aliases.get(axis_name, _slugify_run_token(axis_name, fallback="ax")[:4])
+
+
+def _axis_value_count(axis_spec) -> int:
+    if isinstance(axis_spec, dict):
+        values = axis_spec.get("values", [])
+        if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
+            return len(_canonical_axis_values(axis_spec))
+        if isinstance(values, dict):
+            return len(values)
+        if isinstance(values, list):
+            return len(values)
+        return 1
+    return 1
 
 
 def _scan_summary_token(config: ExperimentConfig) -> str:
@@ -741,21 +773,23 @@ def _scan_summary_token(config: ExperimentConfig) -> str:
     tokens = []
     for axis_name, axis_spec in axes.items():
         short_name = _short_axis_name(axis_name)
-        if isinstance(axis_spec, dict):
-            values = axis_spec.get("values", [])
-            if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
-                count = len(_canonical_axis_values(axis_spec))
-            elif isinstance(values, dict):
-                count = len(values)
-            elif isinstance(values, list):
-                count = len(values)
-            else:
-                count = 1
-        else:
-            count = 1
+        count = _axis_value_count(axis_spec)
         tokens.append(f"{short_name}{count}")
 
     return "-".join(tokens[:4]) or "scan1"
+
+
+def _scan_display_summary(config: ExperimentConfig) -> str:
+    scan_spec = config.scan_spec if isinstance(config.scan_spec, dict) else None
+    axes = scan_spec.get("axes", {}) if scan_spec else {}
+    if not axes:
+        return f"{config.scan.dimension} ({len(config.scan.values)} points)"
+    parts = [f"{axis_name}={_axis_value_count(axis_spec)}" for axis_name, axis_spec in axes.items()]
+    return " × ".join(parts)
+
+
+def _looks_like_parameterized_label(label: str) -> bool:
+    return bool(re.search(r"(^|[_-])(?:S|N|M|steps?|alpha|a)\d+|(?:^|[_-])\d+x\d+", label or "", re.IGNORECASE))
 
 
 def _config_hash_token(config: ExperimentConfig, raw_yaml: str = "") -> str:
@@ -778,12 +812,16 @@ def _build_run_directory_name(
     """
     output_options = output_options or {}
     user_label = _slugify_run_token(output_options.get("name", ""), fallback="")
+    if _looks_like_parameterized_label(user_label):
+        user_label = ""
     parts = [
         timestamp,
         user_label,
         _algorithm_alias(config.algorithm_key),
         _shape_token(config),
         _scan_summary_token(config),
+        f"S{config.S}",
+        f"steps{config.training.max_steps}",
         _config_hash_token(config, raw_yaml),
     ]
     return "_".join(part for part in parts if part)
@@ -806,7 +844,7 @@ def _handle_single_run(config, args, timestamp, runner, bridge, output_options, 
     print(f"  Algorithm:  {config.algorithm_key}")
     print(f"  Teacher:    {config.teacher_key}")
     print(f"  Matrix:     {config.N1}x{config.N2}, M={config.M}")
-    print(f"  Scan:       {config.scan.dimension} ({len(config.scan.values)} points)")
+    print(f"  Scan:       {_scan_display_summary(config)}")
     print(f"  Samples:    {config.S}")
     print(f"  Steps:      {config.training.max_steps}")
     print()

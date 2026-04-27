@@ -13,7 +13,7 @@
 #   1 = 一般图（General Graph）：自动启用 allow_intra_connection
 #   2 = 二分图/矩阵分解（Bipartite）：标准模式（默认）
 #   3+ = N维张量分解：使用 bigamp_tensor 算法
-tensor_order: 3
+tensor_order: 2
 
 # =============================================================================
 # 算法选择（仅在 tensor_order=1,2 时生效）
@@ -25,7 +25,7 @@ tensor_order: 3
 #   4 | bigamp_tensor    = 张量 AMP (n>=3)
 #   5 | agd_tensor       = 张量 AGD (n>=3)
 # ⚠️ 注意：tensor_order >= 3 时推荐使用 bigamp_tensor
-algorithm: 4  # 推荐: bigamp_tensor 或 agd_tensor
+algorithm: 2  # 1=普通 bigamp；2=bigamp_spreading
 
 # =============================================================================
 # Teacher 类型
@@ -39,17 +39,21 @@ teacher: 2
 # Teacher 初始化分布
 # =============================================================================
 # init_distribution:
-#   1 | gaussian   = 高斯分布 N(0, 1/√M)（默认）
-#   2 | rademacher = ±1/√M（类 Ising 模型，一般图模式推荐）
+#   1 | gaussian        = 高斯分布；尺度由 algorithm_params.normalization_profile 决定
+#   2 | rademacher      = ±1 或 ±1/√M；尺度由 normalization_profile 决定
+#   3 | biased_gaussian = 均值为 mean_scale * latent_std 的高斯
+# mean_scale:
+#   只在 biased_gaussian 下生效；Ising/Rademacher 实验中保持 0。
 teacher_config:
   init_distribution: 1
+  mean_scale: 0.0
 
 # =============================================================================
 # 矩阵尺寸
 # =============================================================================
 matrix:
-  N1: 200     # 行数
-  N2: 200     # 列数
+  N1: 200      # 行数
+  N2: 200      # 列数
   M: 50       # 秩（隐藏维度）
 
 # =============================================================================
@@ -59,6 +63,27 @@ matrix:
 # kind: composite 用于一个 axis 同时覆盖多个参数，例如 size 或 cold/warm init。
 scan:
   axes:
+    onsager_policy:
+      kind: composite
+      values:
+        no_onsager:
+          spreading.onsager_correction: false
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.5
+        onsager_fixed_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+        onsager_adaptive_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: true
+          algorithm_params.damping: 0.05
+          algorithm_params.step_min: 0.05
+          algorithm_params.step_max: 0.5
+          algorithm_params.step_incr: 1.1
+          algorithm_params.step_decr: 0.5
+          algorithm_params.step_window: 1
+          algorithm_params.acceptance_tolerance: 0.0
     alpha:
       path: alpha
       values:
@@ -70,8 +95,8 @@ scan:
 # 训练参数
 # =============================================================================
 training:
-  samples_per_alpha: 20   # 每个 alpha 值的样本数
-  max_steps: 2000        # BiG-AMP 最大迭代步数
+  samples_per_alpha: 100  # 每个 alpha 值的样本数
+  max_steps: 2000          # BiG-AMP 最大迭代步数
 
 # =============================================================================
 # 随机种子（用于复现）
@@ -84,11 +109,15 @@ seeds:
 # 算法参数
 # =============================================================================
 algorithm_params:
-  damping: 0.2           # 阻尼系数（重要修正：0.01 以匹配增量更新）
+  damping: 0.5           # BiG-AMP beta：1=完全采用新状态，0=冻结旧状态
   noise_var: 1.0e-5       # 观测噪声方差
   learning_rate: 0.01     # AGD 学习率
   use_compile: true       # 启用 torch.compile 加速
-  use_bf16: true          # 启用 BF16 混合精度
+  normalization_profile: paper_sparse_sampling # paper_sparse_sampling=论文 Var(x)=1；internal_normalized_legacy=旧 1/M convention
+  precision_profile: aggressive # safe / fast / aggressive
+  precision_fallback_policy: allow  # allow=BF16 不可用时回退 FP32；error=严格报错
+  use_bf16: true          # legacy alias；新配置以 precision_profile 为准
+  seed_partition_policy: partition_invariant
   use_early_stop: false   # 早停
   target_loss_threshold: 1.0e-08
   default_alpha: 1.0
@@ -96,9 +125,9 @@ algorithm_params:
   # --- Adaptive Damping ---
   adaptive_damping: false
   step_min: 0.05
-  step_max: 1
+  step_max: 0.5
   step_incr: 1.1
-  step_decr: 0.9
+  step_decr: 0.5
   step_window: 1
   max_bad_steps: 10
   
@@ -108,13 +137,13 @@ algorithm_params:
   restart_noise: 0.1
   
   # --- Adaptive Tolerance (Metropolis-like) ---
-  acceptance_tolerance: 50
+  acceptance_tolerance: 0.0
   
   # --- Teacher-Assisted Initialization ---
   # init_mode: random = Cold Start, teacher = Warm Start
   # init_mode: random = Cold Start, teacher = Warm Start
-  init_mode: teacher           # 使用 Warm Start (验证通过)
-  init_overlap: 0.5            # 强初始相关性 (验证通过)
+  init_mode: random            # 完全 cold start
+  init_overlap: 0.0
   
   # --- Debugging ---
   debug_verbose: false         # 是否开启详细调试模式（每100步计算MSE，会影响性能）
@@ -126,13 +155,13 @@ algorithm_params:
 #   1 | rademacher = Rademacher 分布（推荐，更稳定）
 #   2 | gaussian   = 高斯分布
 spreading:
-  f_distribution: 1       # rademacher（推荐）
+  f_distribution: 1       # rademacher spreading
   seed: 12345
   # ⚠️ Onsager 修正开关
   # - false = 关闭（二分图模式推荐）
   # - true  = 开启（可能提高收敛性，但一般图模式下可能不稳定）
   onsager_correction: false
-  chunk_size: 262144      # General模式分块大小（0=禁用分块）
+  chunk_size: 8192        # general/chunked path 分块；二分图主训练仍由 alpha batching 控制
 
 # =============================================================================
 # 输出设置
@@ -141,10 +170,11 @@ output:
   name: ""                # 留空自动生成
   
   # 存储模式：full | lightweight | plotting_only
-  storage_mode: lightweight
+  storage_mode: full
+  save_tensors: true
   
   # Heatmap 设置
-  enable_heatmap: true     # 是否生成 Heatmap (Replica Overlap)
+  enable_heatmap: true     # 生成最终完整 heatmap/GIF
   rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
   heatmap_metric: "Q_Y"     # 绘制指标: "Q_Y" (projection overlap) 或 "Q_W" (Factor Gram diagnostic)
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
@@ -158,9 +188,44 @@ output:
   #   A (Projection): A.y=Q_Y  A.w=Q_W  A.x=Q_X
   #   B (Gram root):  B.w=Q_W_GRAM_ROOT  B.x=Q_X_GRAM_ROOT
   #   C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
+  #   D (Sign align): D.w=Q_W_SIGN_ALIGNED  D.x=Q_X_SIGN_ALIGNED
   #   N (Tensor):     N.n=Q_N
   #
   # 示例: curves: [A.y, A.w, A.y:R] → Q_Y, Q_W, Q_Y(replica) 画同一张图
   
   plots:
-    - curves: [A.y]  # Q_Y projection
+    - x: alpha
+      y: Q_Y_mean
+      series_by: [onsager_policy]
+      filename: qy_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_mean
+      series_by: [onsager_policy]
+      filename: qw_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_mean
+      series_by: [onsager_policy]
+      filename: qx_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qw_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qx_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qw_sign_aligned_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qx_sign_aligned_by_onsager_policy.png
+
+  # 多轴 scan 中每个外层 warmstart 组完成后，立即生成组内完整结果。
+  group_results:
+    enabled: auto
+    save_tensors: true
+    enable_heatmap: true
+    write_plots: true

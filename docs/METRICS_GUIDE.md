@@ -57,6 +57,19 @@ Q_X_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
 
 它们不是 coordinate projection，而是解决 matrix factor rotation/gauge 后更稳定的 learning diagnostic。
 
+### `Q_W_SIGN_ALIGNED` / `Q_X_SIGN_ALIGNED`
+
+公式：
+
+```text
+Q_W_SIGN_ALIGNED = sum_k abs(<W_s[:,k], W_t[:,k]>) / sum_k ||W_t[:,k]||^2
+Q_X_SIGN_ALIGNED = sum_k abs(<X_s[k,:], X_t[k,:]>) / sum_k ||X_t[k,:]||^2
+```
+
+这是逐 latent channel 的 sign-gauge-aligned diagnostic。它不替代 `Q_W/Q_X`，
+只用于区分“没有学到 factor”和“学到了 channel，但每个 channel 的 sign sector 没对齐”。
+它仍然不能处理 channel permutation 或连续 rotation。
+
 ## Removed From Formal Metrics
 
 - `MSE`：只能作为 algorithm 内部 loss/debug，不进入 formal result metric。

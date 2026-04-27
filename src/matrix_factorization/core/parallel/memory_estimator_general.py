@@ -11,7 +11,8 @@ import math
 
 # Import shared components from main estimator
 from .memory_estimator import (
-    MemoryEstimator, EstimationParams, MemoryBreakdown, MemoryComponent, TensorSpec, DType
+    MemoryEstimator, EstimationParams, MemoryBreakdown, MemoryComponent, TensorSpec, DType,
+    _f_dtype, _observation_dtype, _state_dtype, _workspace_dtype,
 )
 
 
@@ -55,8 +56,10 @@ def get_general_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown
     SN = S * N_total  # Flattened node dimension
     
     # Dtype selection
-    storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
-    f_dtype = DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32
+    storage_dtype = _state_dtype(params)
+    workspace_dtype = _workspace_dtype(params)
+    f_dtype = _f_dtype(params)
+    observation_dtype = _observation_dtype(params)
     
     breakdown = MemoryBreakdown(
         algorithm_key="bigamp_spreading_general",
@@ -93,7 +96,7 @@ def get_general_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown
         name="Y_flat",
         shape=(SC,),
         shape_formula="(S*C_max,)",
-        dtype=DType.FLOAT32,
+        dtype=observation_dtype,
     ))
     supergraph.add(TensorSpec(
         name="a_offset + b_offset",
@@ -119,7 +122,7 @@ def get_general_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown
         name="V_a + V_b + V_a_var + V_b_var",
         shape=(B, SC, M),
         shape_formula="4 × (B, S*C_max, M)",
-        dtype=storage_dtype,
+        dtype=workspace_dtype,
         count=4,
         notes="Gathered node values for edge computation"
     ))
@@ -134,7 +137,7 @@ def get_general_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown
         name="Z_hat + V_val + s_values + denom",
         shape=(B, SC),
         shape_formula="(B, S*C_max)",
-        dtype=storage_dtype,
+        dtype=workspace_dtype,
         count=4,
     ))
     # Temporary (B, SC, M) tensors during computation
@@ -142,7 +145,7 @@ def get_general_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown
         name="compute_temps",
         shape=(B, SC, M),
         shape_formula="(B, S*C_max, M)",
-        dtype=storage_dtype,
+        dtype=workspace_dtype,
         count=2,  # F*V_a*V_b, V_a_var*V_b^2, etc.
     ))
     breakdown.add_component(forward)

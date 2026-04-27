@@ -12,6 +12,7 @@ from typing import List, Any, Optional, Dict, Union
 from pathlib import Path
 from datetime import datetime
 import json
+import math
 import torch
 
 
@@ -256,8 +257,10 @@ class ResultCube:
 
             x_values = []
             y_values = []
+            y_std_values = []
             point_ids = []
             seen_x = {}
+            std_key = metric_key[:-5] + "_std" if metric_key.endswith("_mean") else None
             for point in points:
                 if x_axis not in point.coordinates:
                     raise ValueError(f"PlotQuery x axis '{x_axis}' not found in point {point.point_id}")
@@ -275,6 +278,7 @@ class ResultCube:
                 point_ids.append(point.point_id)
                 x_values.append(float(x_value))
                 y_values.append(float(metrics[metric_key]))
+                y_std_values.append(float(metrics.get(std_key, 0.0)) if std_key else 0.0)
 
             label = ", ".join(f"{key}={value}" for key, value in series_spec.items()) or str(metric_key)
             resolved.append({
@@ -283,6 +287,7 @@ class ResultCube:
                 "point_ids": point_ids,
                 "x_values": x_values,
                 "y_values": y_values,
+                "y_std_values": y_std_values,
             })
         return resolved
 
@@ -514,17 +519,25 @@ class ExperimentResult:
         """
         has_w = any(result.W_students is not None for result in self.results.values())
         has_x = any(result.X_students is not None for result in self.results.values())
+        has_w_teacher = self.W_teacher is not None
+        has_x_teacher = self.X_teacher is not None
         missing = []
         if not has_w:
             missing.append("W_students")
         if not has_x:
             missing.append("X_students")
+        if not has_w_teacher:
+            missing.append("W_teacher")
+        if not has_x_teacher:
+            missing.append("X_teacher")
         algorithm_key = getattr(self.config, "algorithm_key", None)
         return {
             "algorithm_key": algorithm_key,
             "matrix_factors": {
                 "W_students": has_w,
                 "X_students": has_x,
+                "W_teacher": has_w_teacher,
+                "X_teacher": has_x_teacher,
             },
             "tensor_factors": {
                 "serialized": False,
@@ -544,6 +557,7 @@ class ExperimentResult:
             "output_contract.json",
             "events.jsonl",
             "artifacts/results.pt",
+            "artifacts/teacher_factors.pt",
             "artifacts/raw_data.npz",
             "checkpoints/latest.pt",
         ]:
@@ -602,6 +616,18 @@ class ExperimentResult:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(payload, f, indent=2, default=cls._json_default)
+
+    def _teacher_factor_payload(self) -> Dict[str, Any]:
+        """Build a shared teacher-factor artifact for post-hoc diagnostics."""
+        payload: Dict[str, Any] = {}
+        if self.W_teacher is not None:
+            payload["W_teacher"] = self.W_teacher.detach().cpu().to(torch.float32)
+        if self.X_teacher is not None:
+            payload["X_teacher"] = self.X_teacher.detach().cpu().to(torch.float32)
+        if payload:
+            payload["payload_kind"] = "matrix_teacher_factors"
+            payload["schema_version"] = 1
+        return payload
 
     def save(self, path: Union[str, Path], save_tensors: bool = True, rsb_ordering: bool = False, uniform_colormap: bool = False, output_options: Optional[Dict[str, Any]] = None):
         """
@@ -690,6 +716,17 @@ class ExperimentResult:
                 "total": len(self.scan_values),
             }) + "\n")
 
+        teacher_factors_relative_path: Optional[str] = None
+        if save_tensors:
+            teacher_payload = self._teacher_factor_payload()
+            if teacher_payload:
+                teacher_factors_relative_path = str(Path("artifacts") / "teacher_factors.pt")
+                torch.save(teacher_payload, path / teacher_factors_relative_path)
+                if not self.result_cube.is_empty():
+                    self.result_cube.artifacts.setdefault("_shared", {})["teacher_factors"] = (
+                        teacher_factors_relative_path
+                    )
+
         # Collect all tensors into unified structure
         if save_tensors and not self.result_cube.is_empty() and not self.result_cube.is_alpha_only():
             points_dir = artifacts_dir / "points"
@@ -700,6 +737,8 @@ class ExperimentResult:
                     "metrics": r.metrics,
                     "factor_payload_contract": self.factor_payload_contract(),
                 }
+                if teacher_factors_relative_path is not None:
+                    payload["teacher_factors_path"] = teacher_factors_relative_path
                 if r.W_students is not None:
                     payload["W_students"] = r.W_students.cpu().to(torch.float16)
                 if r.X_students is not None:
@@ -725,6 +764,8 @@ class ExperimentResult:
                 'metrics': metrics_dict,
                 'factor_payload_contract': self.factor_payload_contract(),
             }
+            if teacher_factors_relative_path is not None:
+                results_data['teacher_factors_path'] = teacher_factors_relative_path
 
             if all_W:
                 # Stack: (num_alphas, S, N1, M)
@@ -733,11 +774,12 @@ class ExperimentResult:
                 # Stack: (num_alphas, S, M, N2)
                 results_data['X_students'] = torch.stack(all_X, dim=0)
 
-            # Add teacher matrices
+            # Backward-compatible inline teacher copies for older local scripts.
+            # New post-hoc tools should prefer artifacts/teacher_factors.pt.
             if self.W_teacher is not None:
-                results_data['W_teacher'] = self.W_teacher.cpu().to(torch.float16)
+                results_data['W_teacher'] = self.W_teacher.detach().cpu().to(torch.float16)
             if self.X_teacher is not None:
-                results_data['X_teacher'] = self.X_teacher.cpu().to(torch.float16)
+                results_data['X_teacher'] = self.X_teacher.detach().cpu().to(torch.float16)
 
             tensor_path = artifacts_dir / 'results.pt'
             torch.save(results_data, tensor_path)
@@ -769,6 +811,8 @@ class ExperimentResult:
                 "results": self.to_results_dict(),
                 "generated_at": datetime.now().isoformat(),
             })
+
+        self._write_precision_comparison_report(path)
 
         # Generate evolution plots (only if user does NOT have custom plots configured)
         sorted_values = [scan_value for scan_value, _ in sorted_items]
@@ -839,7 +883,7 @@ class ExperimentResult:
         if has_plot_queries:
             self._plot_result_cube_queries(output_options.get("plots") or [], plots_dir)
         elif output_options and output_options.get('plots'):
-            if not self.result_cube.is_empty() and not self.result_cube.is_alpha_only():
+            if not self._allows_legacy_alpha_curve_plots():
                 with open(path / "events.jsonl", "a") as f:
                     f.write(json.dumps({
                         "type": "legacy_curve_plots_skipped",
@@ -891,6 +935,7 @@ class ExperimentResult:
 
                 for v in sorted_values:
                     r = self.results[v]
+                    heatmap_alpha = self._heatmap_alpha_for_scan_value(v)
                     matrix = r.metrics.get('overlap_matrix') if r.metrics else None
                     if matrix is not None:
                         metric_code = r.metrics.get(
@@ -900,14 +945,14 @@ class ExperimentResult:
                         metric_code = str(metric_code).upper()
                         if metric_code == "Q_W":
                             metric_name = "Factor Gram Overlap ($Q_W$)"
-                            filename_prefix = "heatmap_W"
+                            filename_prefix = self._heatmap_filename_prefix("heatmap_W", v)
                         else:
                             metric_code = "Q_Y"
                             metric_name = "Tensor Overlap ($Q_Y$)"
-                            filename_prefix = "heatmap_Y"
+                            filename_prefix = self._heatmap_filename_prefix("heatmap_Y", v)
 
                         heatmap_path = plot_replica_heatmap(
-                            np.asarray(matrix, dtype=float), float(v), plots_dir,
+                            np.asarray(matrix, dtype=float), heatmap_alpha, plots_dir,
                             metric_name=metric_name, filename_prefix=filename_prefix,
                             rsb_ordering=rsb_ordering,
                             enhance_high_values=not uniform_colormap,
@@ -930,8 +975,8 @@ class ExperimentResult:
 
                         # Save heatmap
                         heatmap_path = plot_replica_heatmap(
-                            matrix_W, float(v), plots_dir,
-                            metric_name="Q_W", filename_prefix="heatmap_W",
+                            matrix_W, heatmap_alpha, plots_dir,
+                            metric_name="Q_W", filename_prefix=self._heatmap_filename_prefix("heatmap_W", v),
                             rsb_ordering=rsb_ordering,
                             enhance_high_values=not uniform_colormap,  # uniform = no enhancement
                         )
@@ -983,26 +1028,20 @@ class ExperimentResult:
         metadata["partial_extra"] = dict(extra or {})
         self._write_json(partial_dir / "metadata_partial.json", metadata)
 
+        completed_values = [str(value) for value, _ in self._sorted_result_items()]
         payload = {
             "schema_version": 3,
             "partial_snapshot": True,
+            "snapshot_mode": "compact_progress",
             "experiment_id": self.experiment_id,
             "status": "complete" if self.is_complete else "partial",
             "completed": self.num_completed,
             "total": len(self.scan_values),
             "completion_ratio": self.completion_ratio,
-            "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
-            "contract": self.metadata.contract,
-            "factor_payload_contract": self.factor_payload_contract(),
             "scan_dimension": self.scan_dimension,
-            "scan_values": [str(v) for v in self.scan_values],
-            "result_cube": self.result_cube.to_dict(),
+            "completed_scan_values": completed_values,
             "available_metric_keys": sorted(self._available_metric_keys()),
             "metric_schema": self.metric_schema(),
-            "metric_semantics": self.metric_semantics(),
-            "metric_contracts": self.metric_contracts(),
-            "metrics": self.to_metrics_dict(),
-            "results": self.to_results_dict(),
             "output_options": dict(output_options or {}),
             "extra": dict(extra or {}),
             "generated_at": datetime.now().isoformat(),
@@ -1034,9 +1073,16 @@ class ExperimentResult:
     def _plot_result_cube_queries(self, plot_queries: List[Dict[str, Any]], plots_dir: Path) -> None:
         """Render PlotQuery-style plots from ResultCube."""
         import matplotlib.pyplot as plt
+        from matrix_factorization.modules.outputs.publication_style import (
+            ERROR_CONFIG,
+            PUB_CONFIG,
+            StyleCycler,
+            apply_publication_style,
+        )
 
         if self.result_cube.is_empty():
             raise ValueError("PlotQuery requires result_cube data")
+        apply_publication_style()
         for idx, query in enumerate(plot_queries):
             if "x" not in query or "y" not in query:
                 continue
@@ -1045,22 +1091,142 @@ class ExperimentResult:
             filename = query.get("filename") or f"plot_query_{idx + 1}.png"
             resolved_series = self.result_cube.resolve_plot_query(query)
 
-            fig, ax = plt.subplots(figsize=(10, 6))
-            for series in resolved_series:
-                ax.plot(
+            fig, ax = plt.subplots(figsize=(7.2, 4.8))
+            style = StyleCycler(len(resolved_series), palette="colorblind")
+            for series_idx, series in enumerate(resolved_series):
+                curve_style = style.get_style(series_idx)
+                yerr = series.get("y_std_values") or []
+                yerr = yerr if any(float(value) > 0 for value in yerr) else None
+                ax.errorbar(
                     series["x_values"],
                     series["y_values"],
-                    marker="o",
-                    linewidth=2,
+                    yerr=yerr,
+                    marker=curve_style.get("marker", "o"),
+                    linestyle=curve_style.get("linestyle", "-"),
+                    color=curve_style.get("color"),
+                    linewidth=PUB_CONFIG.linewidth_plot,
+                    markersize=PUB_CONFIG.markersize,
+                    capsize=ERROR_CONFIG.capsize if yerr is not None else 0,
+                    elinewidth=max(0.8, PUB_CONFIG.linewidth_plot * 0.65),
+                    alpha=0.95,
                     label=series["label"],
                 )
             ax.set_xlabel(str(x_axis))
-            ax.set_ylabel(str(metric_key))
-            ax.grid(True, alpha=0.3)
-            ax.legend()
+            ax.set_ylabel(self._plot_label_for_metric(str(metric_key)))
+            ax.grid(True, alpha=PUB_CONFIG.grid_alpha)
+            ax.legend(frameon=False, fontsize=PUB_CONFIG.font_size_legend)
             ax.set_title(query.get("title") or f"{metric_key} vs {x_axis}")
-            fig.savefig(plots_dir / filename, dpi=150, bbox_inches="tight")
+            fig.tight_layout()
+            fig.savefig(plots_dir / filename, dpi=PUB_CONFIG.dpi, bbox_inches="tight")
             plt.close(fig)
+
+    def _write_precision_comparison_report(self, run_dir: Path) -> None:
+        """Write a lightweight fast/aggressive comparison for precision scan runs."""
+        if self.result_cube.is_empty():
+            return
+        precision_axis = None
+        for axis_key, axis_payload in self.result_cube.axes.items():
+            if axis_key == "precision" or (
+                isinstance(axis_payload, dict)
+                and axis_payload.get("path") == "algorithm_params.precision_profile"
+            ):
+                precision_axis = axis_key
+                break
+        if not precision_axis:
+            return
+
+        profiles = {
+            str(point.coordinates.get(precision_axis))
+            for point in self.result_cube.points.values()
+            if precision_axis in point.coordinates
+        }
+        if not ({"fast", "aggressive"} <= profiles):
+            return
+
+        grouped: Dict[str, Dict[str, str]] = {}
+        group_labels: Dict[str, Dict[str, Any]] = {}
+        for point_id, point in self.result_cube.points.items():
+            profile = str(point.coordinates.get(precision_axis))
+            if profile not in {"fast", "aggressive"}:
+                continue
+            coords_without_precision = {
+                key: value
+                for key, value in point.coordinates.items()
+                if key != precision_axis
+            }
+            group_key = json.dumps(coords_without_precision, sort_keys=True, default=str)
+            grouped.setdefault(group_key, {})[profile] = point_id
+            group_labels[group_key] = coords_without_precision
+
+        rows = []
+        nan_inf_rows = []
+        for group_key, point_ids in grouped.items():
+            fast_id = point_ids.get("fast")
+            aggressive_id = point_ids.get("aggressive")
+            if not fast_id or not aggressive_id:
+                continue
+            fast_metrics = self.result_cube.metrics.get(fast_id, {})
+            aggressive_metrics = self.result_cube.metrics.get(aggressive_id, {})
+            for metric_key in sorted(set(fast_metrics) & set(aggressive_metrics)):
+                if not metric_key.startswith("Q_"):
+                    continue
+                try:
+                    fast_value = float(fast_metrics[metric_key])
+                    aggressive_value = float(aggressive_metrics[metric_key])
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(fast_value) and math.isfinite(aggressive_value)):
+                    nan_inf_rows.append((group_labels[group_key], metric_key, fast_value, aggressive_value))
+                    continue
+                diff = aggressive_value - fast_value
+                denom = max(abs(fast_value), 1e-12)
+                rows.append({
+                    "coords": group_labels[group_key],
+                    "metric": metric_key,
+                    "fast": fast_value,
+                    "aggressive": aggressive_value,
+                    "abs_diff": abs(diff),
+                    "rel_diff": abs(diff) / denom,
+                })
+
+        rows.sort(key=lambda item: item["abs_diff"], reverse=True)
+        runtime_plan = {}
+        if isinstance(self.metadata.contract, dict):
+            runtime_plan = self.metadata.contract.get("runtime_resource_plan") or {}
+
+        lines = [
+            "# Precision comparison",
+            "",
+            "This report compares `fast` and `aggressive` points in the same ResultCube coordinate group.",
+            "",
+            f"- precision axis: `{precision_axis}`",
+            f"- compared groups: {sum(1 for ids in grouped.values() if {'fast', 'aggressive'} <= set(ids))}",
+            f"- runtime groups: {runtime_plan.get('num_groups', 'unknown')}",
+            f"- runtime batches: {runtime_plan.get('num_batches', 'unknown')}",
+            "",
+            "## Largest metric differences",
+            "",
+            "| coords | metric | fast | aggressive | abs diff | rel diff |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+        for row in rows[:50]:
+            coord_label = ", ".join(f"{k}={v}" for k, v in sorted(row["coords"].items())) or "all"
+            lines.append(
+                f"| {coord_label} | {row['metric']} | {row['fast']:.6g} | "
+                f"{row['aggressive']:.6g} | {row['abs_diff']:.6g} | {row['rel_diff']:.3%} |"
+            )
+        if not rows:
+            lines.append("| no comparable finite Q metrics | - | - | - | - | - |")
+
+        lines.extend(["", "## NaN / Inf checks", ""])
+        if nan_inf_rows:
+            for coords, metric_key, fast_value, aggressive_value in nan_inf_rows:
+                coord_label = ", ".join(f"{k}={v}" for k, v in sorted(coords.items())) or "all"
+                lines.append(f"- {coord_label}: `{metric_key}` fast={fast_value}, aggressive={aggressive_value}")
+        else:
+            lines.append("- No NaN/Inf values found in comparable Q metrics.")
+
+        (run_dir / "precision_comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _select_cube_points(self, where: Dict[str, Any]) -> List[ResultCubePoint]:
         points = list(self.result_cube.points.values())
@@ -1096,6 +1262,31 @@ class ExperimentResult:
                 return key
         return None
 
+    def _heatmap_alpha_for_scan_value(self, scan_value: Any) -> float:
+        """Return the alpha coordinate for heatmap labels in alpha or canonical scans."""
+        try:
+            return float(scan_value)
+        except (TypeError, ValueError):
+            pass
+        point = self.result_cube.points.get(str(scan_value))
+        if point is not None and "alpha" in point.coordinates:
+            try:
+                return float(point.coordinates["alpha"])
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    def _heatmap_filename_prefix(self, base: str, scan_value: Any) -> str:
+        """Make heatmap filenames unique when scan values are ResultCube point ids."""
+        if self.result_cube.is_empty() or self.result_cube.is_alpha_only():
+            return base
+        point_id = self._slugify_path_component(str(scan_value))
+        point = self.result_cube.points.get(str(scan_value))
+        if point is None:
+            return f"{base}_{point_id}"
+        group_id = self._slugify_path_component(str(point.group_id or "group"))
+        return f"{base}_{group_id}_{point_id}"
+
     def _metric_series(self, sorted_values: List[Any], metric_key: str) -> List[float]:
         missing_values = [
             value for value in sorted_values
@@ -1107,6 +1298,30 @@ class ExperimentResult:
                 f"missing values: {missing_values}"
             )
         return [float(self.results[value].metrics[metric_key]) for value in sorted_values]
+
+    def _allows_legacy_alpha_curve_plots(self) -> bool:
+        """Allow legacy curve plots for alpha curves with constant outer axes."""
+        if self.result_cube.is_empty() or self.result_cube.is_alpha_only():
+            return True
+        if not self.results:
+            return False
+        try:
+            [float(value) for value in self.results.keys()]
+        except (TypeError, ValueError):
+            return False
+        non_alpha_values: Dict[str, set[str]] = {}
+        for point in self.result_cube.points.values():
+            for axis, value in (point.coordinates or {}).items():
+                if axis == "alpha":
+                    continue
+                non_alpha_values.setdefault(axis, set()).add(str(value))
+        return all(len(values) <= 1 for values in non_alpha_values.values())
+
+    @staticmethod
+    def _slugify_path_component(value: str, max_length: int = 80) -> str:
+        text = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+        text = "_".join(part for part in text.split("_") if part)
+        return (text[:max_length] or "value").strip("._-") or "value"
 
     def _plot_label_for_metric(self, metric_key: str) -> str:
         metric_schema = self.metric_schema()
@@ -1125,7 +1340,9 @@ class ExperimentResult:
             "Q_Y_unobserved_mean": "Q_Y unobserved",
             "Q_W_mean": "Q_W",
             "Q_W_GRAM_ROOT_mean": "Q_W Gram root",
+            "Q_W_SIGN_ALIGNED_mean": "Q_W sign-aligned",
             "Q_X_GRAM_ROOT_mean": "Q_X Gram root",
+            "Q_X_SIGN_ALIGNED_mean": "Q_X sign-aligned",
             "Q_N_mean": "Q_N",
         }.get(metric_key, metric_key)
 
@@ -1225,6 +1442,14 @@ class ExperimentResult:
         tensor_data = torch.load(tensor_path, map_location='cpu') if tensor_path.exists() else {}
         w_stack = tensor_data.get('W_students') if isinstance(tensor_data, dict) else None
         x_stack = tensor_data.get('X_students') if isinstance(tensor_data, dict) else None
+        teacher_path = path / 'artifacts' / 'teacher_factors.pt'
+        teacher_data = torch.load(teacher_path, map_location='cpu') if teacher_path.exists() else {}
+        if isinstance(teacher_data, dict):
+            result.W_teacher = teacher_data.get('W_teacher', result.W_teacher)
+            result.X_teacher = teacher_data.get('X_teacher', result.X_teacher)
+        if isinstance(tensor_data, dict):
+            result.W_teacher = tensor_data.get('W_teacher', result.W_teacher)
+            result.X_teacher = tensor_data.get('X_teacher', result.X_teacher)
 
         # Load individual results
         sorted_result_keys = sorted(results_data['results'].keys(), key=cls._sort_key)

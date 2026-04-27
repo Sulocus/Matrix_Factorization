@@ -14,6 +14,8 @@ from typing import Tuple, Optional, List, Any, TYPE_CHECKING
 import torch
 import math
 
+from .config import resolve_normalization_profile
+
 if TYPE_CHECKING:
     from .config import ExperimentConfig
 
@@ -86,8 +88,10 @@ class DataFactory:
         
         # Get teacher initialization distribution
         init_distribution = "gaussian"  # default
+        mean_scale = 0.0
         if hasattr(config, 'teacher') and config.teacher:
             init_distribution = config.teacher.init_distribution
+            mean_scale = float(getattr(config.teacher, "mean_scale", 0.0))
         
         # Create teacher
         W_teacher, X_teacher, Y_teacher = self.create_teacher(
@@ -97,6 +101,8 @@ class DataFactory:
             teacher_key=getattr(config, 'teacher_key', 'standard'),
             seed=config.seeds.teacher_seed,
             init_distribution=init_distribution,
+            mean_scale=mean_scale,
+            normalization_profile=getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling"),
         )
         
         # Create algorithm-specific data
@@ -140,6 +146,8 @@ class DataFactory:
         teacher_key: str = "standard",
         seed: int = 12345,
         init_distribution: str = "gaussian",
+        mean_scale: float = 0.0,
+        normalization_profile: str = "paper_sparse_sampling",
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Create teacher matrices.
@@ -148,38 +156,47 @@ class DataFactory:
             N1, N2, M: Matrix dimensions
             teacher_key: "standard" or "orthogonal"
             seed: Random seed
-            init_distribution: "gaussian" or "rademacher" (for standard teacher only)
+            init_distribution: "gaussian", "rademacher", or "biased_gaussian" (for standard teacher only)
+            mean_scale: biased_gaussian mean in units of the selected latent std
+            normalization_profile: Paper Var=1 profile or legacy Var=1/M profile
             
         Returns:
             (W_teacher, X_teacher, Y_teacher)
         """
         torch.manual_seed(seed)
-        scale = 1.0 / math.sqrt(M)
+        profile = resolve_normalization_profile(normalization_profile, M)
+        latent_scale = profile.latent_std
+        interaction_scale = profile.interaction_scale
         
         if teacher_key == "orthogonal":
             # Orthogonal teacher using SVD
             W_raw = torch.randn(N1, M, device=self.device)
             X_raw = torch.randn(M, N2, device=self.device)
             
-            # Make orthonormal
+            # Make orthonormal, then scale to the selected entry variance.
             U, _, _ = torch.linalg.svd(W_raw, full_matrices=False)
-            W_teacher = U[:, :M] * math.sqrt(M)  # Scale for correct variance
+            W_teacher = U[:, :M] * math.sqrt(N1) * latent_scale
             
             _, _, Vh = torch.linalg.svd(X_raw, full_matrices=False)
-            X_teacher = Vh[:M, :] * math.sqrt(M)
+            X_teacher = Vh[:M, :] * math.sqrt(N2) * latent_scale
         else:
             # Standard teacher with configurable distribution
             if init_distribution == "rademacher":
-                # Rademacher: ±1 with equal probability, scaled by 1/√M
-                W_teacher = (2 * torch.randint(0, 2, (N1, M), device=self.device, dtype=torch.float32) - 1) * scale
-                X_teacher = (2 * torch.randint(0, 2, (M, N2), device=self.device, dtype=torch.float32) - 1) * scale
+                # Rademacher: ±1 with equal probability in the selected latent scale.
+                W_teacher = (2 * torch.randint(0, 2, (N1, M), device=self.device, dtype=torch.float32) - 1) * latent_scale
+                X_teacher = (2 * torch.randint(0, 2, (M, N2), device=self.device, dtype=torch.float32) - 1) * latent_scale
+            elif init_distribution == "biased_gaussian":
+                mean = float(mean_scale) * latent_scale
+                W_teacher = torch.randn(N1, M, device=self.device) * latent_scale + mean
+                X_teacher = torch.randn(M, N2, device=self.device) * latent_scale + mean
             else:
-                # Gaussian: N(0, 1/√M)
-                W_teacher = torch.randn(N1, M, device=self.device) * scale
-                X_teacher = torch.randn(M, N2, device=self.device) * scale
+                # Gaussian with the selected latent scale.
+                W_teacher = torch.randn(N1, M, device=self.device) * latent_scale
+                X_teacher = torch.randn(M, N2, device=self.device) * latent_scale
         
-        # Compute Y = (1/√M) * W @ X
-        Y_teacher = scale * torch.matmul(W_teacher, X_teacher)
+        # Compute Y = (1/√M) * W @ X.  The interaction scale is paper-compatible
+        # for both normalization profiles; only latent/prior scale changes.
+        Y_teacher = interaction_scale * torch.matmul(W_teacher, X_teacher)
         
         return W_teacher, X_teacher, Y_teacher
     
@@ -325,6 +342,7 @@ class DataFactory:
             M=config.matrix.M,
             teacher_key=getattr(config, 'teacher_key', 'standard'),
             seed=config.seeds.teacher_seed,
+            normalization_profile=getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling"),
         )
         
         return self.create_spreading_data(

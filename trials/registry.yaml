@@ -17,3 +17,6 @@ trials:
   - key: scan_mixed_axes_quick
     status: active
     path: trials/active/scan_mixed_axes_quick/trial.yaml
+  - key: onsager_cold_200_m50
+    status: active
+    path: trials/active/onsager_cold_200_m50/trial.yaml

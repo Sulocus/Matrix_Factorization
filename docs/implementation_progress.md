@@ -2,11 +2,19 @@
 
 这份文档记录当前硬接口化施工状态。它只写已经进入代码、测试和提交的内容；没有完成的部分明确标成 limitation 或 next work。
 
-最新接手说明见 `docs/project_handoff_2026-04-27.md`。
+最新接手说明见：
+
+- `docs/project_handoff_2026-04-28.md`：当前长对话的最新交接，包含论文 convention、归一化风险和下一步任务。
+- `docs/project_handoff_2026-04-27.md`：hard-interface / scan / trial / ResultCube / probe 的上一阶段交接。
 
 ## 当前 checkpoint
 
 - 分支：`dev`
+- 当前未提交施工线：normalization schema v4 + precision profile migration。
+  - active algorithms 已新增 `NormalizationSpec` / `PrecisionPolicySpec`。
+  - teacher/student/tensor init 正在统一到 `1/sqrt(M)` latent scale 与 `1/M` variance。
+  - `precision_profile: safe / fast / aggressive` 已接入 config、plan、memory estimator 和主要 algorithm metadata。
+  - 这会改变 spreading/tensor 数值行为，属于 breaking semantic migration；旧 result 不应和 schema v4 result 静默比较。
 - 最近阶段提交：
   - `e0e8b31 Complete projection metric contract fixtures`
   - `256ce69 Harden AlgorithmResult active paths`

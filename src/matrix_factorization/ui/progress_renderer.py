@@ -50,7 +50,9 @@ class ProgressRenderer:
         # Unpack state
         current_step, total_steps = state.get('step_progress', (0, 1))
         completed_batches, total_batches = state.get('batch_progress', (0, 1))
+        completed_points, total_points = state.get('point_progress', (completed_batches, total_batches))
         current_alphas = state.get('alphas', [])
+        context_lines = state.get('context_lines', [])
         elapsed_str, eta_str, batch_elapsed_str, batch_total_str = state.get('timing', ("--:--", "--:--", "--:--", "--:--"))
         it_per_sec = state.get('throughput', 0.0)
         power, memory = state.get('gpu', (0, 0))
@@ -76,6 +78,10 @@ class ProgressRenderer:
         grid = Table.grid(padding=0)
         grid.add_column()
 
+        for line in context_lines[:2]:
+            if line:
+                grid.add_row(Text.from_markup(f" [dim]{line}[/dim]"))
+
         # Row 1: Header
         grid.add_row(Text.from_markup(
             f" {spinner}  Step [cyan]{current_step}[/]/{total_steps}  "
@@ -95,6 +101,8 @@ class ProgressRenderer:
         row3.append_text(self._make_bar_text(pct_batch, 40, "━", "━", "cyan"))
         row3.append(f"  {completed_batches}", style="cyan")
         row3.append(f"/{total_batches}")
+        if total_points and total_points != total_batches:
+            row3.append(f"  pts {completed_points}/{total_points}", style="dim")
         grid.add_row(row3)
 
         # Row 4: Metrics

@@ -653,6 +653,13 @@ def estimation_params_from_config(config: Any, alpha_values: Optional[List[float
             dims.append(config.matrix.N1)
         tensor_dims = tuple(dims)
     values = alpha_values if alpha_values is not None else [float(value) for value in config.scan.values]
+    precision_profile = getattr(config.algorithm_params, "precision_profile", "fast" if getattr(config.algorithm_params, "use_bf16", False) else "safe")
+    try:
+        from matrix_factorization.core.contracts import get_precision_policy_specs
+        precision_spec = get_precision_policy_specs().get(config.algorithm_key)
+        role_dtype_map = precision_spec.role_dtype_map(precision_profile) if precision_spec else {}
+    except Exception:
+        role_dtype_map = {}
     return EstimationParams(
         N1=config.matrix.N1,
         N2=config.matrix.N2,
@@ -662,6 +669,8 @@ def estimation_params_from_config(config: Any, alpha_values: Optional[List[float
         algorithm_key=config.algorithm_key,
         use_compile=config.algorithm_params.use_compile,
         use_bf16=config.algorithm_params.use_bf16,
+        precision_profile=precision_profile,
+        role_dtype_map=role_dtype_map,
         f_distribution=getattr(spreading, "f_distribution", "rademacher") if spreading else "rademacher",
         adaptive_damping=config.algorithm_params.adaptive_damping,
         allow_intra_connection=getattr(spreading, "allow_intra_connection", False) if spreading else False,
@@ -749,6 +758,13 @@ def _dominant_stage_counts(batches: List[ResourceBatch]) -> Dict[str, int]:
 
 
 def _set_config_path(config: Any, path: str, value: Any) -> None:
+    if path.startswith("teacher_config."):
+        from matrix_factorization.core.experiment.config import TeacherConfig
+
+        if getattr(config, "teacher", None) is None:
+            config.teacher = TeacherConfig()
+        setattr(config.teacher, path.split(".", 1)[1], value)
+        return
     target: Any = config
     parts = path.split(".")
     for part in parts[:-1]:

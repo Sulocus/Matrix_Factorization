@@ -5,6 +5,8 @@
 机器可读版本在 `src/matrix_factorization/core/contracts.py`：
 
 - `ResourceSpec`：algorithm 的设备、dtype、compile、probe、empty-cache 能力声明。
+- `PrecisionPolicySpec`：`safe / fast / aggressive` 三档 precision profile，以及每个 tensor role 的 storage/compute/accumulator dtype。
+- `NormalizationSpec`：当前 active algorithm 的 latent scale、teacher/student variance、prior precision base 和 schema version。
 - `BatchingSpec`：algorithm 的 alpha batching、sample batching、chunking、seed partition 风险声明。
 - `MemoryModelSpec`：algorithm 的 memory estimator 入口、公式依据、主要 live tensor component、calibration/probe 状态。
 - `ExperimentPlan.resource_plan`：`mf explain-config` / `mf validate --json` 中的静态 resource summary。
@@ -54,6 +56,34 @@ scan:
 confidence 或 `theory_unchecked` memory model 会进一步降低 effective target。
 超过 `device_hard_stop_gb` 的 batch 会在 preflight 中报错。
 
+### Normalization / Precision
+
+当前 active path 的 normalization schema 是 v4：
+
+```text
+latent factor scale: 1/sqrt(M)
+teacher/student init variance: 1/M
+prior precision base: M
+metric rescale policy: none
+```
+
+这是一项 breaking semantic migration。旧 result 如果没有 schema v4
+metadata，不能和新 result 静默混比。
+
+Precision profile 是新的 dtype 入口：
+
+```yaml
+algorithm_params:
+  precision_profile: fast        # safe / fast / aggressive
+  precision_fallback_policy: allow
+```
+
+- `safe`：active state、Y、variance、metric reductions 主要保持 FP32。
+- `fast`：student state / large workspace 使用 BF16 storage/compute，metric reductions、denominator、Onsager accumulation 仍保留 FP32。
+- `aggressive`：在 `fast` 基础上允许 Gaussian F / large Y storage 使用 BF16；Rademacher/Ising F 仍是 int8。
+
+旧 `use_bf16` 和 `dtype_fallback_policy` 仍作为 compatibility alias，但新任务应优先写 `precision_profile` / `precision_fallback_policy`。
+
 ### AGD
 
 ```text
@@ -61,8 +91,8 @@ planner: runner.ParallelCoordinator
 alpha batching: runner alpha batches
 sample batching: samples inside algorithm tensor
 resource estimator: runner.MemoryEstimator
-dtype: float32 / cuda bf16 autocast, controlled by algorithm_params.use_bf16
-dtype fallback: algorithm_params.dtype_fallback_policy
+precision: safe/fast/aggressive，AGD 参数 state 仍 FP32；fast/aggressive 先控制 autocast/workspace
+dtype fallback: algorithm_params.precision_fallback_policy
 tf32: controlled by algorithm_params.use_tf32
 ```
 
@@ -90,8 +120,8 @@ planner layers:
 alpha batching: runner alpha batches
 sample batching: disjoint-union sample parallel
 chunking: spreading.chunk_size edge streaming
-dtype: float32 / bf16 storage, controlled by algorithm_params.use_bf16
-dtype fallback: algorithm_params.dtype_fallback_policy
+precision: safe/fast/aggressive
+dtype fallback: algorithm_params.precision_fallback_policy
 compile fallback: algorithm_params.compile_fallback_policy
 tf32: controlled by algorithm_params.use_tf32
 seed sensitive: true
@@ -120,7 +150,8 @@ planner layers:
 alpha batching: probe-based internal alpha batches
 sample batching: TensorSuperGraph sample parallel
 probe: A=1 tensor supergraph probe
-dtype: float32 / bf16 storage / tf32 matmul
+precision: safe/fast/aggressive
+dtype: role-aware storage; Rademacher F=int8, metric reductions=FP32, aggressive may store Gaussian F/Y as BF16
 tf32: controlled by algorithm_params.use_tf32
 compile: torch.compile default optional
 seed sensitive: true

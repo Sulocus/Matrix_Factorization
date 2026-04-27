@@ -88,6 +88,71 @@ def test_canonical_child_runner_uses_forced_resource_batch(monkeypatch):
     assert set(result.results) == set(result.result_cube.points)
 
 
+def test_canonical_scan_progress_wraps_child_events_without_nested_lifecycle():
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5, 0.6]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+    events = []
+
+    ExperimentRunner(device=None, verbose=False).run(
+        config,
+        observer=events.append,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+        },
+    )
+
+    names = [event.type.name for event in events]
+    assert names.count("EXPERIMENT_START") == 1
+    assert names.count("EXPERIMENT_END") == 1
+    assert names.count("EXECUTION_PLAN") == 1
+    batch_starts = [event.payload for event in events if event.type.name == "BATCH_START"]
+    assert batch_starts
+    assert all(payload.get("scan_context", {}).get("canonical_scan") is True for payload in batch_starts)
+    assert {payload["scan_context"]["coordinates"]["damping"] for payload in batch_starts} == {0.5, 0.6}
+    assert all(payload.get("total_batches") == len(batch_starts) for payload in batch_starts)
+
+
+def test_canonical_scan_error_mentions_current_coordinates(monkeypatch):
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0]},
+        }
+    })
+    events = []
+
+    def fail_algorithm_result(*args, **kwargs):
+        raise RuntimeError("forced algorithm failure")
+
+    monkeypatch.setattr(ExperimentRunner, "_run_algorithm_result", fail_algorithm_result)
+
+    try:
+        ExperimentRunner(device=None, verbose=False).run(
+            config,
+            observer=events.append,
+            output_options={
+                "save_tensors": False,
+                "storage_mode": "lightweight",
+                "enable_heatmap": False,
+            },
+        )
+    except RuntimeError as exc:
+        assert "damping=0.5" in str(exc)
+        assert "forced algorithm failure" in str(exc)
+    else:
+        raise AssertionError("canonical scan failure was expected")
+
+    error_events = [event for event in events if event.type.name == "ERROR"]
+    assert error_events
+    assert "damping=0.5" in error_events[-1].payload["error"]
+
+
 def test_canonical_lightweight_aggregate_does_not_retain_factor_tensors():
     config = _base_config({
         "axes": {
@@ -133,9 +198,10 @@ def test_canonical_scan_writes_partial_snapshot_after_batch(tmp_path):
     assert partial_path.exists()
     payload = json.loads(partial_path.read_text())
     assert payload["partial_snapshot"] is True
+    assert payload["snapshot_mode"] == "compact_progress"
     assert payload["completed"] == result.num_completed == 2
     assert payload["total"] == 2
-    assert set(payload["result_cube"]["points"]) == set(result.result_cube.points)
+    assert set(payload["completed_scan_values"]) == {str(value) for value in result.results}
     assert (run_dir / "metrics.partial.json").exists()
     group_dirs = sorted((run_dir / "groups").glob("*"))
     assert len(group_dirs) == 1

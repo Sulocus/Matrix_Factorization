@@ -98,7 +98,7 @@ class TestTensorStep:
         F = torch.randn(C, M)
         indices = [torch.randint(0, N, (C,)) for _ in range(n)]
         
-        new_factors, new_vars, s = tensor_step(
+        new_factors, new_vars, s, svar = tensor_step(
             factors, factor_vars, Y, F, indices,
             damping=0.5, noise_var=1e-6
         )
@@ -108,6 +108,7 @@ class TestTensorStep:
         assert len(new_vars) == n
         assert all(v.shape == (N, M) for v in new_vars)
         assert s.shape == (C,)
+        assert svar.shape == (C,)
 
     def test_tensor_step_decreases_error(self):
         """Test that multiple steps decrease reconstruction error."""
@@ -132,7 +133,7 @@ class TestTensorStep:
         
         # Run steps
         for _ in range(20):
-            factors, factor_vars, _ = tensor_step(
+            factors, factor_vars, _, _ = tensor_step(
                 factors, factor_vars, Y, F, indices,
                 damping=0.5, noise_var=1e-6
             )

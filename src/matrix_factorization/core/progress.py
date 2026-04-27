@@ -63,6 +63,9 @@ class UnifiedProgress:
         self._current_alpha = 0.0
         self._current_batch_alphas: List[float] = []
         self._current_step = 0
+        self._completed_points = 0
+        self._total_points = num_batches
+        self._context_lines: List[str] = []
         
         # Metrics storage
         self._current_metrics: Dict[str, float] = {}
@@ -100,6 +103,7 @@ class UnifiedProgress:
         """Update execution plan and initialize physics-aware ETA."""
         if total_batches:
             self._total_batches = total_batches
+        self._total_points = max(self._total_points, self._total_batches)
             
         if batch_assignments:
             try:
@@ -111,6 +115,15 @@ class UnifiedProgress:
                 )
             except ImportError:
                 pass
+
+    def set_context(self, context_lines: List[str] = None, completed_points: int = None, total_points: int = None):
+        """Update scan context shown in the progress panel."""
+        if context_lines is not None:
+            self._context_lines = [str(line) for line in context_lines if line]
+        if completed_points is not None:
+            self._completed_points = max(0, int(completed_points))
+        if total_points is not None:
+            self._total_points = max(0, int(total_points))
 
     def _render(self):
         """Build state dict and delegate to renderer."""
@@ -201,7 +214,9 @@ class UnifiedProgress:
         state = {
             'step_progress': (self._current_step, self.steps_per_alpha),
             'batch_progress': (display_completed_batches, display_total_batches),
+            'point_progress': (self._completed_points, self._total_points),
             'alphas': display_alphas,
+            'context_lines': self._context_lines,
             'timing': (fmt_time(elapsed), fmt_time(eta), fmt_time(batch_elapsed), fmt_time(batch_total_estimated)),
             'throughput': it_per_sec,
             'gpu': (power, memory),
@@ -607,6 +622,7 @@ class ProgressBridge:
         self.use_rich = use_rich and RICH_AVAILABLE
         self.progress: Optional[UnifiedProgress] = None
         self.console = Console() if self.use_rich else None
+        self._started = False
     
     def on_event(self, event):
         """Handle progress event (duck typing for ProgressEvent)."""
@@ -629,30 +645,42 @@ class ProgressBridge:
                     total_batches=p.get('total_batches'),
                     algorithm_key=p.get('algorithm_key')
                 )
+                self._apply_context(p)
         elif type_name == 'STEP_UPDATE':
             if self.progress:
+                self._apply_context(p)
                 self.progress.update_step(p.get('step', 0), p.get('total'), metrics=p.get('metrics'))
         elif type_name == 'POINT_START':
-             # Maybe show point progress?
-             pass
+            if self.progress:
+                self._apply_context(p)
         elif type_name == 'POINT_COMPLETE':
-            # Could update a "points completed" counter if UI supported it
-            pass
+            if self.progress:
+                self._apply_context(p)
         elif type_name == 'BATCH_END':
             if self.progress:
+                self._apply_context(p)
                 self.progress.finish_batch()
         elif type_name == 'EXPERIMENT_END':
             if self.progress:
                 self.progress.stop()
+            self.progress = None
+            self._started = False
             self._print_success(p.get('result'))
         elif type_name == 'ERROR':
             if self.progress:
                 self.progress.stop()
+            self.progress = None
+            self._started = False
             if self.console:
-                self.console.print(f"[bold red]Error:[/bold red] {p.get('error')}")
+                context = self._format_context_line(p.get("scan_context") or {})
+                prefix = f" at {context}" if context else ""
+                self.console.print(f"[bold red]Error{prefix}:[/bold red] {p.get('error')}")
 
     def _handle_start(self, p: Dict):
         """Initialize progress bar on start."""
+        if self.progress is not None:
+            self._apply_context(p)
+            return
         if self.console:
             self.console.print(Panel(
                 f"[bold cyan]Running {p.get('experiment_name', 'Experiment')}[/bold cyan]\n"
@@ -666,12 +694,15 @@ class ProgressBridge:
             steps_per_alpha=1000,
             num_batches=1
         )
+        self._apply_context(p)
         self.progress.start()
+        self._started = True
 
     def _handle_batch_start(self, p: Dict):
         """Update UI for new batch."""
         if not self.progress:
             return
+        self._apply_context(p)
             
         alphas = p.get('alpha_values', [])
         self.progress.start_batch(
@@ -683,6 +714,45 @@ class ProgressBridge:
         steps = p.get('steps_per_alpha')
         if steps:
             self.progress.steps_per_alpha = steps
+
+    def _apply_context(self, p: Dict):
+        if not self.progress:
+            return
+        context = p.get("scan_context") or {}
+        lines = []
+        if context:
+            line = self._format_context_line(context)
+            if line:
+                lines.append(line)
+            coordinates = context.get("coordinates")
+            if isinstance(coordinates, dict) and coordinates:
+                coord_line = ", ".join(f"{key}={value}" for key, value in coordinates.items())
+                lines.append(coord_line)
+        point_progress = p.get("point_progress") or context.get("point_progress") or {}
+        self.progress.set_context(
+            lines,
+            completed_points=point_progress.get("completed") if isinstance(point_progress, dict) else None,
+            total_points=point_progress.get("total") if isinstance(point_progress, dict) else p.get("total_points"),
+        )
+
+    @staticmethod
+    def _format_context_line(context: Dict) -> str:
+        if not isinstance(context, dict) or not context:
+            return ""
+        parts = []
+        group_label = context.get("group_label")
+        batch_label = context.get("batch_label")
+        point_label = context.get("point_label")
+        alpha_label = context.get("alpha_label")
+        if group_label:
+            parts.append(str(group_label))
+        if batch_label:
+            parts.append(str(batch_label))
+        if point_label:
+            parts.append(str(point_label))
+        if alpha_label:
+            parts.append(str(alpha_label))
+        return " | ".join(parts)
 
     def _handle_legacy_event(self, event):
         """Simple print fallback."""

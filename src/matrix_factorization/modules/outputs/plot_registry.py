@@ -9,6 +9,7 @@ Plot Registry - 绘图指标映射表
   A: Projection metrics (Q_Y, Q_W, Q_X)
   B: Gram-root diagnostics (Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
   C: Observed Split (Q_Y_observed, Q_Y_unobserved)
+  D: Sign-aligned diagnostics (Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED)
 
 用法:
     plots:
@@ -37,6 +38,10 @@ METRIC_MAP: Dict[Tuple[str, str], str] = {
     # C: Observed Split
     ('C', 'o'): 'Q_Y_observed',
     ('C', 'u'): 'Q_Y_unobserved',
+
+    # D: Per-channel sign-gauge diagnostics
+    ('D', 'w'): 'Q_W_SIGN_ALIGNED',
+    ('D', 'x'): 'Q_X_SIGN_ALIGNED',
     
     # N: Tensor latent factor projection
     ('N', 'n'): 'Q_N',
@@ -159,7 +164,13 @@ def print_metric_table():
     for (cat, metric), name in sorted(METRIC_MAP.items()):
         if cat != current_category:
             current_category = cat
-            cat_names = {'A': 'Cosine', 'B': 'Norm', 'C': 'Split', 'D': 'Phys', 'E': 'Other'}
+            cat_names = {
+                'A': 'Projection',
+                'B': 'Gram root',
+                'C': 'Observed split',
+                'D': 'Sign aligned',
+                'N': 'Tensor',
+            }
             print(f"\n{cat} ({cat_names.get(cat, cat)}):")
         
         replica = '✓' if name in REPLICA_SUPPORTED else '✗'

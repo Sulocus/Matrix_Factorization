@@ -139,7 +139,7 @@ def test_incompatible_intervention_fails_preflight(tmp_path):
     config_path.write_text(
         """
 tensor_order: 2
-algorithm: 1
+algorithm: 3
 teacher: 2
 matrix:
   N1: 4
@@ -167,7 +167,7 @@ output:
     config, output_options, raw_yaml = load_yaml_config(config_path)
     plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
 
-    assert any("intervention 'warm_start' 未声明兼容 algorithm 'bigamp'" in error for error in plan.errors)
+    assert any("intervention 'warm_start' 未声明兼容 algorithm 'agd'" in error for error in plan.errors)
 
 
 def test_warm_start_runtime_state_exposes_teacher_factors(tmp_path):

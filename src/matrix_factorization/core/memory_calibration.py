@@ -33,6 +33,7 @@ from matrix_factorization.core.experiment import (
 )
 from matrix_factorization.core.parallel.execution_modes import EstimationParams
 from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
+from matrix_factorization.core.contracts import get_precision_policy_specs
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,8 @@ class MemoryCalibrationProfile:
     tensor_order: int = 2
     f_distribution: str = "rademacher"
     use_compile: bool = False
+    precision_profile: str = "safe"
+    precision_fallback_policy: str = "allow"
     use_bf16: bool = False
     use_tf32: bool = True
     purpose: str = ""
@@ -69,6 +72,8 @@ class MemoryCalibrationProfile:
             "tensor_order": self.tensor_order,
             "f_distribution": self.f_distribution,
             "use_compile": self.use_compile,
+            "precision_profile": self.precision_profile,
+            "precision_fallback_policy": self.precision_fallback_policy,
             "use_bf16": self.use_bf16,
             "use_tf32": self.use_tf32,
             "purpose": self.purpose,
@@ -236,6 +241,7 @@ def get_memory_calibration_profiles() -> Dict[str, MemoryCalibrationProfile]:
         ),
     }
     profiles.update(_build_target_memory_profiles())
+    profiles.update(_build_precision_memory_profiles())
     return profiles
 
 
@@ -346,6 +352,7 @@ def _make_target_profile(
     M: int,
     tensor_order: int,
     purpose: str,
+    precision_profile: str = "safe",
 ) -> MemoryCalibrationProfile:
     matrix_size = _solve_square_matrix_size_for_target(
         algorithm_key=algorithm_key,
@@ -354,6 +361,7 @@ def _make_target_profile(
         alpha_values=alpha_values,
         M=M,
         tensor_order=tensor_order,
+        precision_profile=precision_profile,
     )
     return MemoryCalibrationProfile(
         key=key,
@@ -364,6 +372,8 @@ def _make_target_profile(
         max_steps=2,
         max_epochs=2,
         tensor_order=tensor_order,
+        precision_profile=precision_profile,
+        use_bf16=precision_profile in {"fast", "aggressive"},
         purpose=purpose,
         runtime_class="quick",
         target_tensor_gb=target_tensor_gb,
@@ -375,6 +385,34 @@ def _make_target_profile(
     )
 
 
+def _build_precision_memory_profiles() -> Dict[str, MemoryCalibrationProfile]:
+    """Construct profile-specific GB calibration entries."""
+    base_specs = [
+        ("matrix_bigamp", "bigamp", 10.0, 4, [0.0, 0.1, 0.2, 0.3], 32, 2),
+        ("spreading_bigamp", "bigamp_spreading", 10.0, 4, [0.1, 0.2, 0.3], 32, 2),
+        ("tensor_parallel", "bigamp_tensor_parallel", 6.0, 4, [0.05, 0.10], 256, 3),
+    ]
+    profiles: Dict[str, MemoryCalibrationProfile] = {}
+    for prefix, algorithm_key, target, samples, alphas, rank, order in base_specs:
+        for precision_profile in ("fast", "aggressive"):
+            key = f"{prefix}_{precision_profile}"
+            profiles[key] = _make_target_profile(
+                key=key,
+                algorithm_key=algorithm_key,
+                target_tensor_gb=target,
+                samples_per_alpha=samples,
+                alpha_values=alphas,
+                M=rank,
+                tensor_order=order,
+                precision_profile=precision_profile,
+                purpose=(
+                    f"{precision_profile} precision calibration for {algorithm_key}; "
+                    "uses actual role dtype map in the estimator."
+                ),
+            )
+    return profiles
+
+
 def _solve_square_matrix_size_for_target(
     *,
     algorithm_key: str,
@@ -383,6 +421,7 @@ def _solve_square_matrix_size_for_target(
     alpha_values: List[float],
     M: int,
     tensor_order: int,
+    precision_profile: str = "safe",
 ) -> int:
     """Pick N so raw estimator is close to a requested tensor footprint."""
     estimator = MemoryEstimator(apply_calibration=False)
@@ -397,8 +436,9 @@ def _solve_square_matrix_size_for_target(
             max_steps=2,
             max_epochs=2,
             tensor_order=tensor_order,
+            precision_profile=precision_profile,
+            use_bf16=precision_profile in {"fast", "aggressive"},
             use_compile=False,
-            use_bf16=False,
             use_tf32=True,
         )
         params = estimation_params_from_config(build_calibration_config(profile))
@@ -465,7 +505,9 @@ def build_calibration_config(profile: MemoryCalibrationProfile) -> ExperimentCon
             damping=0.5,
             noise_var=1.0e-5,
             use_compile=profile.use_compile,
-            use_bf16=profile.use_bf16,
+            precision_profile=profile.precision_profile,
+            precision_fallback_policy=profile.precision_fallback_policy,
+            use_bf16=profile.precision_profile in {"fast", "aggressive"},
             use_tf32=profile.use_tf32,
             seed_partition_policy="partition_invariant",
         ),
@@ -494,7 +536,8 @@ def explain_memory_profile(profile_key: str) -> str:
     lines.append(f"alpha_values: {profile.alpha_values}")
     lines.append(f"samples_per_alpha: {profile.samples_per_alpha}")
     lines.append(f"max_steps: {profile.max_steps}")
-    lines.append(f"dtype: {'bf16' if profile.use_bf16 else 'fp32'}")
+    lines.append(f"precision_profile: {profile.precision_profile}")
+    lines.append(f"dtype_alias: {'bf16' if profile.precision_profile in {'fast', 'aggressive'} else 'fp32'}")
     lines.append(f"compile: {profile.use_compile}")
     lines.append(f"tensor_order: {profile.tensor_order}")
     lines.append(f"theoretical_tensor_estimate_gb: {raw_estimate_gb:.6f}")
@@ -761,6 +804,14 @@ def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
         for _ in range(2, tensor_order):
             dims.append(config.matrix.N1)
         tensor_dims = tuple(dims)
+    precision_profile = getattr(
+        config.algorithm_params,
+        "precision_profile",
+        "fast" if getattr(config.algorithm_params, "use_bf16", False) else "safe",
+    )
+    precision_specs = get_precision_policy_specs()
+    precision_spec = precision_specs.get(config.algorithm_key)
+    role_dtype_map = precision_spec.role_dtype_map(precision_profile) if precision_spec else {}
     return EstimationParams(
         N1=config.matrix.N1,
         N2=config.matrix.N2,
@@ -769,7 +820,9 @@ def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
         alpha_values=[float(value) for value in config.scan.values],
         algorithm_key=config.algorithm_key,
         use_compile=config.algorithm_params.use_compile,
-        use_bf16=config.algorithm_params.use_bf16,
+        use_bf16=precision_profile in {"fast", "aggressive"},
+        precision_profile=precision_profile,
+        role_dtype_map=role_dtype_map,
         f_distribution=getattr(spreading, "f_distribution", "rademacher") if spreading else "rademacher",
         adaptive_damping=config.algorithm_params.adaptive_damping,
         allow_intra_connection=getattr(spreading, "allow_intra_connection", False) if spreading else False,

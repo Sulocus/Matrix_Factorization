@@ -276,10 +276,20 @@ latent.W.teacher_student.Q_W_GRAM_ROOT
   formula: sqrt(max(baseline_corrected_gram_overlap, 0))
   role: gauge/rotation-insensitive diagnostic
 
+latent.W.teacher_student.Q_W_SIGN_ALIGNED
+  aliases: Q_W_SIGN_ALIGNED_mean, Q_W_SIGN_ALIGNED_std
+  formula: sum_k abs(<W_s[:,k], W_t[:,k]>) / sum_k ||W_t[:,k]||^2
+  role: per-channel sign-gauge diagnostic, still rotation/permutation sensitive
+
 latent.X.teacher_student.Q_X_GRAM_ROOT
   aliases: Q_X_GRAM_ROOT_mean, Q_X_GRAM_ROOT_std
   formula: sqrt(max(baseline_corrected_gram_overlap, 0))
   role: gauge/rotation-insensitive diagnostic
+
+latent.X.teacher_student.Q_X_SIGN_ALIGNED
+  aliases: Q_X_SIGN_ALIGNED_mean, Q_X_SIGN_ALIGNED_std
+  formula: sum_k abs(<X_s[k,:], X_t[k,:]>) / sum_k ||X_t[k,:]||^2
+  role: per-channel sign-gauge diagnostic, still rotation/permutation sensitive
 
 latent.N.teacher_student.Q_N_projection
   aliases: Q_N_mean, Q_N_std, Q_N_mode*_mean, Q_N_mode*_std

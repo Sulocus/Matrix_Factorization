@@ -243,6 +243,65 @@ def _tensor_gb(shape: Tuple[int, ...], dtype: DType, count: int = 1) -> float:
     return elements * dtype.bytes / (1024**3)
 
 
+def _dtype_from_name(name: Optional[str], default: DType = DType.FLOAT32) -> DType:
+    mapping = {
+        "float32": DType.FLOAT32,
+        "fp32": DType.FLOAT32,
+        "bfloat16": DType.BFLOAT16,
+        "bf16": DType.BFLOAT16,
+        "float16": DType.FLOAT16,
+        "fp16": DType.FLOAT16,
+        "int64": DType.INT64,
+        "int32": DType.INT32,
+        "int8": DType.INT8,
+        "bool": DType.BOOL,
+    }
+    return mapping.get(str(name or "").lower(), default)
+
+
+def _role_storage_dtype(params: EstimationParams, role: str, default: DType) -> DType:
+    role_map = getattr(params, "role_dtype_map", {}) or {}
+    role_payload = role_map.get(role) if isinstance(role_map, dict) else None
+    if isinstance(role_payload, dict) and role_payload.get("storage"):
+        return _dtype_from_name(role_payload.get("storage"), default)
+    profile = getattr(params, "precision_profile", None)
+    if profile == "safe":
+        return DType.FLOAT32 if default in {DType.BFLOAT16, DType.FLOAT16} else default
+    if profile in {"fast", "aggressive"} and getattr(params, "use_bf16", False):
+        if default == DType.FLOAT32 and role in {
+            "student_factors",
+            "factor_variances",
+            "workspace",
+            "observations_Y",
+            "F_gaussian",
+        }:
+            if profile == "aggressive" or role in {"student_factors", "factor_variances", "workspace"}:
+                return DType.BFLOAT16
+    return default
+
+
+def _state_dtype(params: EstimationParams) -> DType:
+    return _role_storage_dtype(params, "student_factors", DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+
+
+def _variance_dtype(params: EstimationParams) -> DType:
+    return _role_storage_dtype(params, "factor_variances", _state_dtype(params))
+
+
+def _workspace_dtype(params: EstimationParams) -> DType:
+    return _role_storage_dtype(params, "workspace", _state_dtype(params))
+
+
+def _observation_dtype(params: EstimationParams) -> DType:
+    return _role_storage_dtype(params, "observations_Y", DType.FLOAT32)
+
+
+def _f_dtype(params: EstimationParams) -> DType:
+    if params.f_distribution == "rademacher":
+        return DType.INT8
+    return _role_storage_dtype(params, "F_gaussian", DType.FLOAT32)
+
+
 def _stage_override(
     breakdown: MemoryBreakdown,
     stages: Dict[str, float],
@@ -779,9 +838,9 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
     SN1 = S * N1  # Flattened row dim
     SN2 = S * N2  # Flattened col dim
     
-    # Dtype selection based on params
-    storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
-    f_dtype = DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32
+    # Dtype selection follows PrecisionPolicySpec role contracts.
+    storage_dtype = _state_dtype(params)
+    f_dtype = _f_dtype(params)
     
     # Adaptive mode needs slight margin due to extra intermediates (now accurate, was 1.8x when formula was wrong)
     adaptive_margin = 1.2 if params.adaptive_damping else 1.0
@@ -1113,7 +1172,7 @@ def get_bigamp_standard_breakdown(params: EstimationParams) -> MemoryBreakdown:
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
     B = params.batch_size  # Alpha batch size (num_alphas for parallel processing)
-    storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
+    storage_dtype = _state_dtype(params)
     
     breakdown = MemoryBreakdown(algorithm_key="bigamp", safety_margin=1.15)
     
@@ -1205,7 +1264,7 @@ def get_agd_breakdown(params: EstimationParams) -> MemoryBreakdown:
     """
     N1, N2, M, S = params.N1, params.N2, params.M, params.S
     B = params.batch_size  # Alpha batch size (num_alphas for parallel processing)
-    storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
+    storage_dtype = _state_dtype(params)
     
     breakdown = MemoryBreakdown(algorithm_key="agd", safety_margin=1.0)
     
@@ -1327,8 +1386,13 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     C = max(1, int(math.ceil(alpha_max * dof)))
     
     # Storage dtype
-    storage_bytes = 2 if params.use_bf16 else 4  # BF16 or FP32
-    f_bytes = 1 if params.f_distribution == 'rademacher' else 4
+    storage_dtype = _state_dtype(params)
+    variance_dtype = _variance_dtype(params)
+    workspace_dtype = _workspace_dtype(params)
+    observation_dtype = _observation_dtype(params)
+    f_dtype = _f_dtype(params)
+    storage_bytes = storage_dtype.bytes
+    f_bytes = f_dtype.bytes
     
     # Factor tensors: n factors × (S, N, M) for parallel version
     factor_memory = S * sum(tensor_dims) * M * storage_bytes
@@ -1351,7 +1415,7 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
         name="factor tensors",
         shape=(S, sum(tensor_dims), M),
         shape_formula="S × sum(N_d) × M",
-        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+        dtype=storage_dtype,
     ))
     breakdown.add_component(factors)
 
@@ -1360,13 +1424,13 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
         name="F coefficients",
         shape=(S, C, M),
         shape_formula="S × C × M",
-        dtype=DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32,
+        dtype=f_dtype,
     ))
     observations.add(TensorSpec(
         name="Y values",
         shape=(S, C),
         shape_formula="S × C",
-        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+        dtype=observation_dtype,
     ))
     breakdown.add_component(observations)
 
@@ -1375,7 +1439,7 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
         name="factor variances",
         shape=(S, sum(tensor_dims), M),
         shape_formula="S × sum(N_d) × M",
-        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+        dtype=variance_dtype,
     ))
     breakdown.add_component(variances)
 
@@ -1384,7 +1448,7 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
         name="scatter/gather temporaries",
         shape=(S, C, M),
         shape_formula="3 × S × C × M",
-        dtype=DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32,
+        dtype=workspace_dtype,
         count=3,
     ))
     breakdown.add_component(temporaries)
@@ -1405,15 +1469,15 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
             tensor_supergraph_workspace_gb = 3.24 * (5120 - max_dim) / (5120 - 3272)
         else:
             tensor_supergraph_workspace_gb = 0.0
-        factor_state_gb = _tensor_gb((B, S * sum(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32, count=2)
+        factor_state_gb = _tensor_gb((B, S * sum(tensor_dims), M), storage_dtype, count=2)
         observation_gb = (
-            _tensor_gb((S * C, M), DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32)
-            + _tensor_gb((S * C,), DType.FLOAT32)
+            _tensor_gb((S * C, M), f_dtype)
+            + _tensor_gb((S * C,), observation_dtype)
             + _tensor_gb((S * C,), DType.INT64, count=tensor_order)
             + _tensor_gb((B, S * C), DType.BOOL)
         )
-        edge_workspace_gb = _tensor_gb((B, S * C, M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
-        scatter_state_gb = _tensor_gb((B, S * max(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+        edge_workspace_gb = _tensor_gb((B, S * C, M), workspace_dtype)
+        scatter_state_gb = _tensor_gb((B, S * max(tensor_dims), M), workspace_dtype)
         stages = {
             "tensor_parallel_persistent_state": factor_state_gb + observation_gb,
             # Mirrors probe_tensor_super_memory(): gathered_list, stacked gathered,
@@ -1425,9 +1489,9 @@ def get_tensor_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
         }
         return _stage_override(breakdown, stages, safety_margin=1.0)
 
-    factor_state_gb = _tensor_gb((S, sum(tensor_dims), M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32, count=2)
-    observation_gb = _tensor_gb((S, C, M), DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32) + _tensor_gb((S, C), DType.FLOAT32)
-    edge_workspace_gb = _tensor_gb((S, C, M), DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32)
+    factor_state_gb = _tensor_gb((S, sum(tensor_dims), M), storage_dtype, count=2)
+    observation_gb = _tensor_gb((S, C, M), f_dtype) + _tensor_gb((S, C), observation_dtype)
+    edge_workspace_gb = _tensor_gb((S, C, M), workspace_dtype)
     stages = {
         "tensor_serial_persistent_state": factor_state_gb + observation_gb,
         "tensor_serial_alpha_sample_peak": factor_state_gb + observation_gb + 4.2 * edge_workspace_gb,
@@ -1450,8 +1514,8 @@ def get_bigamp_spreading_breakdown(params: EstimationParams) -> MemoryBreakdown:
     # Edges per sample
     C = max(1, int(alpha_max * M * N1))
     
-    storage_dtype = DType.BFLOAT16 if params.use_bf16 else DType.FLOAT32
-    f_dtype = DType.INT8 if params.f_distribution == 'rademacher' else DType.FLOAT32
+    storage_dtype = _state_dtype(params)
+    f_dtype = _f_dtype(params)
     
     breakdown = MemoryBreakdown(algorithm_key="bigamp_spreading", safety_margin=1.30)
     

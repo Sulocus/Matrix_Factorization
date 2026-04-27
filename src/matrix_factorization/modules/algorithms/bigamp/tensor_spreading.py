@@ -29,6 +29,7 @@ from .tensor_hypergraph import generate_tensor_hypergraph, generate_tensor_obser
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.core.experiment.config import resolve_normalization_profile
 from matrix_factorization.modules.metrics.tensor_metrics import compute_tensor_factor_projection_overlaps
 
 
@@ -85,6 +86,19 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             self.f_distribution = kwargs.get('f_distribution', 'rademacher')
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
+            self.precision_profile = kwargs.get(
+                'precision_profile',
+                'fast' if kwargs.get('use_bf16', False) else 'safe',
+            )
+            if self.precision_profile == 'fast' and kwargs.get('use_bf16', True) is False:
+                self.precision_profile = 'safe'
+            self.precision_fallback_policy = kwargs.get(
+                'precision_fallback_policy',
+                'allow',
+            )
+            if self.precision_fallback_policy == 'allow' and kwargs.get('dtype_fallback_policy', 'allow') == 'error':
+                self.precision_fallback_policy = 'error'
+            self.normalization_profile = kwargs.get('normalization_profile', 'paper_sparse_sampling')
         
         # === From runner: BiGAMPTensorSpreading(config, device) ===
         elif hasattr(config, 'matrix'):
@@ -113,6 +127,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Algorithm params
             self.damping = config.algorithm_params.damping
             self.noise_var = config.algorithm_params.noise_var
+            self.normalization_profile = getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling")
             
             # Spreading params
             if hasattr(config, 'spreading') and config.spreading:
@@ -122,6 +137,21 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             else:
                 self.f_distribution = 'rademacher'
                 self.onsager_correction = False  # Default: OFF for consistency with SpreadingConfig
+            algorithm_params = getattr(config, "algorithm_params", None)
+            self.precision_profile = getattr(
+                algorithm_params,
+                'precision_profile',
+                'fast' if getattr(algorithm_params, 'use_bf16', False) else 'safe',
+            )
+            if self.precision_profile == 'fast' and getattr(algorithm_params, 'use_bf16', True) is False:
+                self.precision_profile = 'safe'
+            self.precision_fallback_policy = getattr(
+                algorithm_params,
+                'precision_fallback_policy',
+                'allow',
+            )
+            if self.precision_fallback_policy == 'allow' and getattr(algorithm_params, 'dtype_fallback_policy', 'allow') == 'error':
+                self.precision_fallback_policy = 'error'
                 
         elif isinstance(config, int):
             # === Legacy direct call (tensor_order as first arg) ===
@@ -136,12 +166,45 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             self.noise_var = 1e-6
             self.f_distribution = 'rademacher'
             self.onsager_correction = False
+            self.precision_profile = 'safe'
+            self.precision_fallback_policy = 'allow'
+            self.normalization_profile = 'paper_sparse_sampling'
         else:
             raise ValueError(f"config must be a config object or int, got {type(config)}")
         
         # Validate dims matches order
         if len(self.dims) != self.order:
             raise ValueError(f"dims length {len(self.dims)} must match tensor_order {self.order}")
+        if self.precision_profile not in {'safe', 'fast', 'aggressive'}:
+            raise ValueError(
+                "algorithm_params.precision_profile must be 'safe', 'fast', or 'aggressive', "
+                f"got {self.precision_profile!r}"
+            )
+        if self.precision_fallback_policy not in {'allow', 'error'}:
+            raise ValueError(
+                "algorithm_params.precision_fallback_policy must be 'allow' or 'error', "
+                f"got {self.precision_fallback_policy!r}"
+            )
+        self.requested_use_bf16 = self.precision_profile in {'fast', 'aggressive'}
+        bf16_supported = bool(
+            (self.device is not None)
+            and getattr(self.device, "type", "cpu") == "cuda"
+            and torch.cuda.is_available()
+            and torch.cuda.is_bf16_supported()
+        )
+        self.use_bf16 = self.requested_use_bf16 and bf16_supported
+        if self.requested_use_bf16 and not self.use_bf16 and self.precision_fallback_policy == 'error':
+            raise RuntimeError(
+                "BF16 precision profile was requested but is unavailable and "
+                "algorithm_params.precision_fallback_policy='error'"
+            )
+        self.storage_dtype = torch.bfloat16 if self.use_bf16 else torch.float32
+        self.dtype_status = (
+            "bf16_requested_and_effective"
+            if self.use_bf16
+            else ("fallback_to_float32_bf16_unavailable" if self.requested_use_bf16 else "bf16_disabled_by_config")
+        )
+        self._norm = resolve_normalization_profile(self.normalization_profile, self.M)
 
     # =========================================================================
     # AlgorithmBase Interface Implementation
@@ -310,6 +373,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         artifacts = {}
         if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
             artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+        norm = getattr(self, "_norm", None)
+        normalization_profile = getattr(self, "normalization_profile", "paper_sparse_sampling")
         return AlgorithmResult.from_metrics_only(
             metrics_by_alpha=metrics_by_alpha,
             artifacts=artifacts,
@@ -327,11 +392,16 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                     "tensor_execution": build_tensor_execution_metadata(
                         path="serial_tensor_hypergraph",
                         device=getattr(self, "device", None),
-                        requested_use_bf16=False,
-                        effective_use_bf16=False,
-                        dtype_fallback_policy="not_applicable",
-                        dtype_status="float32_serial_path",
-                        storage_dtype="float32",
+                        requested_use_bf16=bool(getattr(self, "requested_use_bf16", False)),
+                        effective_use_bf16=bool(getattr(self, "use_bf16", False)),
+                        dtype_fallback_policy=getattr(self, "precision_fallback_policy", "allow"),
+                        dtype_status=getattr(self, "dtype_status", "float32_serial_path"),
+                        storage_dtype=getattr(self, "storage_dtype", torch.float32),
+                        precision_profile=getattr(self, "precision_profile", "safe"),
+                        precision_fallback_policy=getattr(self, "precision_fallback_policy", "allow"),
+                        normalization_profile=normalization_profile,
+                        normalization_schema_version=getattr(norm, "schema_version", 5),
+                        normalization_convention=getattr(norm, "convention_label", "paper_sparse_sampling_var1_latent_unit_prior"),
                         requested_use_compile=False,
                         compile_fallback_policy="not_applicable",
                         effective_use_compile=False,
@@ -388,7 +458,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         for d in range(2, self.order):
             N_d = self.dims[d]
             # Initialize from W's statistics
-            scale = W_teacher.std().item()
+            scale = self._norm.latent_std
             torch.manual_seed(42 + d)
             factor_d = torch.randn(N_d, self.M, device=self.device) * scale
             factors.append(factor_d)
@@ -420,18 +490,26 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         F, Y = generate_tensor_observations(
             teacher_factors, hg, seed + 1000, device, self.f_distribution
         )
-        
-        # Initialize student (Spectral-like initialization)
-        # Estimate scale from teacher to avoid "dead" initialization
-        avg_std = torch.stack([t.std() for t in teacher_factors]).mean()
-        
-        # Initialize with matching scale + noise, or small random if teacher is zero
-        init_scale = avg_std.item() if avg_std > 1e-9 else 0.1
-        
-        factors = [torch.randn_like(t) * init_scale for t in teacher_factors]
-        factor_vars = [torch.ones_like(t) * (init_scale**2) for t in teacher_factors]
+        if getattr(self, "precision_profile", "safe") == "aggressive" and getattr(self, "use_bf16", False):
+            if torch.is_floating_point(F):
+                F = F.to(self.storage_dtype)
+            if torch.is_floating_point(Y):
+                Y = Y.to(self.storage_dtype)
+
+        # Initialize student in the selected normalization profile.
+        init_scale = self._norm.student_init_std
+
+        factors = [
+            torch.randn(t.shape, device=device, dtype=self.storage_dtype) * init_scale
+            for t in teacher_factors
+        ]
+        factor_vars = [
+            torch.ones(t.shape, device=device, dtype=self.storage_dtype) * self._norm.prior_variance
+            for t in teacher_factors
+        ]
         
         prev_s = None
+        prev_svar = None
         is_rademacher = (self.f_distribution == 'rademacher')
         
         # Precompute y_var for final metrics (fallback logic)
@@ -451,14 +529,23 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 progress = step / anneal_steps
                 current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
 
-            factors, factor_vars, prev_s = tensor_step(
+            factors, factor_vars, next_prev_s, next_prev_svar = tensor_step(
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
                 noise_var=current_noise_var,
                 is_rademacher=is_rademacher,
                 prev_s=prev_s if self.onsager_correction else None,
+                prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,
+                prior_precision_base=self._norm.prior_precision_base,
+                prior_variance=self._norm.prior_variance,
             )
+            if self.onsager_correction:
+                prev_s = next_prev_s
+                prev_svar = next_prev_svar
+            else:
+                prev_s = None
+                prev_svar = None
             
             # Throttle callback to balance UI responsiveness vs CPU overhead
             # GPU monitor has 2s cache, so every 20 steps (10 updates per 200 steps) is sufficient
@@ -541,10 +628,12 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         self,
         device: torch.device,
         seed: int = 42,
-        scale: float = 0.1,
+        scale: Optional[float] = None,
     ) -> List[torch.Tensor]:
         """Create random teacher factors."""
         torch.manual_seed(seed)
+        if scale is None:
+            scale = self._norm.latent_std
         return [
             torch.randn(N_d, self.M, device=device) * scale
             for N_d in self.dims

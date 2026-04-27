@@ -92,6 +92,7 @@ def compute_matrix_metric_payload(
         gram_overlap_normalized,
         gram_overlap_root,
         projection_abs,
+        sign_aligned_projection_abs,
         _compute_qy_masked,
     )
     import math
@@ -109,6 +110,9 @@ def compute_matrix_metric_payload(
     # Formal projection metrics
     Q_W_list = []
     Q_X_list = []
+    # Per-channel sign-gauge-aligned diagnostics
+    Q_W_sign_aligned_list = []
+    Q_X_sign_aligned_list = []
     # Gauge/rotation-insensitive diagnostics
     Q_W_gram_root_list = []
     Q_X_gram_root_list = []
@@ -126,6 +130,12 @@ def compute_matrix_metric_payload(
     for s in range(S):
         Q_W_list.append(projection_abs(W_for_metrics[s], data.W_teacher))
         Q_X_list.append(projection_abs(X_for_metrics[s], data.X_teacher))
+        Q_W_sign_aligned_list.append(
+            sign_aligned_projection_abs(W_for_metrics[s], data.W_teacher, latent_axis=-1)
+        )
+        Q_X_sign_aligned_list.append(
+            sign_aligned_projection_abs(X_for_metrics[s], data.X_teacher, latent_axis=0)
+        )
         Q_W_gram_root_list.append(gram_overlap_root(W_for_metrics[s], data.W_teacher, use_left=True))
         Q_X_gram_root_list.append(gram_overlap_root(X_for_metrics[s], data.X_teacher, use_left=False))
         Q_Y_list.append(projection_abs(Y_students[s], Y_teacher))
@@ -158,6 +168,10 @@ def compute_matrix_metric_payload(
         "Q_W_std": float(np.std(Q_W_list, ddof=1)) if len(Q_W_list) > 1 else 0.0,
         "Q_X_mean": float(np.mean(Q_X_list)),
         "Q_X_std": float(np.std(Q_X_list, ddof=1)) if len(Q_X_list) > 1 else 0.0,
+        "Q_W_SIGN_ALIGNED_mean": float(np.mean(Q_W_sign_aligned_list)),
+        "Q_W_SIGN_ALIGNED_std": float(np.std(Q_W_sign_aligned_list, ddof=1)) if len(Q_W_sign_aligned_list) > 1 else 0.0,
+        "Q_X_SIGN_ALIGNED_mean": float(np.mean(Q_X_sign_aligned_list)),
+        "Q_X_SIGN_ALIGNED_std": float(np.std(Q_X_sign_aligned_list, ddof=1)) if len(Q_X_sign_aligned_list) > 1 else 0.0,
         "Q_Y_mean": float(np.mean(Q_Y_list)),
         "Q_Y_std": float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
         "Q_W_GRAM_ROOT_mean": float(np.mean(Q_W_gram_root_list)),

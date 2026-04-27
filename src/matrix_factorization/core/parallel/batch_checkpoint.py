@@ -313,6 +313,7 @@ def dict_to_config(d: Dict[str, Any]):
     if d.get('teacher'):
         teacher = TeacherConfig(
             init_distribution=d['teacher']['init_distribution'],
+            mean_scale=d['teacher'].get('mean_scale', 0.0),
         )
     
     return ExperimentConfig(

@@ -120,6 +120,8 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["factor_payload_contract"]["matrix_factors"] == {
         "W_students": False,
         "X_students": False,
+        "W_teacher": False,
+        "X_teacher": False,
     }
 
     output_contract = json.loads((run_dir / "output_contract.json").read_text(encoding="utf-8"))
@@ -139,6 +141,7 @@ def test_result_schema_contract_doc_covers_canonical_files():
         "events.jsonl",
         "manifest.json",
         "artifacts/results.pt",
+        "artifacts/teacher_factors.pt",
         "results/latest",
         "index.json",
         "summary.json",
@@ -249,11 +252,63 @@ def test_metrics_only_result_save_marks_factor_payload_unavailable(tmp_path):
     assert metrics["factor_payload_contract"]["unavailable_fields"] == [
         "W_students",
         "X_students",
+        "W_teacher",
+        "X_teacher",
     ]
     tensor_payload = torch.load(run_dir / "artifacts" / "results.pt", map_location="cpu")
     assert "W_students" not in tensor_payload
     assert "X_students" not in tensor_payload
     assert tensor_payload["factor_payload_contract"]["matrix_factors"]["W_students"] is False
+
+
+def test_save_tensors_writes_shared_teacher_factor_artifact_for_points(tmp_path):
+    config = _tiny_config()
+    result = ExperimentResult(
+        experiment_id="teacher_payload",
+        config=config,
+        scan_dimension="canonical",
+        scan_values=["p0000"],
+        W_teacher=torch.tensor([[1.0], [2.0]]),
+        X_teacher=torch.tensor([[3.0, 4.0]]),
+    )
+    single = SingleRunResult(
+        scan_value="p0000",
+        metrics={"Q_Y_mean": 1.0},
+        W_students=torch.ones(1, 2, 1),
+        X_students=torch.ones(1, 1, 2),
+    )
+    result.add_result("p0000", single)
+    result.result_cube.axes = {
+        "alpha": {"values": [0.5]},
+        "onsager_policy": {"values": ["test"]},
+    }
+    result.result_cube.add_point(
+        "p0000",
+        {"alpha": 0.5, "onsager_policy": "test"},
+        single.metrics,
+    )
+
+    run_dir = tmp_path / "teacher_payload"
+    result.save(run_dir, save_tensors=True, output_options={"enable_heatmap": False})
+
+    teacher_payload = torch.load(run_dir / "artifacts" / "teacher_factors.pt", map_location="cpu")
+    assert torch.equal(teacher_payload["W_teacher"], result.W_teacher)
+    assert torch.equal(teacher_payload["X_teacher"], result.X_teacher)
+    assert teacher_payload["W_teacher"].dtype == torch.float32
+
+    point_payload = torch.load(run_dir / "artifacts" / "points" / "p0000" / "results.pt", map_location="cpu")
+    assert point_payload["teacher_factors_path"] == "artifacts/teacher_factors.pt"
+    assert point_payload["factor_payload_contract"]["matrix_factors"]["W_teacher"] is True
+
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["result_cube"]["artifacts"]["_shared"]["teacher_factors"] == "artifacts/teacher_factors.pt"
+
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert any(item["path"] == "artifacts/teacher_factors.pt" for item in manifest["artifacts"])
+
+    loaded = ExperimentResult.load(run_dir)
+    assert torch.equal(loaded.W_teacher, result.W_teacher)
+    assert torch.equal(loaded.X_teacher, result.X_teacher)
 
 
 def test_algorithm_result_does_not_advertise_empty_factor_payloads():

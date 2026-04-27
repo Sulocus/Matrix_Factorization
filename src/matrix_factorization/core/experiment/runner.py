@@ -24,7 +24,7 @@ import time
 import logging
 import torch
 
-from .config import ExperimentConfig, MatrixParams, ScanConfig
+from .config import ExperimentConfig, MatrixParams, ScanConfig, TeacherConfig
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
 from ..contracts import AlgorithmResult
@@ -221,7 +221,7 @@ class ExperimentRunner:
             'experiment_name': getattr(config, 'experiment_name', 'unnamed_experiment'),
             'config': config,
             'matrix': f"{config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}",
-            'scan': f"{config.scan.dimension} ({len(config.scan.values)} points)"
+            'scan': self._scan_label_for_progress(config),
         })
         
         if self.verbose:
@@ -328,6 +328,35 @@ class ExperimentRunner:
         axes = scan_spec.get("axes") or {}
         return set(axes.keys()) != {"alpha"}
 
+    @staticmethod
+    def _scan_label_for_progress(config: ExperimentConfig) -> str:
+        scan_spec = getattr(config, "scan_spec", None)
+        axes = scan_spec.get("axes", {}) if isinstance(scan_spec, dict) else {}
+        if not axes:
+            return f"{config.scan.dimension} ({len(config.scan.values)} points)"
+
+        def count(axis_spec: Any) -> int:
+            if not isinstance(axis_spec, dict):
+                return 1
+            values = axis_spec.get("values", [])
+            if isinstance(values, dict) and {"start", "stop", "step"} <= set(values):
+                start = float(values["start"])
+                stop = float(values["stop"])
+                step = float(values["step"])
+                total = 0
+                current = start
+                while current <= stop + 1e-9:
+                    total += 1
+                    current += step
+                return total
+            if isinstance(values, dict):
+                return len(values)
+            if isinstance(values, list):
+                return len(values)
+            return 1
+
+        return " × ".join(f"{axis}={count(axis_spec)}" for axis, axis_spec in axes.items())
+
     def _run_canonical_scan(
         self,
         config: ExperimentConfig,
@@ -358,6 +387,31 @@ class ExperimentRunner:
                 "canonical scan resource preflight failed:\n"
                 + "\n".join(f"- {item}" for item in resource_plan.preflight_errors)
             )
+        group_index_by_id = {
+            str(getattr(group, "group_id", "")): idx
+            for idx, group in enumerate(getattr(resource_plan, "groups", []) or [])
+        }
+        canonical_batch_assignments = []
+        for batch in getattr(resource_plan, "batches", []) or []:
+            alpha_values = [
+                float(item.alpha)
+                for item in getattr(batch, "work_items", []) or []
+                if getattr(item, "alpha", None) is not None
+            ]
+            canonical_batch_assignments.append((0, len(alpha_values), max(alpha_values) if alpha_values else 0.0))
+        self._emit(observer, ProgressEventType.EXECUTION_PLAN, {
+            "batches": canonical_batch_assignments,
+            "total_batches": resource_plan.num_batches,
+            "total_points": resource_plan.num_work_items,
+            "mode": "canonical_scan",
+            "algorithm_key": config.algorithm_key,
+            "scan_context": {
+                "group_label": f"canonical scan: {len(group_index_by_id)} groups",
+                "batch_label": f"{resource_plan.num_batches} batches",
+                "point_label": f"points 0/{resource_plan.num_work_items}",
+                "point_progress": {"completed": 0, "total": resource_plan.num_work_items},
+            },
+        })
         aggregate = ExperimentResult(
             experiment_id=getattr(config, "experiment_name", "canonical_scan"),
             config=config,
@@ -379,6 +433,7 @@ class ExperimentRunner:
         retain_canonical_tensors = self._canonical_scan_should_retain_tensors(output_options)
         partial_output_path = self._canonical_partial_output_path(output_options)
         saved_group_ids: set[str] = set()
+        completed_work_items = 0
         if partial_output_path is not None:
             self._write_canonical_scan_readme(
                 partial_output_path,
@@ -402,12 +457,34 @@ class ExperimentRunner:
                     / f"child_batch_{resource_batch.batch_index:04d}.pt"
                 )
                 child_output_options["checkpoint_path"] = str(child_checkpoint_path)
-            child_result = child_runner.run(
-                effective_config,
-                observer=observer,
-                output_options=child_output_options,
-                raw_yaml=raw_yaml,
+            scan_context = self._canonical_progress_context(
+                resource_batch=resource_batch,
+                resource_plan=resource_plan,
+                group_index_by_id=group_index_by_id,
+                completed_work_items=completed_work_items,
             )
+            child_observer = self._canonical_child_observer(
+                observer,
+                resource_batch=resource_batch,
+                resource_plan=resource_plan,
+                scan_context=scan_context,
+                completed_work_items=completed_work_items,
+            )
+            try:
+                child_result = child_runner.run(
+                    effective_config,
+                    observer=child_observer,
+                    output_options=child_output_options,
+                    raw_yaml=raw_yaml,
+                )
+            except Exception as exc:
+                context_line = self._format_canonical_scan_context(scan_context)
+                message = f"canonical scan failed at {context_line}: {exc}"
+                self._emit(observer, ProgressEventType.ERROR, {
+                    "error": message,
+                    "scan_context": scan_context,
+                })
+                raise RuntimeError(message) from exc
             child_teacher = getattr(child_result, "W_teacher", None)
             if child_teacher is not None:
                 child_shape = tuple(child_teacher.shape)
@@ -488,16 +565,126 @@ class ExperimentRunner:
                 )
             if child_checkpoint_path and child_checkpoint_path.exists():
                 child_checkpoint_path.unlink()
+            completed_work_items += len(getattr(resource_batch, "work_items", []) or [])
             del child_result
             del child_runner
             del effective_config
             del child_output_options
             gc.collect()
-            if torch.cuda.is_available():
+            if self._should_clear_cuda_cache_between_batches():
                 torch.cuda.empty_cache()
 
         self._emit(observer, ProgressEventType.EXPERIMENT_END, {"result": aggregate})
         return aggregate
+
+    def _canonical_progress_context(
+        self,
+        *,
+        resource_batch: Any,
+        resource_plan: Any,
+        group_index_by_id: Dict[str, int],
+        completed_work_items: int,
+    ) -> Dict[str, Any]:
+        work_items = list(getattr(resource_batch, "work_items", []) or [])
+        group_id = str(getattr(resource_batch, "group_id", "") or (work_items[0].output_group_id if work_items else "default"))
+        group_idx = group_index_by_id.get(group_id, 0)
+        total_groups = len(group_index_by_id) or 1
+        coordinates = dict(getattr(work_items[0], "axis_values", {}) or {}) if work_items else {}
+        alpha_values = [
+            float(item.alpha)
+            for item in work_items
+            if getattr(item, "alpha", None) is not None
+        ]
+        if len(alpha_values) > 1:
+            alpha_label = f"alpha {alpha_values[0]:.2f}-{alpha_values[-1]:.2f}"
+        elif alpha_values:
+            alpha_label = f"alpha {alpha_values[0]:.2f}"
+        else:
+            alpha_label = ""
+        total_points = int(getattr(resource_plan, "num_work_items", 0) or 0)
+        current_points = completed_work_items
+        return {
+            "canonical_scan": True,
+            "group_id": group_id,
+            "group_index": group_idx,
+            "group_total": total_groups,
+            "group_label": f"group {group_idx + 1}/{total_groups}",
+            "coordinates": coordinates,
+            "batch_index": int(getattr(resource_batch, "batch_index", 0)),
+            "batch_total": int(getattr(resource_plan, "num_batches", 0) or 0),
+            "batch_label": (
+                f"batch {int(getattr(resource_batch, 'batch_index', 0)) + 1}/"
+                f"{int(getattr(resource_plan, 'num_batches', 0) or 0)}"
+            ),
+            "alpha_label": alpha_label,
+            "point_progress": {"completed": current_points, "total": total_points},
+            "point_label": f"points {current_points}/{total_points}",
+        }
+
+    def _canonical_child_observer(
+        self,
+        observer: Optional[Callable[[ProgressEvent], None]],
+        *,
+        resource_batch: Any,
+        resource_plan: Any,
+        scan_context: Dict[str, Any],
+        completed_work_items: int,
+    ) -> Optional[Callable[[ProgressEvent], None]]:
+        if observer is None:
+            return None
+
+        alpha_values = [
+            float(item.alpha)
+            for item in getattr(resource_batch, "work_items", []) or []
+            if getattr(item, "alpha", None) is not None
+        ]
+        batch_size = len(getattr(resource_batch, "work_items", []) or [])
+        suppressed = {
+            ProgressEventType.EXPERIMENT_START,
+            ProgressEventType.EXPERIMENT_END,
+            ProgressEventType.EXECUTION_PLAN,
+            ProgressEventType.ERROR,
+        }
+
+        def wrapped(event: ProgressEvent) -> None:
+            if event.type in suppressed:
+                return
+            payload = dict(event.payload or {})
+            context = dict(scan_context)
+            point_progress = dict(context.get("point_progress", {}) or {})
+            if event.type == ProgressEventType.POINT_COMPLETE:
+                child_point = int(payload.get("point_idx", 1) or 1)
+                point_progress["completed"] = completed_work_items + child_point
+            elif event.type == ProgressEventType.BATCH_END:
+                point_progress["completed"] = completed_work_items + batch_size
+            context["point_progress"] = point_progress
+            context["point_label"] = (
+                f"points {int(point_progress.get('completed', completed_work_items))}/"
+                f"{int(point_progress.get('total', getattr(resource_plan, 'num_work_items', 0) or 0))}"
+            )
+            payload.update({
+                "batch_idx": int(getattr(resource_batch, "batch_index", 0)),
+                "total_batches": int(getattr(resource_plan, "num_batches", 0) or 0),
+                "alpha_values": alpha_values or payload.get("alpha_values", []),
+                "scan_context": context,
+                "point_progress": context["point_progress"],
+            })
+            observer(ProgressEvent(event.type, payload))
+
+        return wrapped
+
+    @staticmethod
+    def _format_canonical_scan_context(context: Dict[str, Any]) -> str:
+        coordinates = context.get("coordinates") if isinstance(context, dict) else {}
+        coord_text = ", ".join(f"{key}={value}" for key, value in (coordinates or {}).items())
+        parts = [
+            context.get("group_label", ""),
+            coord_text,
+            context.get("batch_label", ""),
+            context.get("alpha_label", ""),
+            context.get("point_label", ""),
+        ]
+        return " | ".join(str(part) for part in parts if part)
 
     def _effective_config_for_scan_group(self, base_config: ExperimentConfig, points: List[Any]) -> ExperimentConfig:
         import copy
@@ -527,6 +714,11 @@ class ExperimentRunner:
     @staticmethod
     def _set_config_path(config: ExperimentConfig, path: str, value: Any) -> None:
         if path == "alpha":
+            return
+        if path.startswith("teacher_config."):
+            if getattr(config, "teacher", None) is None:
+                config.teacher = TeacherConfig()
+            setattr(config.teacher, path.split(".", 1)[1], value)
             return
         target = config
         parts = path.split(".")
@@ -846,9 +1038,15 @@ class ExperimentRunner:
                     })
                 
                 # Emit Batch End Event
+                batch_timing = {}
+                if isinstance(getattr(batch_algorithm_result, "diagnostics", None), dict):
+                    batch_timing = dict(
+                        batch_algorithm_result.diagnostics.get("batch_timing_seconds", {}) or {}
+                    )
                 self._emit(observer, ProgressEventType.BATCH_END, {
                     'batch_idx': batch_idx, 
-                    'duration': time.time() - batch_start_time
+                    'duration': time.time() - batch_start_time,
+                    'batch_timing_seconds': batch_timing,
                 })
                 self._dispatch_after_batch_runtime_extensions(
                     config=config,
@@ -919,7 +1117,8 @@ class ExperimentRunner:
             # Force memory cleanup between batches (all algorithms)
             import gc
             gc.collect()
-            torch.cuda.empty_cache()
+            if self._should_clear_cuda_cache_between_batches():
+                torch.cuda.empty_cache()
         
         # Cleanup checkpoints on successful completion
         if len(completed_alphas) == total_points:
@@ -933,6 +1132,19 @@ class ExperimentRunner:
         if output_options.get("storage_mode", "full") != "full":
             return False
         return bool(output_options.get("save_tensors", False))
+
+    @staticmethod
+    def _should_clear_cuda_cache_between_batches() -> bool:
+        """Avoid allocator-wide synchronization unless cache pressure is high."""
+        if not torch.cuda.is_available():
+            return False
+        try:
+            device = torch.cuda.current_device()
+            total = float(torch.cuda.get_device_properties(device).total_memory)
+            reserved = float(torch.cuda.memory_reserved(device))
+            return reserved / total > 0.85
+        except Exception:
+            return True
 
     @staticmethod
     def _detach_to_cpu(tensor: Any) -> Any:
@@ -1001,8 +1213,8 @@ class ExperimentRunner:
             "",
             "## Output Layout",
             "",
-            "- `partial/metrics_partial.json`: 运行中持续覆盖写入的轻量 partial ResultCube。",
-            "- `metrics.partial.json`: 同一份 partial metrics 的根目录快捷文件。",
+            "- `partial/metrics_partial.json`: 运行中持续覆盖写入的轻量 progress snapshot；完整 group 数据在 `groups/`。",
+            "- `metrics.partial.json`: 同一份 compact progress 的根目录快捷文件。",
             "- `groups/<idx>_<group>/`: 当某个外层组能独立形成完整曲线时，组完成后立即生成的子结果。",
             "- `metrics.json`: 整个 scan 全部结束后的正式完整结果。",
             "",
@@ -1064,6 +1276,9 @@ class ExperimentRunner:
             ],
             metadata=ExperimentMetadata.create_now(),
         )
+        group_result.W_teacher = copy.deepcopy(aggregate.W_teacher)
+        group_result.X_teacher = copy.deepcopy(aggregate.X_teacher)
+        group_result.Y_teacher = copy.deepcopy(aggregate.Y_teacher)
         group_result.metadata.contract = copy.deepcopy(aggregate.metadata.contract)
         group_result.metadata.contract["canonical_group"] = {
             "group_id": group_id,
@@ -1073,6 +1288,11 @@ class ExperimentRunner:
         }
         group_result.result_cube.axes = copy.deepcopy(aggregate.result_cube.axes)
         group_result.result_cube.metric_semantics = copy.deepcopy(aggregate.result_cube.metric_semantics)
+        group_output_options = self._canonical_group_output_options(output_options, group)
+        include_group_factors = bool(
+            group_output_options.get("save_tensors", False)
+            or group_output_options.get("enable_heatmap", False)
+        )
 
         for point in sorted(group_scan_points, key=lambda item: float(item.alpha or 0.0)):
             source_single = aggregate.results[point.point_id]
@@ -1080,8 +1300,14 @@ class ExperimentRunner:
             group_single = SingleRunResult(
                 scan_value=alpha_value,
                 metrics=dict(source_single.metrics or {}),
-                W_students=None,
-                X_students=None,
+                W_students=(
+                    copy.deepcopy(source_single.W_students)
+                    if include_group_factors else None
+                ),
+                X_students=(
+                    copy.deepcopy(source_single.X_students)
+                    if include_group_factors else None
+                ),
                 mask=None,
                 observation_indices=None,
                 history=copy.deepcopy(source_single.history),
@@ -1099,7 +1325,6 @@ class ExperimentRunner:
                 metric_contract=source_single.metric_contract,
             )
 
-        group_output_options = self._canonical_group_output_options(output_options, group)
         group_result.save(
             group_dir,
             save_tensors=bool(group_output_options.get("save_tensors", False)),
@@ -1179,6 +1404,9 @@ class ExperimentRunner:
             where = dict(plot.get("where") or {})
             if any(group_coordinates.get(axis) != value for axis, value in where.items() if axis != "alpha"):
                 continue
+            series_by = list(plot.get("series_by") or [])
+            if any(axis != "alpha" and axis in group_coordinates for axis in series_by):
+                continue
             compare = plot.get("compare") or []
             if compare:
                 keep = True
@@ -1207,7 +1435,15 @@ class ExperimentRunner:
         result: ExperimentResult,
     ) -> None:
         metric_lines = []
-        for metric_key in ["Q_Y_mean", "Q_Y_observed_mean", "Q_Y_unobserved_mean", "Q_W_GRAM_ROOT_mean", "Q_X_GRAM_ROOT_mean"]:
+        for metric_key in [
+            "Q_Y_mean",
+            "Q_Y_observed_mean",
+            "Q_Y_unobserved_mean",
+            "Q_W_GRAM_ROOT_mean",
+            "Q_X_GRAM_ROOT_mean",
+            "Q_W_SIGN_ALIGNED_mean",
+            "Q_X_SIGN_ALIGNED_mean",
+        ]:
             values = [
                 (scan_value, single.metrics.get(metric_key))
                 for scan_value, single in result.results.items()
@@ -1463,6 +1699,13 @@ class ExperimentRunner:
             for _ in range(2, tensor_order):
                 tensor_dims_list.append(config.matrix.N1)
             tensor_dims = tuple(tensor_dims_list)
+        precision_profile = getattr(config.algorithm_params, "precision_profile", "fast" if getattr(config.algorithm_params, "use_bf16", False) else "safe")
+        try:
+            from matrix_factorization.core.contracts import get_precision_policy_specs
+            precision_spec = get_precision_policy_specs().get(config.algorithm_key)
+            role_dtype_map = precision_spec.role_dtype_map(precision_profile) if precision_spec else {}
+        except Exception:
+            role_dtype_map = {}
         return EstimationParams(
             N1=config.matrix.N1,
             N2=config.matrix.N2,
@@ -1472,6 +1715,8 @@ class ExperimentRunner:
             algorithm_key=config.algorithm_key,
             use_compile=config.algorithm_params.use_compile,
             use_bf16=config.algorithm_params.use_bf16,
+            precision_profile=precision_profile,
+            role_dtype_map=role_dtype_map,
             f_distribution=f_dist,
             adaptive_damping=config.algorithm_params.adaptive_damping,
             allow_intra_connection=allow_intra,
@@ -1601,6 +1846,7 @@ class ExperimentRunner:
                     "X_teacher": data.X_teacher,
                     "Y_teacher": data.Y_teacher,
                     "masks": masks,
+                    "spreading_data": data.spreading_data,
                     "alpha_values": data.alpha_values,
                     "seed": config.seeds.base_seed,
                     "progress_callback": None if is_spreading_family else step_callback,
@@ -1727,6 +1973,7 @@ class ExperimentRunner:
                     "X_teacher": data.X_teacher,
                     "Y_teacher": data.Y_teacher,
                     "masks": masks,
+                    "spreading_data": data.spreading_data,
                     "alpha_values": data.alpha_values,
                     "seed": config.seeds.base_seed,
                     "max_steps": total_steps,
@@ -2079,6 +2326,7 @@ class ExperimentRunner:
         if algorithm_result is None:
             return
         metadata = dict(getattr(algorithm_result, "metadata", {}) or {})
+        diagnostics = dict(getattr(algorithm_result, "diagnostics", {}) or {})
         summary = {
             "batch_idx": batch_idx,
             "alpha_values": list(alpha_values),
@@ -2096,6 +2344,10 @@ class ExperimentRunner:
             "matrix_factors_available": metadata.get("matrix_factors_available"),
             "metadata_keys": sorted(metadata),
         }
+        if isinstance(diagnostics.get("batch_timing_seconds"), dict):
+            summary["batch_timing_seconds"] = dict(diagnostics["batch_timing_seconds"])
+        if isinstance(diagnostics.get("batch_metric_payload"), dict):
+            summary["batch_metric_payload"] = dict(diagnostics["batch_metric_payload"])
         for key in [
             "execution_metadata",
             "tensor_execution",
@@ -2223,6 +2475,7 @@ class ExperimentRunner:
             algorithm_params = config.algorithm_params
             training = TrainConfig()
             spreading = SpreadConfig()
+            teacher = config.teacher
         
         return MockConfig()
 

@@ -4,6 +4,7 @@ Combined metrics calculator for flexible configuration.
 Supports selecting which metrics to compute:
 - Q_Y: measurement projection overlap
 - Q_W, Q_X: coordinate projection overlaps
+- Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED: per-channel sign-gauge diagnostics
 - Q_W_GRAM_ROOT, Q_X_GRAM_ROOT: Gram-root diagnostics
 - Q_Y_unobserved: Q_Y on unobserved positions only
 - Replica: Pairwise replica overlaps
@@ -18,6 +19,7 @@ import torch
 from .overlap import (
     gram_overlap_root,
     projection_abs,
+    sign_aligned_projection_abs,
 )
 from .qy_unobserved import compute_qy_unobserved, compute_qy_split
 
@@ -27,6 +29,8 @@ ALL_METRICS = {
     "Q_Y",           # measurement projection
     "Q_W",           # W coordinate projection
     "Q_X",           # X coordinate projection
+    "Q_W_SIGN_ALIGNED", # W sign-gauge-aligned diagnostic
+    "Q_X_SIGN_ALIGNED", # X sign-gauge-aligned diagnostic
     "Q_W_GRAM_ROOT", # W Gram-root diagnostic
     "Q_X_GRAM_ROOT", # X Gram-root diagnostic
     "Q_Y_unobserved", # Q_Y on unobserved positions
@@ -42,6 +46,9 @@ METRIC_ALIASES = {
     "q_w": "Q_W",
     "qx": "Q_X",
     "q_x": "Q_X",
+    "qw_sign": "Q_W_SIGN_ALIGNED",
+    "qx_sign": "Q_X_SIGN_ALIGNED",
+    "sign_aligned": {"Q_W_SIGN_ALIGNED", "Q_X_SIGN_ALIGNED"},
     "qw_gram_root": "Q_W_GRAM_ROOT",
     "qx_gram_root": "Q_X_GRAM_ROOT",
     "gram_root": {"Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"},
@@ -125,6 +132,20 @@ class CombinedMetrics:
 
         if "Q_X" in self.metrics:
             results["Q_X"] = projection_abs(X_student, X_teacher)
+
+        if "Q_W_SIGN_ALIGNED" in self.metrics:
+            results["Q_W_SIGN_ALIGNED"] = sign_aligned_projection_abs(
+                W_student,
+                W_teacher,
+                latent_axis=-1,
+            )
+
+        if "Q_X_SIGN_ALIGNED" in self.metrics:
+            results["Q_X_SIGN_ALIGNED"] = sign_aligned_projection_abs(
+                X_student,
+                X_teacher,
+                latent_axis=0,
+            )
 
         if "Q_W_GRAM_ROOT" in self.metrics:
             results["Q_W_GRAM_ROOT"] = gram_overlap_root(W_student, W_teacher, use_left=True)

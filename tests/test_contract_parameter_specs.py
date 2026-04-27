@@ -455,9 +455,9 @@ output:
 
     assert config.algorithm_key == "bigamp"
     assert chain["algorithm_params.use_compile"]["consumption_status"] == "effective"
-    assert chain["algorithm_params.use_bf16"]["active_in_current_plan"] is False
-    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "inactive_current_route"
-    assert any("algorithm_params.use_bf16 在当前 algorithm/scan 路由下不会生效" in warning for warning in plan.warnings)
+    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "legacy"
+    assert chain["algorithm_params.precision_profile"]["consumption_status"] == "effective"
+    assert any("algorithm_params.use_bf16 是 legacy 字段" in warning for warning in plan.warnings)
 
 
 def test_parameter_chain_marks_compile_inactive_for_agd(tmp_path):
@@ -496,7 +496,8 @@ output:
     chain = {item["path"]: item for item in plan.parameter_chain()}
 
     assert config.algorithm_key == "agd"
-    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.use_bf16"]["consumption_status"] == "legacy"
+    assert chain["algorithm_params.precision_profile"]["consumption_status"] == "effective"
     assert chain["algorithm_params.use_compile"]["active_in_current_plan"] is False
     assert chain["algorithm_params.use_compile"]["consumption_status"] == "inactive_current_route"
 

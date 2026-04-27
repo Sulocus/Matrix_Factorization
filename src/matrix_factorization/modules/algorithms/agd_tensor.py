@@ -12,6 +12,7 @@ import math
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ...core.config import Config
+from ...core.experiment.config import resolve_normalization_profile
 
 
 @register_algorithm(
@@ -39,6 +40,7 @@ class TensorAGD(AlgorithmBase):
         # Params
         self.lr = getattr(config.algorithm_params, 'learning_rate', 0.01)
         self.max_steps = getattr(config.algorithm_params, 'max_steps', 5000)
+        self.normalization_profile = getattr(config.algorithm_params, "normalization_profile", "paper_sparse_sampling")
         
         # Tensor config
         # Try to infer n, N, M from config
@@ -56,10 +58,12 @@ class TensorAGD(AlgorithmBase):
         # Or read from config.matrix.N1 etc.
         self.N = config.matrix.N1
         self.dims = tuple([self.N] * self.n)
+        self._norm = resolve_normalization_profile(self.normalization_profile, self.M)
 
     def cp_contract_factors(self, factors: List[torch.Tensor]) -> torch.Tensor:
         """
-        Compute CP tensor from factors: T = sum_m outer(f0[:,m], f1[:,m], ..., fn[:,m])
+        Compute paper-scaled CP tensor:
+            T = (1/sqrt(M)) sum_m outer(f0[:,m], f1[:,m], ..., fn[:,m])
         """
         n = len(factors)
         
@@ -67,7 +71,7 @@ class TensorAGD(AlgorithmBase):
         letters = 'abcdefghij'[:n]
         pattern = ','.join([f'{letters[d]}m' for d in range(n)]) + '->' + letters
         
-        return torch.einsum(pattern, *factors)
+        return self._norm.interaction_scale * torch.einsum(pattern, *factors)
 
     def train_single_alpha(
         self,
@@ -93,7 +97,10 @@ class TensorAGD(AlgorithmBase):
         # Use seed to ensure reproducibility independent of Alpha
         # (This is consistent with creating a single ground truth tensor)
         torch.manual_seed(42)  # Fixed seed for Teacher (Ground Truth)
-        teacher_factors = [torch.randn(d, M, device=device) for d in dims]
+        teacher_factors = [
+            torch.randn(d, M, device=device) * self._norm.latent_std
+            for d in dims
+        ]
         
         # Normalize teacher factors to match the scale expected
         # typically we want E[y^2] = 1. 
@@ -126,11 +133,11 @@ class TensorAGD(AlgorithmBase):
         Y_observed = T_teacher * mask_tensor
         
         # 4. Initialize Student
-        # Random Init scale 0.1 (as validated)
+        # Random init follows the selected normalization profile.
         # Use seed+1 for student init
         torch.manual_seed(seed + 1)
         student_factors = [
-            torch.nn.Parameter(torch.randn(d, M, device=device) * 0.1)
+            torch.nn.Parameter(torch.randn(d, M, device=device) * self._norm.student_init_std)
             for d in dims
         ]
         
@@ -186,4 +193,3 @@ class TensorAGD(AlgorithmBase):
         # student_factors[1] is (N2, M). transpose -> (M, N2).
         
         return w_out, x_out.transpose(1, 2) 
-

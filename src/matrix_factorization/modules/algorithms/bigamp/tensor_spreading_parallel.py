@@ -42,6 +42,7 @@ from .tensor_step_super import tensor_step_super, forward_pass_tensor_super
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.core.experiment.config import resolve_normalization_profile
 from matrix_factorization.modules.metrics.tensor_metrics import (
     compute_factor_gram_overlap,
     compute_tensor_projection_abs,
@@ -113,12 +114,25 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution = kwargs.get('f_distribution', 'rademacher')
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
-            self.requested_use_bf16 = kwargs.get('use_bf16', True)
-            self.dtype_fallback_policy = kwargs.get('dtype_fallback_policy', 'allow')
+            self.precision_profile = kwargs.get(
+                'precision_profile',
+                'fast' if kwargs.get('use_bf16', True) else 'safe',
+            )
+            if self.precision_profile == 'fast' and kwargs.get('use_bf16', True) is False:
+                self.precision_profile = 'safe'
+            self.precision_fallback_policy = kwargs.get(
+                'precision_fallback_policy',
+                'allow',
+            )
+            if self.precision_fallback_policy == 'allow' and kwargs.get('dtype_fallback_policy', 'allow') == 'error':
+                self.precision_fallback_policy = 'error'
+            self.requested_use_bf16 = self.precision_profile in {'fast', 'aggressive'}
+            self.dtype_fallback_policy = self.precision_fallback_policy
             self.requested_use_tf32 = kwargs.get('use_tf32', True)
             self.seed_partition_policy = kwargs.get('seed_partition_policy', 'legacy')
             self.requested_use_compile = kwargs.get('use_compile', True)
             self.compile_fallback_policy = kwargs.get('compile_fallback_policy', 'allow')
+            self.normalization_profile = kwargs.get('normalization_profile', 'paper_sparse_sampling')
 
         # === From runner ===
         elif hasattr(config, 'matrix'):
@@ -148,12 +162,27 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             # FIX: Correct parameter name matching config.py (init_overlap)
             self.warm_start_rho = getattr(algorithm_params, 'init_overlap', 0.9)
             self.debug_verbose = getattr(algorithm_params, 'debug_verbose', False)
-            self.requested_use_bf16 = getattr(algorithm_params, 'use_bf16', True)
-            self.dtype_fallback_policy = getattr(algorithm_params, 'dtype_fallback_policy', 'allow')
+            self.precision_profile = getattr(
+                algorithm_params,
+                'precision_profile',
+                'fast' if getattr(algorithm_params, 'use_bf16', True) else 'safe',
+            )
+            if self.precision_profile == 'fast' and getattr(algorithm_params, 'use_bf16', True) is False:
+                self.precision_profile = 'safe'
+            self.precision_fallback_policy = getattr(
+                algorithm_params,
+                'precision_fallback_policy',
+                'allow',
+            )
+            if self.precision_fallback_policy == 'allow' and getattr(algorithm_params, 'dtype_fallback_policy', 'allow') == 'error':
+                self.precision_fallback_policy = 'error'
+            self.requested_use_bf16 = self.precision_profile in {'fast', 'aggressive'}
+            self.dtype_fallback_policy = self.precision_fallback_policy
             self.requested_use_tf32 = getattr(algorithm_params, 'use_tf32', True)
             self.seed_partition_policy = getattr(algorithm_params, 'seed_partition_policy', 'legacy')
             self.requested_use_compile = getattr(algorithm_params, 'use_compile', True)
             self.compile_fallback_policy = getattr(algorithm_params, 'compile_fallback_policy', 'allow')
+            self.normalization_profile = getattr(algorithm_params, "normalization_profile", "paper_sparse_sampling")
 
             if DEBUG_VERBOSE:
                 print(f"DEBUG: Configured Init Mode: {self.init_mode}, Init Overlap (rho): {self.warm_start_rho}", flush=True)
@@ -171,17 +200,25 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution = 'rademacher'
             self.onsager_correction = False
             self.debug_verbose = False
+            self.precision_profile = 'fast'
+            self.precision_fallback_policy = 'allow'
             self.requested_use_bf16 = True
-            self.dtype_fallback_policy = 'allow'
+            self.dtype_fallback_policy = self.precision_fallback_policy
             self.requested_use_tf32 = True
             self.seed_partition_policy = 'legacy'
             self.requested_use_compile = True
             self.compile_fallback_policy = 'allow'
+            self.normalization_profile = 'paper_sparse_sampling'
         else:
             raise ValueError(f"config must be a config object or int, got {type(config)}")
 
         if len(self.dims) != self.order:
             raise ValueError(f"dims length {len(self.dims)} must match tensor_order {self.order}")
+        if self.precision_profile not in {'safe', 'fast', 'aggressive'}:
+            raise ValueError(
+                "algorithm_params.precision_profile must be 'safe', 'fast', or 'aggressive', "
+                f"got {self.precision_profile!r}"
+            )
         if self.compile_fallback_policy not in {'allow', 'error'}:
             raise ValueError(
                 "algorithm_params.compile_fallback_policy must be 'allow' or 'error', "
@@ -197,6 +234,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
                 f"got {self.seed_partition_policy!r}"
             )
+        self._norm = resolve_normalization_profile(self.normalization_profile, self.M)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
 
@@ -273,6 +311,20 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 "BF16 was requested but is unavailable and "
                 "algorithm_params.dtype_fallback_policy='error'"
             )
+
+    def _apply_observation_precision(self, superdata: TensorSuperData) -> TensorSuperData:
+        """Apply storage dtype policy to large observation tensors.
+
+        Rademacher F remains int8.  Gaussian F and Y are allowed to use BF16
+        storage only under the aggressive profile; all reductions still cast to
+        FP32 inside metric/update code where needed.
+        """
+        if getattr(self, "precision_profile", "fast") == "aggressive" and getattr(self, "use_bf16", False):
+            if torch.is_floating_point(superdata.F_super):
+                superdata.F_super = superdata.F_super.to(self.storage_dtype)
+            if torch.is_floating_point(superdata.Y_super):
+                superdata.Y_super = superdata.Y_super.to(self.storage_dtype)
+        return superdata
 
     def _compile_status_for_super_path(self) -> str:
         if not bool(getattr(self, "requested_use_compile", True)):
@@ -442,6 +494,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         artifacts = {}
         if any("overlap_matrix" in metrics for metrics in metrics_by_alpha.values()):
             artifacts["overlap_matrix"] = "per_alpha_metric_payload"
+        norm = getattr(self, "_norm", None)
+        normalization_profile = getattr(self, "normalization_profile", "paper_sparse_sampling")
         internal_alpha_batch_plan = getattr(self, "_last_internal_alpha_batch_plan", None)
         if internal_alpha_batch_plan is None:
             alpha_keys = sorted(metrics_by_alpha)
@@ -476,6 +530,11 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         dtype_fallback_policy=getattr(self, "dtype_fallback_policy", "allow"),
                         dtype_status=getattr(self, "dtype_status", ""),
                         storage_dtype=getattr(self, "storage_dtype", None),
+                        precision_profile=getattr(self, "precision_profile", "fast"),
+                        precision_fallback_policy=getattr(self, "precision_fallback_policy", "allow"),
+                        normalization_profile=normalization_profile,
+                        normalization_schema_version=getattr(norm, "schema_version", 5),
+                        normalization_convention=getattr(norm, "convention_label", "paper_sparse_sampling_var1_latent_unit_prior"),
                         requested_use_compile=bool(getattr(self, "requested_use_compile", True)),
                         compile_fallback_policy=getattr(self, "compile_fallback_policy", "allow"),
                         effective_use_compile=bool(
@@ -697,6 +756,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             seed + 1000,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
         )
+        superdata = self._apply_observation_precision(superdata)
 
         # Get flat tensors and PRECOMPUTED offset_indices
         F_flat, Y_flat = superdata.get_flat_tensors()
@@ -704,12 +764,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         N_dims = list(self.dims)
 
         # Initialize student factors
-        init_scale = 1.0  # Unit Init for Unit Teacher
+        init_scale = self._norm.student_init_std
 
         if self.init_mode in ('warm_start', 'teacher'):
             # Warm Start: Initialize near Teacher
             # Student = Teacher * rho + Noise * sqrt(1 - rho^2)
-            # Both Teacher and Noise are N(0, 1) (Unit Standard)
+            # Both teacher and noise follow the selected normalization profile.
             rho = self.warm_start_rho
             if DEBUG_VERBOSE:
                 print("=" * 60, flush=True)
@@ -734,11 +794,11 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         seed=seed,
                         device=device,
                         dtype=t_expanded.dtype,
-                        scale=1.0,
+                        scale=self._norm.student_init_std,
                         role="warm_start_noise",
                     )
                 else:
-                    noise = torch.randn_like(t_expanded)
+                    noise = torch.randn_like(t_expanded) * self._norm.student_init_std
                 # Mix
                 f_init = t_expanded * rho + noise * math.sqrt(1 - rho**2)
                 factors.append(f_init.to(device))
@@ -749,7 +809,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         elif self.init_mode == 'spectral':
              # Spectral Initialization: Use power method
              # First initialize factors randomly as starting point for power method
-             init_scale = 1.0
+             init_scale = self._norm.student_init_std
              if self._uses_partition_invariant_seed_policy():
                  factors = [
                      self._randn_partitioned_factor(
@@ -775,10 +835,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 supergraph, Y_flat, F_flat, factors, offset_indices, iterations=30
              )
 
-             # RESCALE metric: With our new "Unit Standard" plan, we want Factors ~ N(0, 1).
-             target_std = 1.0
+             # RESCALE metric: target follows the selected normalization profile.
+             target_std = self._norm.student_init_std
              if DEBUG_VERBOSE:
-                 print(f"DEBUG: Rescaling factors to Unit Standard (std={target_std})", flush=True)
+                 print(f"DEBUG: Rescaling factors to canonical latent std={target_std}", flush=True)
              for d in range(len(factors)):
                 if factors[d].std() > 0:
                     factors[d] = factors[d] * (target_std / factors[d].std())
@@ -792,7 +852,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                  print(f"INIT DEBUG: Using RANDOM INIT (Cold Start)", flush=True)
                  print("=" * 60, flush=True)
 
-             init_scale = 0.1
+             init_scale = self._norm.student_init_std
              if self._uses_partition_invariant_seed_policy():
                  factors = [
                      self._randn_partitioned_factor(
@@ -818,11 +878,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                      print(f"DEBUG: Factor {d} init stats: Mean={factors[d].mean():.6e}, Std={factors[d].std():.6e}", flush=True)
 
         factor_vars = [
-            torch.ones(A, S * N_d, M, device=device, dtype=self.storage_dtype) * 1.0
+            torch.ones(A, S * N_d, M, device=device, dtype=self.storage_dtype) * self._norm.prior_variance
             for N_d in self.dims
         ]
 
         prev_s = None
+        prev_svar = None
         is_rademacher = (self.f_distribution == 'rademacher')
 
         # Use compiled step function if available (Phase 3 optimization)
@@ -857,7 +918,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 old_factors_debug = [f.clone() for f in factors]
 
             # Alpha + Sample parallel BiG-AMP step (using precomputed offset_indices)
-            factors, factor_vars, prev_s = step_fn(
+            factors, factor_vars, next_prev_s, next_prev_svar = step_fn(
                 factors, factor_vars, Y_flat, F_flat, offset_indices,
                 S, N_dims, M,  # Added M parameter
                 superdata.alpha_mask_exp,
@@ -865,8 +926,17 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 noise_var=current_noise_var,
                 is_rademacher=is_rademacher,
                 prev_s=prev_s if self.onsager_correction else None,
+                prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,
+                prior_precision_base=self._norm.prior_precision_base,
+                prior_variance=self._norm.prior_variance,
             )
+            if self.onsager_correction:
+                prev_s = next_prev_s
+                prev_svar = next_prev_svar
+            else:
+                prev_s = None
+                prev_svar = None
 
             # Debug: Print progress
             if self.debug_verbose and step % 100 == 0:
@@ -927,6 +997,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             seed + 911_021,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
         )
+        heldout_superdata = self._apply_observation_precision(heldout_superdata)
         F_holdout_flat, Y_holdout_flat = heldout_superdata.get_flat_tensors()
         Z_holdout = forward_pass_tensor_super(
             factors,
@@ -1074,21 +1145,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         F, Y = generate_tensor_observations_batch(
             teacher_factors, hg, S, seed + 1000, device, self.f_distribution
         )  # F: (S, C, M), Y: (S, C)
+        if getattr(self, "precision_profile", "fast") == "aggressive" and getattr(self, "use_bf16", False):
+            if torch.is_floating_point(F):
+                F = F.to(self.storage_dtype)
+            if torch.is_floating_point(Y):
+                Y = Y.to(self.storage_dtype)
 
-        # Initialize batched students (S, N_d, M)
-        avg_std = torch.stack([t.std() for t in teacher_factors]).mean()
-        init_scale = avg_std.item() if avg_std > 1e-9 else 0.1
+        # Initialize batched students (S, N_d, M) in the selected profile.
+        init_scale = self._norm.student_init_std
 
         factors = [
             torch.randn(S, N_d, M, device=device, dtype=self.storage_dtype) * init_scale
             for N_d in self.dims
         ]
         factor_vars = [
-            torch.ones(S, N_d, M, device=device, dtype=self.storage_dtype) * (init_scale**2)
+            torch.ones(S, N_d, M, device=device, dtype=self.storage_dtype) * self._norm.prior_variance
             for N_d in self.dims
         ]
 
         prev_s = None
+        prev_svar = None
         is_rademacher = (self.f_distribution == 'rademacher')
 
         # Select step function: compiled if available, else original
@@ -1113,14 +1189,23 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 current_noise_var = math.exp(start_log + (end_log - start_log) * progress)
 
             # Batched BiG-AMP step (compiled or original)
-            factors, factor_vars, prev_s = step_fn(
+            factors, factor_vars, next_prev_s, next_prev_svar = step_fn(
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
                 noise_var=current_noise_var,
                 is_rademacher=is_rademacher,
                 prev_s=prev_s if self.onsager_correction else None,
+                prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,
+                prior_precision_base=self._norm.prior_precision_base,
+                prior_variance=self._norm.prior_variance,
             )
+            if self.onsager_correction:
+                prev_s = next_prev_s
+                prev_svar = next_prev_svar
+            else:
+                prev_s = None
+                prev_svar = None
 
             # Progress callback (throttled)
             if step_callback and ((step + 1) % 20 == 0 or step == self.max_steps - 1):
@@ -1172,13 +1257,6 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         """Create n teacher factors from W and X matrices."""
         factors = []
 
-        # FORCE RESCALE W, X to Std=1.0 for Tensor Mode
-        # This ensures all factors are O(1), preventing signal decay in high-order products.
-        if W_teacher.std() > 0:
-             W_teacher = W_teacher / W_teacher.std()
-        if X_teacher.std() > 0:
-             X_teacher = X_teacher / X_teacher.std()
-
         factors.append(W_teacher.to(self.device))
 
         if self.order >= 2:
@@ -1187,8 +1265,8 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         for d in range(2, self.order):
             N_d = self.dims[d]
 
-            # Use Standard Normal N(0, 1) for all additional factors
-            scale = 1.0
+            # Additional tensor modes follow the same latent scale as W/X.
+            scale = self._norm.latent_std
 
             torch.manual_seed(42 + d)
             factor_d = torch.randn(N_d, self.M, device=self.device) * scale
@@ -1239,10 +1317,12 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         self,
         device: torch.device,
         seed: int = 42,
-        scale: float = 0.1,
+        scale: Optional[float] = None,
     ) -> List[torch.Tensor]:
         """Create random teacher factors."""
         torch.manual_seed(seed)
+        if scale is None:
+            scale = self._norm.latent_std
         return [
             torch.randn(N_d, self.M, device=device) * scale
             for N_d in self.dims

@@ -46,7 +46,7 @@ class TestBiGAMPTensorSpreading:
             damping=0.5,
         )
         
-        teacher = [torch.randn(30, 10) * 0.1 for _ in range(2)]
+        teacher = [torch.randn(30, 10) * algo._norm.latent_std for _ in range(2)]
         result = algo._train_single_internal(teacher, alpha=3.0, seed=42, device=torch.device('cpu'))
         
         # For n=2, should achieve good Q_Y with sufficient steps

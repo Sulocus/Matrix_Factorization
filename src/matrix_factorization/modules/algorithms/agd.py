@@ -11,6 +11,7 @@ import torch
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ...core.config import Config
+from ...core.experiment.config import resolve_normalization_profile
 
 
 def _stable_partition_seed(base_seed: int, *parts: object) -> int:
@@ -43,39 +44,50 @@ class AGDAlgorithm(AlgorithmBase):
 
     def __init__(self, config: Config, device: torch.device):
         super().__init__(config, device)
-        self.lr = config.algorithm.learning_rate
+        algorithm_params = getattr(config, "algorithm_params", getattr(config, "algorithm", None))
+        if algorithm_params is None:
+            raise AttributeError("AGDAlgorithm requires config.algorithm_params")
+        self.algorithm_params = algorithm_params
+        self.lr = algorithm_params.learning_rate
         self.max_epochs = config.training.max_epochs
         self.S = config.training.samples_per_alpha
-        self.seed_partition_policy = getattr(config.algorithm, 'seed_partition_policy', 'legacy')
+        self.seed_partition_policy = getattr(algorithm_params, 'seed_partition_policy', 'legacy')
         if self.seed_partition_policy not in {'legacy', 'partition_invariant'}:
             raise ValueError(
                 "algorithm_params.seed_partition_policy must be 'legacy' or 'partition_invariant', "
                 f"got {self.seed_partition_policy!r}"
             )
-        self.requested_use_tf32 = getattr(config.algorithm, 'use_tf32', True)
+        self.requested_use_tf32 = getattr(algorithm_params, 'use_tf32', True)
         torch.backends.cuda.matmul.allow_tf32 = bool(self.requested_use_tf32)
         torch.backends.cudnn.allow_tf32 = bool(self.requested_use_tf32)
 
         # Early stop settings
-        self.use_early_stop = getattr(config.algorithm, 'use_early_stop', False)
-        self.target_loss = getattr(config.algorithm, 'target_loss_threshold', 1e-8)
-        self.relative_threshold = getattr(config.algorithm, 'relative_change_threshold', 1e-7)
-        self.check_interval = getattr(config.algorithm, 'early_stop_check_interval', 100)
-        self.patience = getattr(config.algorithm, 'early_stop_patience', 5)
+        self.use_early_stop = getattr(algorithm_params, 'use_early_stop', False)
+        self.target_loss = getattr(algorithm_params, 'target_loss_threshold', 1e-8)
+        self.relative_threshold = getattr(algorithm_params, 'relative_change_threshold', 1e-7)
+        self.check_interval = getattr(algorithm_params, 'early_stop_check_interval', 100)
+        self.patience = getattr(algorithm_params, 'early_stop_patience', 5)
 
         # BF16 settings
-        self.requested_use_bf16 = getattr(config.algorithm, 'use_bf16', True)
-        self.dtype_fallback_policy = getattr(config.algorithm, 'dtype_fallback_policy', 'allow')
+        self.precision_profile = getattr(algorithm_params, 'precision_profile', 'fast' if getattr(algorithm_params, 'use_bf16', True) else 'safe')
+        if self.precision_profile == 'fast' and getattr(algorithm_params, 'use_bf16', True) is False:
+            self.precision_profile = 'safe'
+        self.precision_fallback_policy = getattr(algorithm_params, 'precision_fallback_policy', 'allow')
+        if self.precision_fallback_policy == 'allow' and getattr(algorithm_params, 'dtype_fallback_policy', 'allow') == 'error':
+            self.precision_fallback_policy = 'error'
+        self.requested_use_bf16 = self.precision_profile in {'fast', 'aggressive'}
+        self.dtype_fallback_policy = self.precision_fallback_policy
         if self.dtype_fallback_policy not in {'allow', 'error'}:
             raise ValueError(
                 "algorithm_params.dtype_fallback_policy must be 'allow' or 'error', "
                 f"got {self.dtype_fallback_policy!r}"
             )
-        self.use_bf16 = bool(self.requested_use_bf16) and device.type == 'cuda'
+        bf16_supported = bool(device.type == 'cuda' and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+        self.use_bf16 = bool(self.requested_use_bf16) and bf16_supported
         if self.use_bf16:
             self.dtype_status = "bf16_requested_and_effective_cuda_autocast"
         elif self.requested_use_bf16:
-            self.dtype_status = "fallback_to_float32_non_cuda"
+            self.dtype_status = "fallback_to_float32_bf16_unavailable"
             if self.dtype_fallback_policy == 'error':
                 raise RuntimeError(
                     "BF16 was requested but AGD is running on a non-CUDA device and "
@@ -84,8 +96,15 @@ class AGDAlgorithm(AlgorithmBase):
         else:
             self.dtype_status = "bf16_disabled_by_config"
         self.compute_dtype = torch.bfloat16 if self.use_bf16 else torch.float32
+        self.normalization_profile = getattr(algorithm_params, "normalization_profile", "paper_sparse_sampling")
+        self._norm = resolve_normalization_profile(self.normalization_profile, config.matrix.M)
         self._contract_execution_metadata = {
             "path": "agd_matrix_autocast",
+            "normalization_schema_version": self._norm.schema_version,
+            "normalization_profile": self.normalization_profile,
+            "normalization_convention": self._norm.convention_label,
+            "precision_profile": self.precision_profile,
+            "precision_fallback_policy": self.precision_fallback_policy,
             "requested_use_bf16": bool(self.requested_use_bf16),
             "effective_use_bf16": bool(self.use_bf16),
             "dtype_fallback_policy": self.dtype_fallback_policy,
@@ -141,8 +160,9 @@ class AGDAlgorithm(AlgorithmBase):
         device = self.device
         lr = self.lr
 
-        alpha_scale = 1.0 / (M ** 0.5)
-        scale = 1.0 / (M ** 0.5)
+        norm = resolve_normalization_profile(self.normalization_profile, M)
+        alpha_scale = norm.interaction_scale
+        scale = norm.student_init_std
 
         # Ensure mask has batch dimension
         A = mask.unsqueeze(0) if mask.dim() == 2 else mask  # (1, N1, N2)
@@ -249,8 +269,9 @@ class AGDAlgorithm(AlgorithmBase):
         # Use provided max_steps or fall back to config
         steps = max_steps if max_steps is not None else self.max_epochs
 
-        alpha_scale = 1.0 / (M ** 0.5)
-        scale = 1.0 / (M ** 0.5)
+        norm = resolve_normalization_profile(self.normalization_profile, M)
+        alpha_scale = norm.interaction_scale
+        scale = norm.student_init_std
 
         # masks: (num_alphas, N1, N2) -> (num_alphas, 1, N1, N2)
         A_all = masks.unsqueeze(1)

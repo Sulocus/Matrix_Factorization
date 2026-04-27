@@ -42,6 +42,8 @@ class EstimationParams:
     algorithm_key: str
     use_compile: bool = True
     use_bf16: bool = False
+    precision_profile: str = "safe"
+    role_dtype_map: Dict[str, Dict[str, str]] = field(default_factory=dict)
     f_distribution: str = 'rademacher'  # 'gaussian' or 'rademacher'
     adaptive_damping: bool = False  # Whether using adaptive damping (doubles memory for backtracking)
     allow_intra_connection: bool = False  # General Graph mode (W-W, X-X connections)
@@ -81,6 +83,8 @@ class EstimationParams:
             "algorithm_key": self.algorithm_key,
             "use_compile": bool(self.use_compile),
             "use_bf16": bool(self.use_bf16),
+            "precision_profile": self.precision_profile,
+            "role_dtype_map": dict(self.role_dtype_map),
             "f_distribution": self.f_distribution,
             "adaptive_damping": bool(self.adaptive_damping),
             "allow_intra_connection": bool(self.allow_intra_connection),
@@ -103,6 +107,8 @@ class EstimationParams:
             algorithm_key=str(payload["algorithm_key"]),
             use_compile=bool(payload.get("use_compile", True)),
             use_bf16=bool(payload.get("use_bf16", False)),
+            precision_profile=str(payload.get("precision_profile", "fast" if payload.get("use_bf16", False) else "safe")),
+            role_dtype_map=dict(payload.get("role_dtype_map") or {}),
             f_distribution=str(payload.get("f_distribution", "rademacher")),
             adaptive_damping=bool(payload.get("adaptive_damping", False)),
             allow_intra_connection=bool(payload.get("allow_intra_connection", False)),

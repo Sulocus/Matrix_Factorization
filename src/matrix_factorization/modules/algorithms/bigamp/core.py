@@ -70,11 +70,14 @@ def compute_variance_parallel(
     alpha_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Compute prediction variance at each edge.
+    Compute output variance at each edge.
 
-    Uses E[F²] = 1 approximation (exact for both Gaussian and Rademacher).
-
-    V[a, c] = (1/M) Σ_μ (W_var[a,i,μ] X²[a,μ,j] + W²[a,i,μ] X_var[a,μ,j])
+    V[a, c] is the full BiG-AMP output variance pvar:
+        (1/M) Σ_μ F²[c,μ] * (
+            W_var[a,i,μ] X²[a,μ,j]
+            + W²[a,i,μ] X_var[a,μ,j]
+            + W_var[a,i,μ] X_var[a,μ,j]
+        )
 
     Args:
         W_hat, X_hat: (A, N, M) mean estimates
@@ -99,9 +102,13 @@ def compute_variance_parallel(
     # F² - use actual F² values (critical for Gaussian spreading)
     F_sq = F.pow(2).unsqueeze(0)  # (1, C_max, M)
     
-    # V = (1/M) Σ_μ F² * (W_var * X² + W² * X_var)
+    # pvar = (1/M) Σ_μ F² * Var(WX)
     V_raw = alpha_scale_sq * (
-        F_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)
+        F_sq * (
+            W_var_sel * X_sel.pow(2)
+            + W_sel.pow(2) * X_var_sel
+            + W_var_sel * X_var_sel
+        )
     ).sum(dim=2)  # (A, C_max)
 
     # Apply mask and add small epsilon for stability

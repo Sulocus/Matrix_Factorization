@@ -35,6 +35,8 @@ COLORS = {
     'Q_X_GRAM_ROOT': '#8c564b', # Brown
     'Q_W': '#1f77b4',           # Blue
     'Q_X': '#ff7f0e',           # Orange
+    'Q_W_SIGN_ALIGNED': '#2ca7a0', # Teal
+    'Q_X_SIGN_ALIGNED': '#e377c2', # Pink
     'Q_N': '#2ca02c',           # Green
 }
 
@@ -794,12 +796,14 @@ def create_gif(
     if not image_paths:
         return None
         
-    # Open images
+    # Load images eagerly and close file handles immediately.  Long scans can
+    # contain hundreds of heatmaps; keeping every Image.open() handle live will
+    # hit the OS file descriptor limit before the GIF is written.
     images = []
     for path in image_paths:
         try:
-            img = Image.open(path)
-            images.append(img)
+            with Image.open(path) as img:
+                images.append(img.convert("RGB").copy())
         except Exception as e:
             print(f"Failed to open image {path}: {e}")
             
@@ -816,13 +820,19 @@ def create_gif(
             save_all=True,
             append_images=images[1:],
             optimize=True,
-            duration=duration * 1000,
+            duration=duration_ms,
             loop=loop
         )
         return output_path
     except Exception as e:
         print(f"Failed to save GIF: {e}")
         return None
+    finally:
+        for img in images:
+            try:
+                img.close()
+            except Exception:
+                pass
 
 
 def plot_overlap_evolution(
@@ -1171,6 +1181,8 @@ def plot_custom_curves(
         'Q_X': '$Q_X$',
         'Q_W_GRAM_ROOT': "$Q_{W,gram}^{1/2}$",
         'Q_X_GRAM_ROOT': "$Q_{X,gram}^{1/2}$",
+        'Q_W_SIGN_ALIGNED': "$Q_{W,sign}$",
+        'Q_X_SIGN_ALIGNED': "$Q_{X,sign}$",
         'Q_N': '$Q_N$',
         'Q_Y_observed': '$Q_Y$ (obs)',
         'Q_Y_unobserved': '$Q_Y$ (unobs)',
@@ -1188,6 +1200,8 @@ def plot_custom_curves(
         'Q_W_GRAM_ROOT_replica': '#c9b3d6',
         'Q_X_GRAM_ROOT': '#8c564b',
         'Q_X_GRAM_ROOT_replica': '#c4a59e',
+        'Q_W_SIGN_ALIGNED': '#2ca7a0',
+        'Q_X_SIGN_ALIGNED': '#e377c2',
         'Q_N': '#2ca02c',
         'Q_Y_observed': '#bcbd22',
         'Q_Y_observed_replica': '#e0e088',
@@ -1319,9 +1333,13 @@ def plot_multi_metric_comparison(
         
         'Q_W_mean': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
         'Q_W': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
+        'Q_W_SIGN_ALIGNED_mean': {'color': COLORS['Q_W_SIGN_ALIGNED'], 'label': '$Q_{W,sign}$'},
+        'Q_W_SIGN_ALIGNED': {'color': COLORS['Q_W_SIGN_ALIGNED'], 'label': '$Q_{W,sign}$'},
         
         'Q_X_GRAM_ROOT_mean': {'color': COLORS['Q_X_GRAM_ROOT'], 'label': "$Q_{X,gram}^{1/2}$"},
         'Q_X_GRAM_ROOT': {'color': COLORS['Q_X_GRAM_ROOT'], 'label': "$Q_{X,gram}^{1/2}$"},
+        'Q_X_SIGN_ALIGNED_mean': {'color': COLORS['Q_X_SIGN_ALIGNED'], 'label': '$Q_{X,sign}$'},
+        'Q_X_SIGN_ALIGNED': {'color': COLORS['Q_X_SIGN_ALIGNED'], 'label': '$Q_{X,sign}$'},
         'Q_N_mean': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
         'Q_N': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
     }

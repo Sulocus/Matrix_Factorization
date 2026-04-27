@@ -1,0 +1,109 @@
+tensor_order: 2
+algorithm: 2
+teacher: 2
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  axes:
+    onsager_policy:
+      kind: composite
+      values:
+        no_onsager:
+          spreading.onsager_correction: false
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.5
+        onsager_fixed_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+        onsager_adaptive_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: true
+          algorithm_params.damping: 0.05
+          algorithm_params.step_min: 0.05
+          algorithm_params.step_max: 0.5
+          algorithm_params.step_incr: 1.1
+          algorithm_params.step_decr: 0.5
+          algorithm_params.step_window: 1
+          algorithm_params.acceptance_tolerance: 0.0
+    alpha:
+      path: alpha
+      values: [0.5, 1.0, 1.5, 2.0, 3.0]
+
+training:
+  samples_per_alpha: 10
+  max_steps: 150
+  max_epochs: 2
+  num_workers: 1
+
+algorithm_params:
+  damping: 0.05
+  noise_var: 1.0e-6
+  use_compile: true
+  compile_fallback_policy: allow
+  normalization_profile: paper_sparse_sampling
+  precision_profile: fast
+  precision_fallback_policy: allow
+  use_bf16: true
+  use_tf32: true
+  seed_partition_policy: partition_invariant
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
+  adaptive_restart: false
+  acceptance_tolerance: 0.0
+  init_mode: random
+  init_overlap: 0.0
+  debug_verbose: false
+
+teacher_config:
+  init_distribution: gaussian
+  mean_scale: 0.0
+
+spreading:
+  f_distribution: 1
+  seed: 12345
+  onsager_correction: false
+  chunk_size: 262144
+
+output:
+  storage_mode: full
+  save_tensors: true
+  enable_heatmap: false
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      series_by: [onsager_policy]
+      filename: qy_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_mean
+      series_by: [onsager_policy]
+      filename: qw_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_mean
+      series_by: [onsager_policy]
+      filename: qx_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qw_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qx_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qw_sign_aligned_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qx_sign_aligned_by_onsager_policy.png

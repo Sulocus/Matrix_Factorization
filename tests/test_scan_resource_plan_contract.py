@@ -5,6 +5,7 @@ from matrix_factorization.core.planning import build_experiment_plan
 from matrix_factorization.core.scan_planning import build_scan_plan
 from matrix_factorization.core.parallel import EstimationParams, get_parallel_coordinator
 from matrix_factorization.core.parallel.memory_estimator import MemoryEstimator
+from matrix_factorization.core.parallel.resource_execution import build_scan_resource_execution_plan
 from matrix_factorization.core.contracts import get_batching_specs
 
 
@@ -234,3 +235,40 @@ def test_steps_resource_plan_isolates_step_budget_points():
     assert resource_plan.num_batches == 3
     assert [batch.work_items[0].axis_values["max_steps"] for batch in resource_plan.batches] == [1, 2, 4]
     assert all(batch.batch_axes == ["point"] for batch in resource_plan.batches)
+
+
+def test_scan_resource_plan_applies_teacher_config_overrides(tmp_path):
+    config_path = tmp_path / "mean_scale_scan.yaml"
+    _write_config(
+        config_path,
+        """
+tensor_order: 2
+algorithm: 2
+teacher: 2
+teacher_config:
+  init_distribution: 3
+  mean_scale: 0.0
+matrix: {N1: 4, N2: 4, M: 2}
+scan:
+  axes:
+    mean_scale: {path: teacher_config.mean_scale, values: [0.0, 0.4]}
+    alpha: {path: alpha, values: [0.0, 0.1]}
+training: {samples_per_alpha: 1, max_steps: 2}
+algorithm_params: {use_compile: false, use_bf16: false}
+spreading: {f_distribution: 1, seed: 123, onsager_correction: false, chunk_size: 0}
+output: {save_tensors: false, enable_heatmap: false}
+""",
+    )
+    config, _, _ = load_yaml_config(config_path)
+    scan_plan = build_scan_plan(config)
+    ParallelCoordinator = get_parallel_coordinator()
+    plan = build_scan_resource_execution_plan(
+        scan_plan=scan_plan,
+        base_config=config,
+        coordinator=ParallelCoordinator(estimator=MemoryEstimator(apply_calibration=False)),
+        batching_spec=get_batching_specs()["bigamp_spreading"],
+    )
+
+    assert plan.preflight_errors == []
+    assert [group.coordinates["mean_scale"] for group in plan.groups] == [0.0, 0.4]
+    assert [group.effective_overrides["teacher_config.mean_scale"] for group in plan.groups] == [0.0, 0.4]

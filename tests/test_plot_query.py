@@ -49,7 +49,10 @@ def _result_with_cube():
         for init in ["cold", "warm_095"]:
             for alpha in [0.0, 0.1]:
                 point_id = f"p{idx:04d}"
-                metric = {"Q_Y_mean": damping + alpha + (0.1 if init == "warm_095" else 0.0)}
+                metric = {
+                    "Q_Y_mean": damping + alpha + (0.1 if init == "warm_095" else 0.0),
+                    "Q_Y_std": 0.01 + alpha,
+                }
                 single = SingleRunResult(scan_value=point_id, metrics=metric)
                 result.scan_values.append(point_id)
                 result.add_result(point_id, single)
@@ -99,6 +102,7 @@ def test_result_cube_resolves_plot_query_series_by_coordinates():
     assert [item["label"] for item in series] == ["damping=0.2", "damping=0.5"]
     assert series[0]["x_values"] == [0.0, 0.1]
     assert series[0]["point_ids"] == ["p0002", "p0003"]
+    assert series[0]["y_std_values"] == pytest.approx([0.01, 0.11])
 
 
 def test_result_cube_resolves_plot_query_compare_groups():

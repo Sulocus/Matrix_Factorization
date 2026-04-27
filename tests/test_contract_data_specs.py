@@ -104,4 +104,4 @@ output:
 
     assert not plan.errors
     assert payload["teacher_spec"]["key"] == "standard"
-    assert "1/sqrt(M)" in payload["teacher_spec"]["scale_convention"]
+    assert "normalization_profile" in payload["teacher_spec"]["scale_convention"]
