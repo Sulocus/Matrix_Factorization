@@ -18,7 +18,10 @@ Matrix_Factorization/
 │       ├── 20260206_0505_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
 │       └── 20260206_0458_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
 └── showcase_results/
-    └── .gitkeep
+    ├── README.md
+    ├── 01_warmstart_hysteresis/
+    ├── 02_onsager_fixed_vs_none/
+    └── 03_hot_start_onsager/
 ```
 
 `results/latest/` contains tracked lightweight summaries only. Large tensors,
@@ -38,7 +41,7 @@ matrix-factorization path used for the sparse-sampling paper audit:
   increments of `0.1`
 - samples per alpha: `20`
 - max steps: `2000`
-- spreading coefficients: Rademacher / `+-1`
+- spreading coefficients: Ising / `+-1`
 - normalization profile: `paper_sparse_sampling`
 - precision profile: `aggressive`, with fallback allowed
 - default initialization: cold start
@@ -59,8 +62,8 @@ infrastructure and convention hardening:
 - Formal metric naming: `Q_Y` is an absolute projection, `Q_W` and `Q_X` are
   coordinate projections, and old cosine-style `Q_Y`, MSE, and generalization
   error are not formal metrics.
-- Gauge diagnostics: sign-aligned `Q_W/Q_X`, Gram-root diagnostics, and
-  posthoc scale-gauge aligned factor diagnostics are integrated into plotting
+- Gauge-aware views: sign-aligned `Q_W/Q_X`, cos-root overlaps, and
+  posthoc scale-gauge aligned factor views are integrated into plotting
   and result handling.
 - Canonical scan output: group-level plots are generated for individual scan
   groups, while cross-group comparison plots remain part of the full scan

@@ -16,5 +16,5 @@ results/*
 !results/latest/**
 
 # Reserved for manually selected display outputs.
-showcase_results/*
-!showcase_results/.gitkeep
+!showcase_results/
+!showcase_results/**
