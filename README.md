@@ -19,7 +19,7 @@ Matrix_Factorization/
 │       └── 20260206_0458_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
 └── showcase_results/
     ├── README.md
-    ├── 01_warm_start_hysteresis/
+    ├── 01_warm_start/
     ├── 02_fixed_onsager_vs_no_onsager/
     └── 03_warm_start_onsager/
 ```

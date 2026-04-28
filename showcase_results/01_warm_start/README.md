@@ -1,6 +1,6 @@
-# Warm Start Hysteresis
+# Warm Start
 
-- keyword: warm start hysteresis
+- keyword: warm start
 - source: `20260427_193005`
 - N,M: `1000,50`
 - algorithm: no-Onsager spreading
