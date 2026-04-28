@@ -16,15 +16,32 @@ import math
 import torch
 
 
-PROJECTION_METRIC_POLICY = {
-    "formula": "absolute_projection",
-    "normalization": "teacher_norm_squared",
+METRIC_DEFINITION_POLICY = {
+    "metric_definition_profile": "physical_overlap_v1",
+    "Q_Y_formula": "1 - normalized_mse",
+    "Q_W_Q_X_normalization": "fixed_coordinate_count",
+    "legacy_projection_suffix": "_PROJ_ABS",
     "teacher_norm_epsilon": 1e-12,
     "degenerate_teacher_norm": "return_zero",
     "clipped": False,
 }
 
 METRIC_KEY_ALIASES = {
+    "Q_W_SIGN_ALIGNED": "Q_W_SIGN_GAUGE",
+    "Q_X_SIGN_ALIGNED": "Q_X_SIGN_GAUGE",
+    "Q_W_SIGN_ALIGNED_mean": "Q_W_SIGN_GAUGE_mean",
+    "Q_W_SIGN_ALIGNED_std": "Q_W_SIGN_GAUGE_std",
+    "Q_X_SIGN_ALIGNED_mean": "Q_X_SIGN_GAUGE_mean",
+    "Q_X_SIGN_ALIGNED_std": "Q_X_SIGN_GAUGE_std",
+    "Q_W_SIGN_GAUGE": "Q_W_SIGN_ALIGNED",
+    "Q_X_SIGN_GAUGE": "Q_X_SIGN_ALIGNED",
+    "Q_W_SIGN_GAUGE_mean": "Q_W_SIGN_ALIGNED_mean",
+    "Q_W_SIGN_GAUGE_std": "Q_W_SIGN_ALIGNED_std",
+    "Q_X_SIGN_GAUGE_mean": "Q_X_SIGN_ALIGNED_mean",
+    "Q_X_SIGN_GAUGE_std": "Q_X_SIGN_ALIGNED_std",
+    "median_abs_log_g": "median_abs_log_k",
+    "median_abs_log_g_mean": "median_abs_log_k_mean",
+    "median_abs_log_g_std": "median_abs_log_k_std",
     "Q_W_GRAM_ROOT": "Q_W_COS_ROOT",
     "Q_X_GRAM_ROOT": "Q_X_COS_ROOT",
     "Q_W_GRAM_ROOT_mean": "Q_W_COS_ROOT_mean",
@@ -48,7 +65,7 @@ def metric_key_candidates(metric_key: str) -> List[str]:
 
 def _with_projection_policy(contract: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(contract or {})
-    payload.setdefault("projection_policy", dict(PROJECTION_METRIC_POLICY))
+    payload.setdefault("metric_definition_policy", dict(METRIC_DEFINITION_POLICY))
     return payload
 
 
@@ -720,7 +737,8 @@ class ExperimentResult:
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]
         self._write_json(path / 'metrics.json', {
-            "schema_version": 3,
+            "schema_version": 4,
+            "metric_definition_profile": "physical_overlap_v1",
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
             "contract": self.metadata.contract,
@@ -824,7 +842,8 @@ class ExperimentResult:
 
         if self.result_cube.artifacts:
             self._write_json(path / 'metrics.json', {
-                "schema_version": 3,
+                "schema_version": 4,
+                "metric_definition_profile": "physical_overlap_v1",
                 "experiment_id": self.experiment_id,
                 "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
                 "contract": self.metadata.contract,
@@ -888,7 +907,7 @@ class ExperimentResult:
                 linewidth=2, marker='s', markersize=3,
             )
             ax.set_xlabel(x_label)
-            ax.set_ylabel('Overlap')
+            ax.set_ylabel('Metric value')
             ax.set_title(f'{self.experiment_id}')
             ax.grid(True, alpha=0.3)
             ax.legend()
@@ -973,11 +992,11 @@ class ExperimentResult:
                         )
                         metric_code = str(metric_code).upper()
                         if metric_code == "Q_W":
-                            metric_name = "Factor Gram Overlap ($Q_W$)"
+                            metric_name = "Factor Metric ($Q_W$)"
                             filename_prefix = self._heatmap_filename_prefix("heatmap_W", v)
                         else:
                             metric_code = "Q_Y"
-                            metric_name = "Tensor Overlap ($Q_Y$)"
+                            metric_name = "Tensor Fit ($Q_Y$)"
                             filename_prefix = self._heatmap_filename_prefix("heatmap_Y", v)
 
                         heatmap_path = plot_replica_heatmap(
@@ -1000,18 +1019,18 @@ class ExperimentResult:
                         heatmap_metric = str(
                             output_options.get('heatmap_metric', 'Q_W') if output_options else 'Q_W'
                         ).upper()
-                        if heatmap_metric in {"Q_W_SIGN", "Q_W_SIGN_ALIGNED", "D.W"}:
-                            from matrix_factorization.modules.metrics.overlap import sign_aligned_projection_abs
+                        if heatmap_metric in {"Q_W_SIGN", "Q_W_SIGN_ALIGNED", "Q_W_SIGN_GAUGE", "D.W"}:
+                            from matrix_factorization.modules.metrics.overlap import sign_gauge_overlap_fixed
 
-                            def _w_sign_aligned(a, b):
-                                return sign_aligned_projection_abs(a, b, latent_axis=-1)
+                            def _w_sign_gauge(a, b):
+                                return sign_gauge_overlap_fixed(a, b, latent_axis=-1)
 
                             matrix_W = build_interaction_matrix(
-                                W_s, W_teacher, _w_sign_aligned, use_left=True
+                                W_s, W_teacher, _w_sign_gauge, use_left=True
                             )
-                            metric_name = "W Sign-Aligned Projection ($Q_{W,sign}$)"
-                            filename_prefix = self._heatmap_filename_prefix("heatmap_W_sign", v)
-                            heatmap_code = "Q_W_SIGN_ALIGNED"
+                            metric_name = "W Sign-Gauge Overlap ($Q_{W,sign}$)"
+                            filename_prefix = self._heatmap_filename_prefix("heatmap_W_sign_gauge", v)
+                            heatmap_code = "Q_W_SIGN_GAUGE"
                         else:
                             # Build interaction matrix
                             matrix_W = build_interaction_matrix(
@@ -1078,7 +1097,8 @@ class ExperimentResult:
 
         completed_values = [str(value) for value, _ in self._sorted_result_items()]
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
+            "metric_definition_profile": "physical_overlap_v1",
             "partial_snapshot": True,
             "snapshot_mode": "compact_progress",
             "experiment_id": self.experiment_id,
@@ -1391,15 +1411,22 @@ class ExperimentResult:
                 return display_name
         return {
             "Q_Y_mean": "Q_Y",
+            "NMSE_Y_mean": "NMSE_Y",
             "Q_Y_observed_mean": "Q_Y observed",
             "Q_Y_unobserved_mean": "Q_Y unobserved",
             "Q_W_mean": "Q_W",
+            "Q_X_mean": "Q_X",
+            "Q_W_SIGN_GAUGE_mean": "Q_W sign gauge",
             "Q_W_COS_ROOT_mean": "Q_W Cos root",
             "Q_W_GRAM_ROOT_mean": "Q_W Cos root",
             "Q_W_SIGN_ALIGNED_mean": "Q_W sign-aligned",
             "Q_X_COS_ROOT_mean": "Q_X Cos root",
             "Q_X_GRAM_ROOT_mean": "Q_X Cos root",
+            "Q_X_SIGN_GAUGE_mean": "Q_X sign gauge",
             "Q_X_SIGN_ALIGNED_mean": "Q_X sign-aligned",
+            "Q_W_SCALE_GAUGE_mean": "Q_W scale gauge",
+            "Q_X_SCALE_GAUGE_mean": "Q_X scale gauge",
+            "Q_WX_SCALE_GAUGE_mean": "Q_WX scale gauge",
             "Q_N_mean": "Q_N",
         }.get(metric_key, metric_key)
 
@@ -1465,14 +1492,21 @@ class ExperimentResult:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
                 "q_y_mean_interpretation": "legacy_cosine_or_reconstruction_proxy",
-                "new_schema_q_y_mean_interpretation": "absolute_projection",
+                "new_schema_q_y_mean_interpretation": "fit_1_minus_nmse",
                 "new_old_q_y_mean_not_comparable": True,
+            })
+        elif loaded_schema_version < 4:
+            result.metadata.contract.setdefault("metric_schema_compatibility", {
+                "loaded_schema_version": loaded_schema_version,
+                "q_y_mean_interpretation": "absolute_projection",
+                "new_schema_q_y_mean_interpretation": "fit_1_minus_nmse",
+                "schema_v3_v4_q_y_mean_not_comparable": True,
             })
         else:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
-                "q_y_mean_interpretation": "absolute_projection",
-                "new_old_q_y_mean_not_comparable": True,
+                "q_y_mean_interpretation": "fit_1_minus_nmse",
+                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "physical_overlap_v1"),
             })
         cube_payload = metrics_payload.get("result_cube", {}) if isinstance(metrics_payload, dict) else {}
         if cube_payload:

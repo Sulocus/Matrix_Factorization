@@ -91,32 +91,33 @@ def test_experiment_result_directory_schema(tmp_path):
     assert not (run_dir / "artifacts" / "results.pt").exists()
 
     metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    assert metrics["schema_version"] == 3
+    assert metrics["schema_version"] == 4
     assert metrics["result_cube"]["schema_version"] == 1
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]
     assert metrics["available_metric_keys"] == ["Q_W_COS_ROOT_mean", "Q_W_mean", "Q_Y_mean"]
-    assert metrics["metric_schema"]["schema_version"] == 3
+    assert metrics["metric_schema"]["schema_version"] == 4
     assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
-    assert metrics["metric_schema"]["compatibility"]["projection_metric_migration"] is True
-    assert metrics["metric_schema"]["projection_policy"] == {
-        "formula": "absolute_projection",
-        "normalization": "teacher_norm_squared",
+    assert metrics["metric_schema"]["compatibility"]["physical_overlap_metric_migration"] is True
+    assert metrics["metric_schema"]["metric_policy"] == {
+        "Q_Y_formula": "1 - normalized_mse",
+        "Q_W_Q_X_normalization": "fixed_coordinate_count",
+        "legacy_projection_suffix": "_PROJ_ABS",
         "teacher_norm_epsilon": 1e-12,
         "degenerate_teacher_norm": "return_zero",
         "clipped": False,
     }
-    assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_fit"
     assert metrics["metric_schema"]["flat_key_index"]["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
-    assert "measurement.full.teacher_student.Q_Y_projection" in metrics["metric_schema"]["semantic_classes"]
+    assert "measurement.full.teacher_student.Q_Y_fit" in metrics["metric_schema"]["semantic_classes"]
     assert metrics["metric_semantics"]["Q_Y_mean"][0]["space"] == "measurement"
     assert metrics["metric_contracts"]["0.5"]["source"] == "runner_matrix_metrics"
     assert "matrix.full.Q_Y" in metrics["metric_contracts"]["0.5"]["metric_specs"]
     assert metrics["metrics"]["0.5"]["Q_Y_mean"] == 0.8
     assert "MSE" not in metrics["results"]["0.5"]["metrics"]
     assert metrics["results"]["0.5"]["metric_contract"]["algorithm_key"] == "bigamp"
-    assert metrics["results"]["0.5"]["metric_contract"]["projection_policy"]["degenerate_teacher_norm"] == "return_zero"
+    assert metrics["results"]["0.5"]["metric_contract"]["metric_definition_policy"]["degenerate_teacher_norm"] == "return_zero"
     assert metrics["factor_payload_contract"]["matrix_factors"] == {
         "W_students": False,
         "X_students": False,

@@ -1970,25 +1970,72 @@ class BiGAMPSpreading(AlgorithmBase):
         alpha_max = max(alpha_values) if alpha_values else 4.0
 
         if spreading_data is not None:
-            if len(alpha_values) != 1:
-                raise ValueError("provided spreading_data continuation path expects one alpha at a time")
-            alpha_index = 0
-            if isinstance(continuation_context, dict):
-                alpha_index = int(continuation_context.get("alpha_index", 0))
-            batch_seed = seed if self._uses_partition_invariant_seed_policy() else self._spreading_batch_seed(seed, 0)
-            W_batch, X_batch = self.train_full_parallel(
-                spreading_data,
-                batch_alpha_indices=[alpha_index],
-                verbose=False,
-                step_callback=step_callback,
-                max_steps=max_steps,
-                batch_alpha_values=alpha_values,
-                base_seed=batch_seed,
-                initial_state=initial_state,
-                return_continuation_state=return_continuation_state,
-                continuation_context=continuation_context,
+            continuation_active = (
+                initial_state is not None
+                or return_continuation_state
+                or continuation_context is not None
             )
-            return W_batch.transpose(0, 1), X_batch.transpose(0, 1)
+            if continuation_active and len(alpha_values) != 1:
+                raise ValueError("provided spreading_data continuation path expects one alpha at a time")
+            batch_alpha_indices = None
+            if continuation_active:
+                alpha_index = 0
+                if isinstance(continuation_context, dict):
+                    alpha_index = int(continuation_context.get("alpha_index", 0))
+                batch_alpha_indices = [alpha_index]
+                batch_seed = seed if self._uses_partition_invariant_seed_policy() else self._spreading_batch_seed(seed, 0)
+                W_batch, X_batch = self.train_full_parallel(
+                    spreading_data,
+                    batch_alpha_indices=batch_alpha_indices,
+                    verbose=False,
+                    step_callback=step_callback,
+                    max_steps=max_steps,
+                    batch_alpha_values=alpha_values,
+                    base_seed=batch_seed,
+                    initial_state=initial_state,
+                    return_continuation_state=return_continuation_state,
+                    continuation_context=continuation_context,
+                )
+                return W_batch.transpose(0, 1), X_batch.transpose(0, 1)
+
+            dynamic_batches = self._compute_internal_spreading_alpha_batches(
+                alpha_values,
+                sample_count=S,
+            )
+            if not dynamic_batches and A:
+                dynamic_batches = [(0, A, alpha_max)]
+            self._contract_execution_metadata = self._build_spreading_execution_metadata(
+                alpha_values,
+                dynamic_batches,
+            )
+
+            W_result = torch.zeros(A, S, N1, M, device=self.device)
+            X_result = torch.zeros(A, S, M, N2, device=self.device)
+            for batch_idx, (alpha_start, alpha_end, _) in enumerate(dynamic_batches):
+                batch_alpha_indices = list(range(alpha_start, alpha_end))
+                batch_alpha_list = alpha_values[alpha_start:alpha_end]
+                if sample_callback is not None:
+                    sample_callback(batch_idx, len(dynamic_batches), batch_alpha_list)
+                batch_seed = (
+                    seed
+                    if self._uses_partition_invariant_seed_policy()
+                    else self._spreading_batch_seed(seed, batch_idx)
+                )
+                W_batch, X_batch = self.train_full_parallel(
+                    spreading_data,
+                    batch_alpha_indices=batch_alpha_indices,
+                    verbose=False,
+                    step_callback=step_callback,
+                    max_steps=max_steps,
+                    batch_alpha_values=batch_alpha_list,
+                    base_seed=batch_seed,
+                )
+                W_result[alpha_start:alpha_end] = W_batch.transpose(0, 1)
+                X_result[alpha_start:alpha_end] = X_batch.transpose(0, 1)
+                del W_batch, X_batch
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            return W_result, X_result
 
         dynamic_batches = self._compute_internal_spreading_alpha_batches(
             alpha_values,

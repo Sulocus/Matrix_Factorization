@@ -393,8 +393,8 @@ output:
   rsb_ordering: true
 
   # heatmap_metric:
-  #   Q_Y = measurement projection overlap
-  #   Q_W = factor Cos-root diagnostic
+  #   Q_Y = measurement fit
+  #   Q_W_SIGN_GAUGE = factor sign-gauge heatmap
   heatmap_metric: "Q_Y"
 
   # uniform_colormap:
@@ -413,13 +413,17 @@ output:
   #   B.w = Q_W_COS_ROOT_mean
   #   B.x = Q_X_COS_ROOT_mean
   #
-  #   D.w = Q_W_SIGN_ALIGNED_mean
-  #   D.x = Q_X_SIGN_ALIGNED_mean
+  #   D.w = Q_W_SIGN_GAUGE_mean
+  #   D.x = Q_X_SIGN_GAUGE_mean
+  #
+  #   G.w  = Q_W_SCALE_GAUGE_mean
+  #   G.x  = Q_X_SCALE_GAUGE_mean
+  #   G.wx = Q_WX_SCALE_GAUGE_mean
   #
   #   C.o = Q_Y_observed_mean
   #   C.u = Q_Y_unobserved_mean
   #
-  #   N.n = Q_N_mean，tensor latent node/spin/factor projection
+  #   N.n = Q_N_mean，tensor latent node/spin/factor fixed-denominator overlap
   #
   #   :R  = replica/student-student 版本，例如 A.y:R
   #

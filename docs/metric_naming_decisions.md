@@ -98,3 +98,26 @@
 | `latent.WX.teacher_student.Q_WX_SCALE_GAUGE` | `Q_WX_SCALE_GAUGE_mean`, `Q_WX_SCALE_GAUGE_std` | Q_WX scale-gauge | approved | `Q_W_SCALE_GAUGE` 与 `Q_X_SCALE_GAUGE` 的平均 diagnostic。 |
 | `latent.WX.teacher_student.scale_gauge_magnitude` | `median_abs_log_g_mean`, `median_abs_log_g_std` | scale-gauge magnitude | approved | 拟合出的 channel scale gauge 大小，公式是 median `|log |g_k||`。 |
 | `latent.N.teacher_student.Q_N_projection` | `Q_N_mean`, `Q_N_std`, `Q_N_mode*_mean`, `Q_N_mode*_std` | Q_N | approved | tensor latent node/spin/factor projection。 |
+
+## Physical Metric Migration v4: approved active names
+
+| canonical_key | active aliases | display | decision status | 备注 |
+| --- | --- | --- | --- | --- |
+| `measurement.full.teacher_student.Q_Y_fit` | `Q_Y_mean`, `Q_Y_std` | Q_Y | approved | output fit `1 - NMSE_Y`，full scope。 |
+| `measurement.observed.teacher_student.Q_Y_fit` | `Q_Y_observed_mean`, `Q_Y_observed_std` | Q_Y observed | approved | observed/training measurement fit。 |
+| `measurement.unobserved.teacher_student.Q_Y_fit` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement fit。 |
+| `measurement.full.teacher_student.NMSE_Y` | `NMSE_Y_mean`, `NMSE_Y_std` | NMSE_Y | approved | normalized output reconstruction error。 |
+| `measurement.observed.teacher_student.NMSE_Y` | `NMSE_Y_observed_mean`, `NMSE_Y_observed_std` | NMSE_Y observed | approved | observed normalized output reconstruction error。 |
+| `measurement.unobserved.teacher_student.NMSE_Y` | `NMSE_Y_unobserved_mean`, `NMSE_Y_unobserved_std` | NMSE_Y unobserved | approved | heldout normalized output reconstruction error。 |
+| `measurement.full.teacher_student.Q_Y_PROJ_ABS` | `Q_Y_PROJ_ABS_mean`, `Q_Y_PROJ_ABS_std` | Q_Y projection legacy | approved | schema v3 absolute projection diagnostic。 |
+| `measurement.observed.teacher_student.Q_Y_PROJ_ABS` | `Q_Y_observed_PROJ_ABS_mean`, `Q_Y_observed_PROJ_ABS_std` | Q_Y observed projection legacy | approved | schema v3 observed projection diagnostic。 |
+| `measurement.unobserved.teacher_student.Q_Y_PROJ_ABS` | `Q_Y_unobserved_PROJ_ABS_mean`, `Q_Y_unobserved_PROJ_ABS_std` | Q_Y unobserved projection legacy | approved | schema v3 unobserved projection diagnostic。 |
+| `latent.W.teacher_student.Q_W_overlap` | `Q_W_mean`, `Q_W_std` | Q_W | approved | fixed denominator physical overlap。 |
+| `latent.X.teacher_student.Q_X_overlap` | `Q_X_mean`, `Q_X_std` | Q_X | approved | fixed denominator physical overlap。 |
+| `latent.W.teacher_student.Q_W_PROJ_ABS` | `Q_W_PROJ_ABS_mean`, `Q_W_PROJ_ABS_std` | Q_W projection legacy | approved | schema v3 W absolute projection diagnostic。 |
+| `latent.X.teacher_student.Q_X_PROJ_ABS` | `Q_X_PROJ_ABS_mean`, `Q_X_PROJ_ABS_std` | Q_X projection legacy | approved | schema v3 X absolute projection diagnostic。 |
+| `latent.W.student.R_W` | `R_W_mean`, `R_W_std` | R_W | approved | W student self-overlap / norm monitor。 |
+| `latent.X.student.R_X` | `R_X_mean`, `R_X_std` | R_X | approved | X student self-overlap / norm monitor。 |
+| `latent.W.teacher_student.Q_W_SIGN_GAUGE` | `Q_W_SIGN_GAUGE_mean`, `Q_W_SIGN_ALIGNED_mean` | Q_W sign gauge | approved | sign-gauge overlap；SIGN_ALIGNED 是 legacy alias。 |
+| `latent.X.teacher_student.Q_X_SIGN_GAUGE` | `Q_X_SIGN_GAUGE_mean`, `Q_X_SIGN_ALIGNED_mean` | Q_X sign gauge | approved | sign-gauge overlap；SIGN_ALIGNED 是 legacy alias。 |
+| `latent.N.teacher_student.Q_N_overlap` | `Q_N_mean`, `Q_N_std`, `Q_N_mode*_mean`, `Q_N_mode*_std` | Q_N | approved | tensor latent fixed-denominator overlap。 |

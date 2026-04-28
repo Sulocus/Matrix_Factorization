@@ -35,6 +35,11 @@ COLORS = {
     'Q_X_COS_ROOT': '#8c564b', # Brown
     'Q_W': '#1f77b4',           # Blue
     'Q_X': '#ff7f0e',           # Orange
+    'Q_W_SIGN_GAUGE': '#2ca7a0', # Teal
+    'Q_X_SIGN_GAUGE': '#e377c2', # Pink
+    'Q_W_SCALE_GAUGE': '#0f766e',
+    'Q_X_SCALE_GAUGE': '#be185d',
+    'Q_WX_SCALE_GAUGE': '#4b5563',
     'Q_W_SIGN_ALIGNED': '#2ca7a0', # Teal
     'Q_X_SIGN_ALIGNED': '#e377c2', # Pink
     'Q_N': '#2ca02c',           # Green
@@ -1194,6 +1199,11 @@ def plot_custom_curves(
         'Q_X': '$Q_X$',
         'Q_W_COS_ROOT': "$Q_{W,cos}^{1/2}$",
         'Q_X_COS_ROOT': "$Q_{X,cos}^{1/2}$",
+        'Q_W_SIGN_GAUGE': "$Q_{W,sign}$",
+        'Q_X_SIGN_GAUGE': "$Q_{X,sign}$",
+        'Q_W_SCALE_GAUGE': "$Q_{W,scale}$",
+        'Q_X_SCALE_GAUGE': "$Q_{X,scale}$",
+        'Q_WX_SCALE_GAUGE': "$Q_{WX,scale}$",
         'Q_W_SIGN_ALIGNED': "$Q_{W,sign}$",
         'Q_X_SIGN_ALIGNED': "$Q_{X,sign}$",
         'Q_N': '$Q_N$',
@@ -1213,6 +1223,11 @@ def plot_custom_curves(
         'Q_W_COS_ROOT_replica': '#c9b3d6',
         'Q_X_COS_ROOT': '#8c564b',
         'Q_X_COS_ROOT_replica': '#c4a59e',
+        'Q_W_SIGN_GAUGE': '#2ca7a0',
+        'Q_X_SIGN_GAUGE': '#e377c2',
+        'Q_W_SCALE_GAUGE': '#0f766e',
+        'Q_X_SCALE_GAUGE': '#be185d',
+        'Q_WX_SCALE_GAUGE': '#4b5563',
         'Q_W_SIGN_ALIGNED': '#2ca7a0',
         'Q_X_SIGN_ALIGNED': '#e377c2',
         'Q_N': '#2ca02c',
@@ -1346,13 +1361,25 @@ def plot_multi_metric_comparison(
         
         'Q_W_mean': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
         'Q_W': {'color': COLORS['Q_W'], 'label': '$Q_W$'},
+        'Q_W_SIGN_GAUGE_mean': {'color': COLORS['Q_W_SIGN_GAUGE'], 'label': '$Q_{W,sign}$'},
+        'Q_W_SIGN_GAUGE': {'color': COLORS['Q_W_SIGN_GAUGE'], 'label': '$Q_{W,sign}$'},
         'Q_W_SIGN_ALIGNED_mean': {'color': COLORS['Q_W_SIGN_ALIGNED'], 'label': '$Q_{W,sign}$'},
         'Q_W_SIGN_ALIGNED': {'color': COLORS['Q_W_SIGN_ALIGNED'], 'label': '$Q_{W,sign}$'},
+        'Q_W_SCALE_GAUGE_mean': {'color': COLORS['Q_W_SCALE_GAUGE'], 'label': '$Q_{W,scale}$'},
+        'Q_W_SCALE_GAUGE': {'color': COLORS['Q_W_SCALE_GAUGE'], 'label': '$Q_{W,scale}$'},
         
         'Q_X_COS_ROOT_mean': {'color': COLORS['Q_X_COS_ROOT'], 'label': "$Q_{X,cos}^{1/2}$"},
         'Q_X_COS_ROOT': {'color': COLORS['Q_X_COS_ROOT'], 'label': "$Q_{X,cos}^{1/2}$"},
+        'Q_X_mean': {'color': COLORS['Q_X'], 'label': '$Q_X$'},
+        'Q_X': {'color': COLORS['Q_X'], 'label': '$Q_X$'},
+        'Q_X_SIGN_GAUGE_mean': {'color': COLORS['Q_X_SIGN_GAUGE'], 'label': '$Q_{X,sign}$'},
+        'Q_X_SIGN_GAUGE': {'color': COLORS['Q_X_SIGN_GAUGE'], 'label': '$Q_{X,sign}$'},
         'Q_X_SIGN_ALIGNED_mean': {'color': COLORS['Q_X_SIGN_ALIGNED'], 'label': '$Q_{X,sign}$'},
         'Q_X_SIGN_ALIGNED': {'color': COLORS['Q_X_SIGN_ALIGNED'], 'label': '$Q_{X,sign}$'},
+        'Q_X_SCALE_GAUGE_mean': {'color': COLORS['Q_X_SCALE_GAUGE'], 'label': '$Q_{X,scale}$'},
+        'Q_X_SCALE_GAUGE': {'color': COLORS['Q_X_SCALE_GAUGE'], 'label': '$Q_{X,scale}$'},
+        'Q_WX_SCALE_GAUGE_mean': {'color': COLORS['Q_WX_SCALE_GAUGE'], 'label': '$Q_{WX,scale}$'},
+        'Q_WX_SCALE_GAUGE': {'color': COLORS['Q_WX_SCALE_GAUGE'], 'label': '$Q_{WX,scale}$'},
         'Q_N_mean': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
         'Q_N': {'color': COLORS['Q_N'], 'label': '$Q_N$'},
     }

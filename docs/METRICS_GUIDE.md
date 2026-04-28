@@ -1,101 +1,108 @@
 # Metric Guide
 
-本文档记录当前 active path 的正式指标。旧结果中的 cosine `Q_Y`、`physical_overlap_*`、`MSE`、`Gen_Error` 和 `Q_*_prime` 只作为 legacy/debug 解释保留，不能和新 schema v3 的同名或近似名字直接比较。
+本文档记录当前 active path 的正式指标。schema v4 的 profile 是
+`physical_overlap_v1`：`Q_W/Q_X/Q_N` 是固定分母 latent overlap，
+`Q_Y` 是输出重构 fit。旧 schema v3 的 absolute projection 只保留在
+`*_PROJ_ABS` diagnostic 里。
 
-## Formal Projection Metrics
+## Formal Metrics
 
 ### `Q_Y`
 
-公式：
+`Q_Y` 是 output fit：
 
 ```text
-Q_Y = abs(<Y_student, Y_teacher>) / <Y_teacher, Y_teacher>
+NMSE_Y = sum_e (Y_student[e] - Y_teacher[e])^2 / sum_e Y_teacher[e]^2
+Q_Y = 1 - NMSE_Y
 ```
 
 规则：
 
-- 不做 cosine normalization。
-- 不裁切，大于 1 的值保留。
-- 若 teacher norm 小于 `1e-12`，projection 返回 `0.0`，并通过 metric schema / metric contract 的 `projection_policy.degenerate_teacher_norm = return_zero` 记录该约定。
-- `Q_Y_mean / Q_Y_std` 的 `mean/std` 只是 sample 或 replica 统计后缀。
+- 不裁切；坏结果可以小于 `0`。
+- 完美重构时 `Q_Y = 1`，零输出通常给 `Q_Y = 0`。
+- 若 evaluation set 为空或 teacher norm 小于 `1e-12`，`NMSE_Y=1`、`Q_Y=0`。
 - `Q_Y_observed` 表示 observed/training measurement set。
 - `Q_Y_unobserved` 表示 heldout 或 unobserved measurement set。
-- matrix、spreading、tensor 使用同一个物理概念，只是 measurement set 的生成方式不同。
+- `Q_Y_PROJ_ABS` 是旧 absolute projection diagnostic，不是正式 `Q_Y`。
 
 ### `Q_W` / `Q_X`
 
-公式：
+`Q_W` 和 `Q_X` 是 paper-style fixed-denominator overlap：
 
 ```text
-Q_W = abs(<W_student, W_teacher>) / <W_teacher, W_teacher>
-Q_X = abs(<X_student, X_teacher>) / <X_teacher, X_teacher>
+Q_W = sum_i,mu W_student[i,mu] W_teacher[i,mu] / (N1 M)
+Q_X = sum_mu,j X_student[mu,j] X_teacher[mu,j] / (M N2)
 ```
 
-这是 matrix latent factor 的 coordinate projection overlap。它对 rotation/gauge/permutation 敏感，因此需要同时看 Cos-root diagnostic。
+这不是 teacher-norm projection。Gaussian teacher 完美恢复时，有限尺寸下
+`Q_W/Q_X` 等于 teacher empirical second moment，通常接近但不强制等于 `1`。
+`R_W/R_X` 是 student self-overlap，用来监控 norm collapse 或 blow-up。
 
 ### `Q_N`
 
-公式：
+tensor latent factor 使用同一 fixed-denominator convention：
 
 ```text
-Q_N_mode_d = abs(<N_student^(d), N_teacher^(d)>) / <N_teacher^(d), N_teacher^(d)>
+Q_N_mode_d = sum_entries N_student^(d) N_teacher^(d) / numel(N_teacher^(d))
 Q_N = mean_d Q_N_mode_d
 ```
 
-`Q_N` 是 tensor latent node/spin/factor overlap，对齐 matrix 的 `Q_W/Q_X`。
-
-## Formal Diagnostics
+## Diagnostics
 
 ### `Q_W_COS_ROOT` / `Q_X_COS_ROOT`
-
-公式：
 
 ```text
 Q_W_COS_ROOT = sqrt(max(baseline_corrected_gram_overlap(W), 0))
 Q_X_COS_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
 ```
 
-它们不是 coordinate projection，而是解决 matrix factor rotation/gauge 后更稳定的 learning diagnostic。
+这是 Cos-root diagnostic，不是 physical overlap。
 
-### `Q_W_SIGN_ALIGNED` / `Q_X_SIGN_ALIGNED`
-
-公式：
+### `Q_W_SIGN_GAUGE` / `Q_X_SIGN_GAUGE`
 
 ```text
-Q_W_SIGN_ALIGNED = sum_k abs(<W_s[:,k], W_t[:,k]>) / sum_k ||W_t[:,k]||^2
-Q_X_SIGN_ALIGNED = sum_k abs(<X_s[k,:], X_t[k,:]>) / sum_k ||X_t[k,:]||^2
+Q_W_SIGN_GAUGE = sum_mu abs(sum_i W_s[i,mu] W_t[i,mu]) / (N1 M)
+Q_X_SIGN_GAUGE = sum_mu abs(sum_j X_s[mu,j] X_t[mu,j]) / (M N2)
 ```
 
-这是逐 latent channel 的 sign-gauge-aligned diagnostic。它不替代 `Q_W/Q_X`，
-只用于区分“没有学到 factor”和“学到了 channel，但每个 channel 的 sign sector 没对齐”。
-它仍然不能处理 channel permutation 或连续 rotation。
+它只修正每个 latent channel 的 sign gauge，不处理 permutation、rotation 或
+continuous scale。`Q_W_SIGN_ALIGNED/Q_X_SIGN_ALIGNED` 是 legacy aliases。
 
-## Removed From Formal Metrics
+### `Q_W_SCALE_GAUGE` / `Q_X_SCALE_GAUGE`
 
-- `MSE`：只能作为 algorithm 内部 loss/debug，不进入 formal result metric。
-- `Gen_Error`：legacy alias，不进入 formal result metric。
-- `physical_overlap_Y/W/X`：旧 projection 名，已迁移到 `Q_Y/Q_W/Q_X`。
-- `Q_W_prime/Q_X_prime`：旧 baseline-corrected Gram 名，已迁移到 `Q_W_COS_ROOT/Q_X_COS_ROOT`。
-- `Q_Y_COS` 或旧 cosine `Q_Y`：legacy result 解释，不进入新 run formal schema。
+对每个 latent channel 求：
+
+```text
+k_mu* = argmin_{k != 0} [
+  ||k W_s[:,mu] - W_t[:,mu]||^2
+  + ||k^-1 X_s[mu,:] - X_t[mu,:]||^2
+]
+```
+
+然后用同一个 fixed-denominator convention 计算 aligned overlap。
+`Q_WX_SCALE_GAUGE` 是 W/X 两侧的平均。`median_abs_log_k` 记录 fitted
+scale gauge 的大小。这个 diagnostic 不改变训练轨迹。
+
+## Legacy Metrics
+
+- `Q_Y_PROJ_ABS / Q_W_PROJ_ABS / Q_X_PROJ_ABS`：schema v3 absolute projection。
+- `Q_W_GRAM_ROOT / Q_X_GRAM_ROOT`：旧名，alias 到 `Q_W_COS_ROOT/Q_X_COS_ROOT`。
+- `median_abs_log_g`：旧名，alias 到 `median_abs_log_k`。
+- `MSE / Gen_Error / physical_overlap_* / Q_Y_COS`：legacy/debug，不进入正式 metric surface。
 
 ## Result Schema
 
-新 run 的 `metrics.json.metric_schema.schema_version` 为 `3`，并包含：
+新 run 的 `metrics.json.metric_schema.schema_version` 为 `4`，并包含：
 
 ```text
-compatibility.projection_metric_migration = true
-compatibility.legacy_q_y_cosine_not_comparable = true
-projection_policy.formula = absolute_projection
-projection_policy.normalization = teacher_norm_squared
-projection_policy.clipped = false
-projection_policy.degenerate_teacher_norm = return_zero
+metric_definition_profile = physical_overlap_v1
+compatibility.physical_overlap_metric_migration = true
+metric_policy.Q_Y_formula = 1 - normalized_mse
+metric_policy.Q_W_Q_X_normalization = fixed_coordinate_count
+metric_policy.legacy_projection_suffix = _PROJ_ABS
+metric_policy.clipped = false
 ```
 
-因此旧 schema 中的 `Q_Y_mean` 不应被重解释成新 projection `Q_Y_mean`。
-
-## Current Implementation Status
-
-- Projection helper、matrix observed/unobserved/full fixture、spreading observed fixture、tensor observed/Q_N fixture 已进入测试。
-- `MetricSpec` 和 `metric_schema` 使用 projection-first semantic metadata。
-- `ExperimentResult.load()` 会给旧 schema `<3` 的 `Q_Y_mean` 添加 legacy interpretation metadata。
-- 新 run 不应在 formal metric surface 中产出 `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime`；这些只能作为 legacy/debug/internal 解释存在。
+因此 schema v3 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 不能重解释成 schema v4
+的同名字段；必须同时查看 `metric_schema.schema_version` 和
+`metric_definition_profile`。

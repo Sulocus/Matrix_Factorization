@@ -160,8 +160,8 @@ def test_flat_metric_semantics_keep_qy_algorithm_context():
     assert dense_semantics["space"] == "measurement"
     assert tensor_semantics["space"] == "measurement"
     assert dense_semantics["metric_spec"] != tensor_semantics["metric_spec"]
-    assert dense_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
-    assert tensor_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert dense_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_fit"
+    assert tensor_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_fit"
 
 
 def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
@@ -171,13 +171,13 @@ def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
     )
     tensor_schema = get_metric_schema("bigamp_tensor_parallel", metric_keys=["Q_Y_mean"])
 
-    assert dense_schema["schema_version"] == 3
+    assert dense_schema["schema_version"] == 4
     assert dense_schema["compatibility"]["legacy_flat_keys_preserved"] is True
-    assert dense_schema["compatibility"]["projection_metric_migration"] is True
-    assert dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert dense_schema["compatibility"]["physical_overlap_metric_migration"] is True
+    assert dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_fit"
     assert dense_schema["flat_key_index"]["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
-    assert dense_schema["flat_key_index"]["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_ALIGNED"
-    assert tensor_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert dense_schema["flat_key_index"]["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_GAUGE"
+    assert tensor_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_fit"
     assert (
         dense_schema["flat_key_index"]["Q_Y_mean"][0]["metric_spec"]
         != tensor_schema["flat_key_index"]["Q_Y_mean"][0]["metric_spec"]
@@ -242,9 +242,10 @@ def test_matrix_metric_compute_adapter_produces_declared_flat_keys():
 
     assert metrics["Q_Y_mean"] == pytest.approx(1.0)
     assert "MSE" not in metrics
-    assert metrics["Q_W_mean"] == pytest.approx(1.0)
-    assert metrics["Q_W_SIGN_ALIGNED_mean"] == pytest.approx(1.0)
-    assert metrics["Q_X_SIGN_ALIGNED_mean"] == pytest.approx(1.0)
+    assert metrics["Q_W_mean"] == pytest.approx(0.5)
+    assert metrics["Q_W_PROJ_ABS_mean"] == pytest.approx(1.0)
+    assert metrics["Q_W_SIGN_GAUGE_mean"] == pytest.approx(0.5)
+    assert metrics["Q_X_SIGN_GAUGE_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
     assert "matrix.full.Q_Y" in check.metric_specs
     assert "matrix.factor.Q_W" in check.metric_specs
@@ -414,30 +415,30 @@ output:
     plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
 
     assert plan.errors == []
-    assert plan.output_plan.required_metrics == ["Q_W_SIGN_ALIGNED_mean", "Q_W_mean", "Q_Y_mean"]
+    assert plan.output_plan.required_metrics == ["Q_W_SIGN_GAUGE_mean", "Q_W_mean", "Q_Y_mean"]
     assert "custom_curves" in plan.output_plan.specs
     assert plan.output_plan.plot_semantics["A.y"]["metric_key"] == "Q_Y_mean"
-    assert plan.output_plan.plot_semantics["D.w"]["metric_key"] == "Q_W_SIGN_ALIGNED_mean"
+    assert plan.output_plan.plot_semantics["D.w"]["metric_key"] == "Q_W_SIGN_GAUGE_mean"
     assert (
         plan.output_plan.plot_semantics["A.y"]["semantic_candidates"][0]["canonical_key"]
-        == "measurement.full.teacher_student.Q_Y_projection"
+        == "measurement.full.teacher_student.Q_Y_fit"
     )
-    assert plan.output_plan.metric_semantics["Q_W_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_projection"
+    assert plan.output_plan.metric_semantics["Q_W_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_overlap"
     assert (
-        plan.output_plan.metric_semantics["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"]
-        == "latent.W.teacher_student.Q_W_SIGN_ALIGNED"
+        plan.output_plan.metric_semantics["Q_W_SIGN_GAUGE_mean"][0]["canonical_key"]
+        == "latent.W.teacher_student.Q_W_SIGN_GAUGE"
     )
 
 
 def test_flat_key_metric_semantics_split_prime_projection_and_replica_variants():
     semantics = get_algorithm_metric_semantics("bigamp")
 
-    assert semantics["Q_W_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_projection"
+    assert semantics["Q_W_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_overlap"
     assert semantics["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
-    assert semantics["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_ALIGNED"
-    assert semantics["Q_X_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_projection"
+    assert semantics["Q_W_SIGN_GAUGE_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_GAUGE"
+    assert semantics["Q_X_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_overlap"
     assert semantics["Q_X_COS_ROOT_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_COS_ROOT"
-    assert semantics["Q_X_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_SIGN_ALIGNED"
+    assert semantics["Q_X_SIGN_GAUGE_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_SIGN_GAUGE"
     assert "physical_overlap_W_mean" not in semantics
     assert "MSE" not in semantics
     assert semantics["Q_W_replica_mean"][0]["canonical_key"] == "factor.W.replica.student_student.gram_cosine"

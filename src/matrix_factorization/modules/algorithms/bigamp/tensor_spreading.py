@@ -283,6 +283,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # Progress is tracked by runner, no print needed
             
             alpha_q_y_list = []
+            alpha_nmse_y_list = []
+            alpha_q_y_proj_abs_list = []
             alpha_qn_list = []
             alpha_qn_modes = [[] for _ in range(self.order)]
             
@@ -297,6 +299,10 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 )
                 
                 alpha_q_y_list.append(result['Q_Y'])
+                if 'NMSE_Y' in result:
+                    alpha_nmse_y_list.append(result['NMSE_Y'])
+                if 'Q_Y_PROJ_ABS' in result:
+                    alpha_q_y_proj_abs_list.append(result['Q_Y_PROJ_ABS'])
                 if 'Q_N' in result:
                     alpha_qn_list.append(result['Q_N'])
                 for d in range(self.order):
@@ -313,6 +319,20 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 'Q_Y_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
                 'Q_Y_observed_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
             }
+            if alpha_nmse_y_list:
+                mean_nmse = sum(alpha_nmse_y_list) / len(alpha_nmse_y_list)
+                nmse_std = (sum((q - mean_nmse)**2 for q in alpha_nmse_y_list) / max(1, len(alpha_nmse_y_list)-1)) ** 0.5 if len(alpha_nmse_y_list) > 1 else 0.0
+                self._batch_metrics[alpha]['NMSE_Y_mean'] = mean_nmse
+                self._batch_metrics[alpha]['NMSE_Y_observed_mean'] = mean_nmse
+                self._batch_metrics[alpha]['NMSE_Y_std'] = nmse_std
+                self._batch_metrics[alpha]['NMSE_Y_observed_std'] = nmse_std
+            if alpha_q_y_proj_abs_list:
+                mean_proj = sum(alpha_q_y_proj_abs_list) / len(alpha_q_y_proj_abs_list)
+                proj_std = (sum((q - mean_proj)**2 for q in alpha_q_y_proj_abs_list) / max(1, len(alpha_q_y_proj_abs_list)-1)) ** 0.5 if len(alpha_q_y_proj_abs_list) > 1 else 0.0
+                self._batch_metrics[alpha]['Q_Y_PROJ_ABS_mean'] = mean_proj
+                self._batch_metrics[alpha]['Q_Y_observed_PROJ_ABS_mean'] = mean_proj
+                self._batch_metrics[alpha]['Q_Y_PROJ_ABS_std'] = proj_std
+                self._batch_metrics[alpha]['Q_Y_observed_PROJ_ABS_std'] = proj_std
             if alpha_qn_list:
                 mean_qn = sum(alpha_qn_list) / len(alpha_qn_list)
                 self._batch_metrics[alpha]['Q_N_mean'] = mean_qn
@@ -563,18 +583,25 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                     mse = ((Y - Y_pred) ** 2).mean().item()
                 print(f"  Step {step + 1}/{self.max_steps}: MSE = {mse:.6f}")
         
-        # Compute final projection-first metrics
+        # Compute final FIT/NMSE metrics plus legacy projection diagnostics.
         Y_student = forward_pass_tensor(factors, F, hg.indices)
         norm_teacher_sq = (Y.flatten() ** 2).sum()
         if float(norm_teacher_sq.abs().item()) < 1e-12:
             Q_Y = 0.0
+            NMSE_Y = 1.0
+            Q_Y_PROJ_ABS = 0.0
         else:
-            Q_Y = float((Y_student.flatten() * Y.flatten()).sum().abs() / (norm_teacher_sq + 1e-12))
+            diff = Y_student.flatten() - Y.flatten()
+            NMSE_Y = float((diff * diff).sum() / (norm_teacher_sq + 1e-12))
+            Q_Y = 1.0 - NMSE_Y
+            Q_Y_PROJ_ABS = float((Y_student.flatten() * Y.flatten()).sum().abs() / (norm_teacher_sq + 1e-12))
         qn_modes = compute_tensor_factor_projection_overlaps(teacher_factors, factors)
         Q_N = sum(qn_modes) / len(qn_modes)
         
         result = {
             'Q_Y': Q_Y,
+            'NMSE_Y': NMSE_Y,
+            'Q_Y_PROJ_ABS': Q_Y_PROJ_ABS,
             'Q_N': Q_N,
             'alpha': alpha,
             'C': hg.C,

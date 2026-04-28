@@ -42,9 +42,11 @@ class MetricPayloadCheck:
             "metric_specs": list(self.metric_specs),
             "semantic_keys": dict(self.semantic_keys),
             "unexpected_keys": list(self.unexpected_keys),
-            "projection_policy": {
-                "formula": "absolute_projection",
-                "normalization": "teacher_norm_squared",
+            "metric_definition_policy": {
+                "metric_definition_profile": "physical_overlap_v1",
+                "Q_Y_formula": "1 - normalized_mse",
+                "Q_W_Q_X_normalization": "fixed_coordinate_count",
+                "legacy_projection_suffix": "_PROJ_ABS",
                 "teacher_norm_epsilon": 1e-12,
                 "degenerate_teacher_norm": "return_zero",
                 "clipped": False,

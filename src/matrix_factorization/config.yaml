@@ -184,7 +184,7 @@ output:
   # Heatmap 设置
   enable_heatmap: true     # 生成最终完整 heatmap/GIF
   rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
-  heatmap_metric: "Q_W_SIGN_ALIGNED" # Q_W_SIGN_ALIGNED=逐 channel sign-aligned heatmap；Q_W=raw projection
+  heatmap_metric: "Q_W_SIGN_GAUGE" # Q_W_SIGN_GAUGE=逐 channel sign-gauge heatmap；Q_W=raw physical overlap
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
   
   # =============================================================================
@@ -193,10 +193,11 @@ output:
   # 格式: 类别.指标[:R]，其中 :R = replica (学生-学生 overlap)
   #
   # 指标类别：
-  #   A (Projection): A.y=Q_Y  A.w=Q_W  A.x=Q_X
+  #   A (Formal):     A.y=Q_Y fit  A.w=Q_W physical overlap  A.x=Q_X physical overlap
   #   B (Cos root):  B.w=Q_W_COS_ROOT  B.x=Q_X_COS_ROOT
   #   C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
-  #   D (Sign align): D.w=Q_W_SIGN_ALIGNED  D.x=Q_X_SIGN_ALIGNED
+  #   D (Sign gauge): D.w=Q_W_SIGN_GAUGE  D.x=Q_X_SIGN_GAUGE
+  #   G (Scale gauge): G.w=Q_W_SCALE_GAUGE  G.x=Q_X_SCALE_GAUGE  G.wx=Q_WX_SCALE_GAUGE
   #   N (Tensor):     N.n=Q_N
   #
   # 示例: curves: [A.y, A.w, A.y:R] → Q_Y, Q_W, Q_Y(replica) 画同一张图
@@ -223,13 +224,17 @@ output:
       series_by: [onsager_policy]
       filename: qx_cos_root_by_onsager_policy.png
     - x: alpha
-      y: Q_W_SIGN_ALIGNED_mean
+      y: Q_W_SIGN_GAUGE_mean
       series_by: [onsager_policy]
-      filename: qw_sign_aligned_by_onsager_policy.png
+      filename: qw_sign_gauge_by_onsager_policy.png
     - x: alpha
-      y: Q_X_SIGN_ALIGNED_mean
+      y: Q_X_SIGN_GAUGE_mean
       series_by: [onsager_policy]
-      filename: qx_sign_aligned_by_onsager_policy.png
+      filename: qx_sign_gauge_by_onsager_policy.png
+    - x: alpha
+      y: Q_WX_SCALE_GAUGE_mean
+      series_by: [onsager_policy]
+      filename: qwqx_scale_gauge_by_onsager_policy.png
 
   # 多轴 scan 中每个外层 warmstart 组完成后，立即生成组内完整结果。
   group_results:

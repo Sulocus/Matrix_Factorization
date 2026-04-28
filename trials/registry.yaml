@@ -20,3 +20,27 @@ trials:
   - key: onsager_cold_200_m50
     status: active
     path: trials/active/onsager_cold_200_m50/trial.yaml
+  - key: adaptive_route_probe
+    status: active
+    path: trials/active/adaptive_route_probe/trial.yaml
+  - key: onsager_corrected_smoke
+    status: active
+    path: trials/active/onsager_corrected_smoke/trial.yaml
+  - key: onsager_damping_probe
+    status: active
+    path: trials/active/onsager_damping_probe/trial.yaml
+  - key: onsager_formal_shape_transition_smoke
+    status: active
+    path: trials/active/onsager_formal_shape_transition_smoke/trial.yaml
+  - key: onsager_group_transition_smoke
+    status: active
+    path: trials/active/onsager_group_transition_smoke/trial.yaml
+  - key: showcase_v4_warm_start
+    status: active
+    path: trials/active/showcase_v4_warm_start/trial.yaml
+  - key: showcase_v4_fixed_onsager_vs_no_onsager
+    status: active
+    path: trials/active/showcase_v4_fixed_onsager_vs_no_onsager/trial.yaml
+  - key: showcase_v4_warm_start_onsager
+    status: active
+    path: trials/active/showcase_v4_warm_start_onsager/trial.yaml

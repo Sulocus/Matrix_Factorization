@@ -1502,10 +1502,11 @@ def _validate_output_compatibility(plan: ExperimentPlan) -> None:
                 f"output '{spec.key}' 需要 {spec.requires}，但 algorithm "
                 f"'{plan.algorithm_spec.key}' 未声明兼容该 output。"
             )
-    if plan.output_options.get("heatmap_metric") == "Q_W":
+    heatmap_metric = str(plan.output_options.get("heatmap_metric", "") or "").upper()
+    if heatmap_metric in {"Q_W", "Q_W_SIGN_GAUGE", "Q_W_SIGN_ALIGNED", "D.W"}:
         has_factor_heatmap = "fallback_W_heatmap" in compatible or "tensor_heatmap" in compatible
         if not has_factor_heatmap:
-            plan.errors.append("heatmap_metric=Q_W 但当前 algorithm 没有 factor heatmap contract。")
+            plan.errors.append(f"heatmap_metric={heatmap_metric} 但当前 algorithm 没有 factor heatmap contract。")
 
 
 def _validate_custom_plot_metrics(plan: ExperimentPlan) -> None:
@@ -1699,7 +1700,7 @@ def _output_artifact_semantics(plan: ExperimentPlan) -> Dict[str, Dict[str, str]
             "canonical_key": "factor.W.teacher_student.gram_cosine",
             "result_role": "diagnostic",
             "source": "fallback W factor heatmap",
-            "heatmap_metric": "Q_W",
+            "heatmap_metric": heatmap_metric,
         }
     return semantics
 

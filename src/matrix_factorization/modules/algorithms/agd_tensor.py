@@ -169,19 +169,28 @@ class TensorAGD(AlgorithmBase):
             optimizer.step()
         
         # 7. Final Result
-        # Compute Q_Y metric to store in _last_result for logging
+        # Compute Q_Y FIT metric to store in _last_result for logging.
         with torch.no_grad():
             T_student = self.cp_contract_factors(student_factors)
             inner = (T_student * T_teacher).sum()
-            norm_s = T_student.norm()
-            norm_t = T_teacher.norm()
-            q_y = (inner / (norm_s * norm_t + 1e-12)).item()
+            norm_teacher_sq = (T_teacher * T_teacher).sum()
             mse = ((T_student - T_teacher) ** 2).mean().item()
+            if float(norm_teacher_sq.abs().item()) < 1e-12:
+                nmse_y = 1.0
+                q_y = 0.0
+                q_y_proj_abs = 0.0
+            else:
+                sse = ((T_student - T_teacher) ** 2).sum()
+                nmse_y = float(sse / (norm_teacher_sq + 1e-12))
+                q_y = 1.0 - nmse_y
+                q_y_proj_abs = float(inner.abs() / (norm_teacher_sq + 1e-12))
             
             # Save for metrics reporting
             self._last_result = {
                 'alpha': alpha,
                 'Q_Y': q_y,
+                'NMSE_Y': nmse_y,
+                'Q_Y_PROJ_ABS': q_y_proj_abs,
                 'MSE': mse
             }
             

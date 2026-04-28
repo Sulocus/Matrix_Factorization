@@ -1505,8 +1505,9 @@ class ExperimentRunner:
             "Q_Y_unobserved_mean",
             "Q_W_COS_ROOT_mean",
             "Q_X_COS_ROOT_mean",
-            "Q_W_SIGN_ALIGNED_mean",
-            "Q_X_SIGN_ALIGNED_mean",
+            "Q_W_SIGN_GAUGE_mean",
+            "Q_X_SIGN_GAUGE_mean",
+            "Q_WX_SCALE_GAUGE_mean",
         ]:
             values = [
                 (scan_value, single.metrics.get(metric_key))

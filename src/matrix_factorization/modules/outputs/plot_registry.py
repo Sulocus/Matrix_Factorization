@@ -6,10 +6,11 @@ Plot Registry - 绘图指标映射表
   - 不加 :R = 教师-学生
 
 类别:
-  A: Projection metrics (Q_Y, Q_W, Q_X)
+  A: Formal metrics (Q_Y fit, Q_W/Q_X physical overlap)
   B: Cos-root diagnostics (Q_W_COS_ROOT, Q_X_COS_ROOT)
   C: Observed Split (Q_Y_observed, Q_Y_unobserved)
-  D: Sign-aligned diagnostics (Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED)
+  D: Sign-gauge diagnostics (Q_W_SIGN_GAUGE, Q_X_SIGN_GAUGE)
+  G: Scale-gauge diagnostics (Q_W_SCALE_GAUGE, Q_X_SCALE_GAUGE, Q_WX_SCALE_GAUGE)
 
 用法:
     plots:
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # 指标映射表: (类别, 指标代码) -> 内部 metric 名称
 METRIC_MAP: Dict[Tuple[str, str], str] = {
-    # A: Projection metrics
+    # A: Formal metrics
     ('A', 'y'): 'Q_Y',
     ('A', 'w'): 'Q_W',
     ('A', 'x'): 'Q_X',
@@ -40,8 +41,13 @@ METRIC_MAP: Dict[Tuple[str, str], str] = {
     ('C', 'u'): 'Q_Y_unobserved',
 
     # D: Per-channel sign-gauge diagnostics
-    ('D', 'w'): 'Q_W_SIGN_ALIGNED',
-    ('D', 'x'): 'Q_X_SIGN_ALIGNED',
+    ('D', 'w'): 'Q_W_SIGN_GAUGE',
+    ('D', 'x'): 'Q_X_SIGN_GAUGE',
+
+    # G: Joint diagonal scale-gauge diagnostics
+    ('G', 'w'): 'Q_W_SCALE_GAUGE',
+    ('G', 'x'): 'Q_X_SCALE_GAUGE',
+    ('G', 'wx'): 'Q_WX_SCALE_GAUGE',
     
     # N: Tensor latent factor projection
     ('N', 'n'): 'Q_N',
@@ -165,10 +171,11 @@ def print_metric_table():
         if cat != current_category:
             current_category = cat
             cat_names = {
-                'A': 'Projection',
+                'A': 'Formal',
                 'B': 'Cos root',
                 'C': 'Observed split',
-                'D': 'Sign aligned',
+                'D': 'Sign gauge',
+                'G': 'Scale gauge',
                 'N': 'Tensor',
             }
             print(f"\n{cat} ({cat_names.get(cat, cat)}):")

@@ -2,9 +2,9 @@
 Combined metrics calculator for flexible configuration.
 
 Supports selecting which metrics to compute:
-- Q_Y: measurement projection overlap
-- Q_W, Q_X: coordinate projection overlaps
-- Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED: per-channel sign-gauge diagnostics
+- Q_Y: measurement FIT=1-NMSE
+- Q_W, Q_X: fixed-denominator physical overlaps
+- Q_W_SIGN_GAUGE, Q_X_SIGN_GAUGE: per-channel sign-gauge diagnostics
 - Q_W_COS_ROOT, Q_X_COS_ROOT: Cos-root diagnostics
 - Q_Y_unobserved: Q_Y on unobserved positions only
 - Replica: Pairwise replica overlaps
@@ -18,10 +18,13 @@ import torch
 
 from .overlap import (
     cos_overlap_root,
+    normalized_mse_and_fit,
+    physical_overlap_fixed,
     projection_abs,
-    sign_aligned_projection_abs,
+    scale_gauge_overlaps_fixed,
+    sign_gauge_overlap_fixed,
+    _compute_nmse_fit_masked,
 )
-from .qy_unobserved import compute_qy_unobserved, compute_qy_split
 
 
 # Available metric keys
@@ -29,10 +32,15 @@ ALL_METRICS = {
     "Q_Y",           # measurement projection
     "Q_W",           # W coordinate projection
     "Q_X",           # X coordinate projection
-    "Q_W_SIGN_ALIGNED", # W sign-gauge-aligned diagnostic
-    "Q_X_SIGN_ALIGNED", # X sign-gauge-aligned diagnostic
+    "Q_W_SIGN_GAUGE", # W sign-gauge diagnostic
+    "Q_X_SIGN_GAUGE", # X sign-gauge diagnostic
+    "Q_W_SIGN_ALIGNED", # legacy alias
+    "Q_X_SIGN_ALIGNED", # legacy alias
     "Q_W_COS_ROOT", # W Cos-root diagnostic
     "Q_X_COS_ROOT", # X Cos-root diagnostic
+    "Q_W_SCALE_GAUGE",
+    "Q_X_SCALE_GAUGE",
+    "Q_WX_SCALE_GAUGE",
     "Q_Y_unobserved", # Q_Y on unobserved positions
     "Q_Y_observed",  # Q_Y on observed positions
 }
@@ -48,13 +56,17 @@ METRIC_ALIASES = {
     "q_x": "Q_X",
     "qw_sign": "Q_W_SIGN_ALIGNED",
     "qx_sign": "Q_X_SIGN_ALIGNED",
-    "sign_aligned": {"Q_W_SIGN_ALIGNED", "Q_X_SIGN_ALIGNED"},
+    "qw_sign_gauge": "Q_W_SIGN_GAUGE",
+    "qx_sign_gauge": "Q_X_SIGN_GAUGE",
+    "sign_gauge": {"Q_W_SIGN_GAUGE", "Q_X_SIGN_GAUGE"},
+    "sign_aligned": {"Q_W_SIGN_GAUGE", "Q_X_SIGN_GAUGE"},
     "qw_cos_root": "Q_W_COS_ROOT",
     "qx_cos_root": "Q_X_COS_ROOT",
     "qw_gram_root": "Q_W_COS_ROOT",
     "qx_gram_root": "Q_X_COS_ROOT",
     "cos_root": {"Q_W_COS_ROOT", "Q_X_COS_ROOT"},
     "gram_root": {"Q_W_COS_ROOT", "Q_X_COS_ROOT"},
+    "scale_gauge": {"Q_W_SCALE_GAUGE", "Q_X_SCALE_GAUGE", "Q_WX_SCALE_GAUGE"},
     "qy_unobs": "Q_Y_unobserved",
     "unobserved": "Q_Y_unobserved",
 }
@@ -62,6 +74,8 @@ METRIC_ALIASES = {
 LEGACY_METRIC_ALIASES = {
     "Q_W_GRAM_ROOT": "Q_W_COS_ROOT",
     "Q_X_GRAM_ROOT": "Q_X_COS_ROOT",
+    "Q_W_SIGN_ALIGNED": "Q_W_SIGN_GAUGE",
+    "Q_X_SIGN_ALIGNED": "Q_X_SIGN_GAUGE",
 }
 
 
@@ -137,27 +151,41 @@ class CombinedMetrics:
 
         # Compute requested metrics
         if "Q_Y" in self.metrics:
-            results["Q_Y"] = projection_abs(Y_student, Y_teacher)
+            nmse, fit = normalized_mse_and_fit(Y_student, Y_teacher)
+            results["NMSE_Y"] = nmse
+            results["Q_Y"] = fit
+
+        if "Q_Y_PROJ_ABS" in self.metrics:
+            results["Q_Y_PROJ_ABS"] = projection_abs(Y_student, Y_teacher)
 
         if "Q_W" in self.metrics:
-            results["Q_W"] = projection_abs(W_student, W_teacher)
+            results["Q_W"] = physical_overlap_fixed(W_student, W_teacher)
 
         if "Q_X" in self.metrics:
-            results["Q_X"] = projection_abs(X_student, X_teacher)
+            results["Q_X"] = physical_overlap_fixed(X_student, X_teacher)
 
-        if "Q_W_SIGN_ALIGNED" in self.metrics:
-            results["Q_W_SIGN_ALIGNED"] = sign_aligned_projection_abs(
+        if "Q_W_PROJ_ABS" in self.metrics:
+            results["Q_W_PROJ_ABS"] = projection_abs(W_student, W_teacher)
+
+        if "Q_X_PROJ_ABS" in self.metrics:
+            results["Q_X_PROJ_ABS"] = projection_abs(X_student, X_teacher)
+
+        if "Q_W_SIGN_GAUGE" in self.metrics:
+            results["Q_W_SIGN_GAUGE"] = sign_gauge_overlap_fixed(
                 W_student,
                 W_teacher,
                 latent_axis=-1,
             )
 
-        if "Q_X_SIGN_ALIGNED" in self.metrics:
-            results["Q_X_SIGN_ALIGNED"] = sign_aligned_projection_abs(
+        if "Q_X_SIGN_GAUGE" in self.metrics:
+            results["Q_X_SIGN_GAUGE"] = sign_gauge_overlap_fixed(
                 X_student,
                 X_teacher,
                 latent_axis=0,
             )
+
+        if {"Q_W_SCALE_GAUGE", "Q_X_SCALE_GAUGE", "Q_WX_SCALE_GAUGE"} & self.metrics:
+            results.update(scale_gauge_overlaps_fixed(W_student, X_student, W_teacher, X_teacher))
 
         if "Q_W_COS_ROOT" in self.metrics:
             results["Q_W_COS_ROOT"] = cos_overlap_root(W_student, W_teacher, use_left=True)
@@ -168,11 +196,14 @@ class CombinedMetrics:
         # Unobserved metrics require mask
         if mask is not None:
             if "Q_Y_unobserved" in self.metrics:
-                results["Q_Y_unobserved"] = compute_qy_unobserved(Y_student, Y_teacher, mask)
+                nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=False)
+                results["NMSE_Y_unobserved"] = nmse
+                results["Q_Y_unobserved"] = fit
 
             if "Q_Y_observed" in self.metrics:
-                split = compute_qy_split(Y_student, Y_teacher, mask)
-                results["Q_Y_observed"] = split["Q_Y_observed"]
+                nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=True)
+                results["NMSE_Y_observed"] = nmse
+                results["Q_Y_observed"] = fit
 
         return results
 

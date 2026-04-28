@@ -186,7 +186,7 @@ def test_heatmap_metric_can_use_w_sign_aligned(tmp_path, monkeypatch):
     )
 
     assert captured["prefix"].startswith("heatmap_W_sign")
-    assert "Sign-Aligned" in captured["metric_name"]
+    assert "Sign-Gauge" in captured["metric_name"]
     assert captured["matrix"].shape == (3, 3)
 
 

@@ -11,6 +11,100 @@ PROJECTION_NORM_EPS = 1e-12
 
 
 @torch.no_grad()
+def physical_overlap_fixed(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    eps: float = PROJECTION_NORM_EPS,
+) -> float:
+    """
+    Fixed-denominator latent physical overlap.
+
+    Q = <student, teacher> / numel(teacher)
+
+    This is the paper-style coordinate overlap for O(1) latent variables.  It
+    deliberately does not divide by ||teacher||^2, so a finite Gaussian teacher
+    has perfect-match overlap equal to its empirical second moment.
+    """
+    if student.shape != teacher.shape:
+        raise ValueError(
+            "physical_overlap_fixed requires student and teacher to have "
+            f"the same shape, got {tuple(student.shape)} and {tuple(teacher.shape)}"
+        )
+    denom = max(int(teacher.numel()), 1)
+    dot = (student.flatten().float() * teacher.flatten().float()).sum()
+    if not torch.isfinite(dot):
+        return 0.0
+    return float(dot / (float(denom) + eps))
+
+
+@torch.no_grad()
+def student_self_overlap_fixed(student: torch.Tensor, eps: float = PROJECTION_NORM_EPS) -> float:
+    """Fixed-denominator student self-overlap R = <student, student> / numel."""
+    denom = max(int(student.numel()), 1)
+    val = (student.flatten().float() * student.flatten().float()).sum()
+    if not torch.isfinite(val):
+        return 0.0
+    return float(val / (float(denom) + eps))
+
+
+@torch.no_grad()
+def sign_gauge_overlap_fixed(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    latent_axis: int,
+    eps: float = PROJECTION_NORM_EPS,
+) -> float:
+    """
+    Fixed-denominator overlap after quotienting per-channel sign gauge.
+
+    Q = sum_k |<student_k, teacher_k>| / numel(teacher)
+    """
+    if student.shape != teacher.shape:
+        raise ValueError(
+            "sign_gauge_overlap_fixed requires student and teacher to have "
+            f"the same shape, got {tuple(student.shape)} and {tuple(teacher.shape)}"
+        )
+    if student.dim() == 0:
+        return abs(physical_overlap_fixed(student, teacher, eps=eps))
+
+    latent_axis = latent_axis % student.dim()
+    perm = [axis for axis in range(student.dim()) if axis != latent_axis] + [latent_axis]
+    student_by_channel = student.float().permute(perm).reshape(-1, student.shape[latent_axis])
+    teacher_by_channel = teacher.float().permute(perm).reshape(-1, teacher.shape[latent_axis])
+    per_channel_dot = (student_by_channel * teacher_by_channel).sum(dim=0).abs()
+    denom = max(int(teacher.numel()), 1)
+    return float(per_channel_dot.sum() / (float(denom) + eps))
+
+
+@torch.no_grad()
+def normalized_mse_and_fit(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    eps: float = PROJECTION_NORM_EPS,
+) -> tuple[float, float]:
+    """
+    Return (NMSE, FIT) for an output/evaluation vector.
+
+    NMSE = ||student - teacher||^2 / ||teacher||^2
+    FIT = 1 - NMSE
+    """
+    student_flat = student.flatten().float()
+    teacher_flat = teacher.flatten().float()
+    if teacher_flat.numel() == 0:
+        return 1.0, 0.0
+    denom = (teacher_flat * teacher_flat).sum()
+    if float(denom.abs().item()) < eps:
+        return 1.0, 0.0
+    diff = student_flat - teacher_flat
+    nmse = (diff * diff).sum() / (denom + eps)
+    if not torch.isfinite(nmse):
+        return 1.0, 0.0
+    fit = 1.0 - float(nmse)
+    return float(nmse), fit
+
+
+@torch.no_grad()
 def projection_abs(student: torch.Tensor, teacher: torch.Tensor, eps: float = PROJECTION_NORM_EPS) -> float:
     """
     Absolute projection overlap used by the formal projection-first metrics.
@@ -63,6 +157,93 @@ def sign_aligned_projection_abs(
         return 0.0
     per_channel_dot = (student_by_channel * teacher_by_channel).sum(dim=0).abs()
     return float(per_channel_dot.sum() / (norm_teacher_sq + eps))
+
+
+@torch.no_grad()
+def sign_gauge_projection_abs(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    latent_axis: int,
+    eps: float = PROJECTION_NORM_EPS,
+) -> float:
+    """Legacy alias for the old teacher-norm sign-aligned projection."""
+    return sign_aligned_projection_abs(student, teacher, latent_axis=latent_axis, eps=eps)
+
+
+def _best_scale_gauge_scalar_from_sums(a: float, b: float, c: float, d: float) -> float:
+    """Solve one channel of the diagonal scale-gauge alignment objective."""
+    if not np.all(np.isfinite([a, b, c, d])):
+        return float("nan")
+    if a <= 1e-18 or c <= 1e-18:
+        return 1.0
+
+    candidates: list[float] = []
+    try:
+        roots = np.roots([a, -b, 0.0, d, -c])
+    except (FloatingPointError, ValueError):
+        roots = []
+    for root in roots:
+        if abs(root.imag) < 1e-8 and abs(root.real) > 1e-12:
+            candidates.append(float(root.real))
+    scale = float(np.sqrt(c / a))
+    candidates.extend([scale, -scale, 1.0, -1.0])
+
+    def objective(k: float) -> float:
+        return float(a * k * k - 2.0 * b * k + c / (k * k) - 2.0 * d / k)
+
+    return min(candidates, key=objective)
+
+
+@torch.no_grad()
+def scale_gauge_overlaps_fixed(
+    W_student: torch.Tensor,
+    X_student: torch.Tensor,
+    W_teacher: torch.Tensor,
+    X_teacher: torch.Tensor,
+    eps: float = PROJECTION_NORM_EPS,
+) -> Dict[str, float]:
+    """Joint diagonal scale-gauge aligned W/X overlaps with fixed denominators."""
+    if W_student.shape != W_teacher.shape or X_student.shape != X_teacher.shape:
+        raise ValueError("scale_gauge_overlaps_fixed requires matching W and X teacher/student shapes")
+    if W_student.dim() != 2 or X_student.dim() != 2:
+        raise ValueError("scale_gauge_overlaps_fixed expects W=(N1,M) and X=(M,N2)")
+    if W_student.shape[1] != X_student.shape[0]:
+        raise ValueError("W latent dimension and X latent dimension must match")
+
+    W_s = W_student.detach().float().cpu().numpy().astype(np.float64)
+    X_s = X_student.detach().float().cpu().numpy().astype(np.float64)
+    W_t = W_teacher.detach().float().cpu().numpy().astype(np.float64)
+    X_t = X_teacher.detach().float().cpu().numpy().astype(np.float64)
+    M = int(W_s.shape[1])
+    w_dot = 0.0
+    x_dot = 0.0
+    k_values = np.empty(M, dtype=np.float64)
+    for mu in range(M):
+        a = float(np.sum(W_s[:, mu] * W_s[:, mu]))
+        b = float(np.sum(W_s[:, mu] * W_t[:, mu]))
+        c = float(np.sum(X_s[mu, :] * X_s[mu, :]))
+        d = float(np.sum(X_s[mu, :] * X_t[mu, :]))
+        k = _best_scale_gauge_scalar_from_sums(a, b, c, d)
+        if not np.isfinite(k) or abs(k) <= eps:
+            return {
+                "Q_W_SCALE_GAUGE": float("nan"),
+                "Q_X_SCALE_GAUGE": float("nan"),
+                "Q_WX_SCALE_GAUGE": float("nan"),
+                "median_abs_log_k": float("nan"),
+            }
+        k_values[mu] = k
+        w_dot += k * b
+        x_dot += (1.0 / k) * d
+
+    q_w = float(w_dot / (float(W_t.size) + eps))
+    q_x = float(x_dot / (float(X_t.size) + eps))
+    return {
+        "Q_W_SCALE_GAUGE": q_w,
+        "Q_X_SCALE_GAUGE": q_x,
+        "Q_WX_SCALE_GAUGE": 0.5 * (q_w + q_x),
+        "median_abs_log_k": float(np.median(np.abs(np.log(np.maximum(np.abs(k_values), eps))))),
+    }
 
 
 @torch.no_grad()
@@ -239,7 +420,7 @@ def compute_all_metrics(
         mask: Observation mask (required for Q_Y_unobserved/Q_Y_observed)
         metrics_to_compute: List of metric names to compute.
             If None, computes all standard metrics.
-            Valid names: Q_W, Q_X, Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED,
+            Valid names: Q_W, Q_X, Q_W_SIGN_GAUGE, Q_X_SIGN_GAUGE,
                         Q_W_COS_ROOT, Q_X_COS_ROOT, Q_Y,
                         Q_Y_unobserved, Q_Y_observed
 
@@ -251,8 +432,8 @@ def compute_all_metrics(
         metrics_to_compute = [
             'Q_W',
             'Q_X',
-            'Q_W_SIGN_ALIGNED',
-            'Q_X_SIGN_ALIGNED',
+            'Q_W_SIGN_GAUGE',
+            'Q_X_SIGN_GAUGE',
             'Q_W_COS_ROOT',
             'Q_X_COS_ROOT',
             'Q_Y',
@@ -261,6 +442,8 @@ def compute_all_metrics(
         legacy_metric_aliases = {
             'Q_W_GRAM_ROOT': 'Q_W_COS_ROOT',
             'Q_X_GRAM_ROOT': 'Q_X_COS_ROOT',
+            'Q_W_SIGN_ALIGNED': 'Q_W_SIGN_GAUGE',
+            'Q_X_SIGN_ALIGNED': 'Q_X_SIGN_GAUGE',
         }
         metrics_to_compute = [legacy_metric_aliases.get(metric, metric) for metric in metrics_to_compute]
 
@@ -273,16 +456,26 @@ def compute_all_metrics(
 
     # Compute requested metrics dynamically
     if 'Q_W' in metrics_to_compute:
-        results['Q_W'] = projection_abs(W_student, W_teacher)
+        results['Q_W'] = physical_overlap_fixed(W_student, W_teacher)
 
     if 'Q_X' in metrics_to_compute:
-        results['Q_X'] = projection_abs(X_student, X_teacher)
+        results['Q_X'] = physical_overlap_fixed(X_student, X_teacher)
 
-    if 'Q_W_SIGN_ALIGNED' in metrics_to_compute:
-        results['Q_W_SIGN_ALIGNED'] = sign_aligned_projection_abs(W_student, W_teacher, latent_axis=-1)
+    if 'Q_W_SIGN_GAUGE' in metrics_to_compute:
+        results['Q_W_SIGN_GAUGE'] = sign_gauge_overlap_fixed(W_student, W_teacher, latent_axis=-1)
 
-    if 'Q_X_SIGN_ALIGNED' in metrics_to_compute:
-        results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_student, X_teacher, latent_axis=0)
+    if 'Q_X_SIGN_GAUGE' in metrics_to_compute:
+        results['Q_X_SIGN_GAUGE'] = sign_gauge_overlap_fixed(X_student, X_teacher, latent_axis=0)
+
+    if {
+        'Q_W_SCALE_GAUGE',
+        'Q_X_SCALE_GAUGE',
+        'Q_WX_SCALE_GAUGE',
+        'median_abs_log_k',
+    } & set(metrics_to_compute):
+        scale_metrics = scale_gauge_overlaps_fixed(W_student, X_student, W_teacher, X_teacher)
+        results.update(scale_metrics)
+        results['median_abs_log_g'] = scale_metrics['median_abs_log_k']
 
     if 'Q_W_COS_ROOT' in metrics_to_compute:
         results['Q_W_COS_ROOT'] = cos_overlap_root(W_student, W_teacher, use_left=True)
@@ -291,7 +484,18 @@ def compute_all_metrics(
         results['Q_X_COS_ROOT'] = cos_overlap_root(X_student, X_teacher, use_left=False)
 
     if 'Q_Y' in metrics_to_compute:
-        results['Q_Y'] = projection_abs(Y_student, Y_teacher)
+        nmse, fit = normalized_mse_and_fit(Y_student, Y_teacher)
+        results['NMSE_Y'] = nmse
+        results['Q_Y'] = fit
+
+    if 'Q_W_PROJ_ABS' in metrics_to_compute:
+        results['Q_W_PROJ_ABS'] = projection_abs(W_student, W_teacher)
+
+    if 'Q_X_PROJ_ABS' in metrics_to_compute:
+        results['Q_X_PROJ_ABS'] = projection_abs(X_student, X_teacher)
+
+    if 'Q_Y_PROJ_ABS' in metrics_to_compute:
+        results['Q_Y_PROJ_ABS'] = projection_abs(Y_student, Y_teacher)
 
     # New Physical Overlap Metrics
     if 'physical_overlap_Y' in metrics_to_compute:
@@ -311,10 +515,20 @@ def compute_all_metrics(
     # Q_Y_unobserved and Q_Y_observed require mask
     if mask is not None:
         if 'Q_Y_unobserved' in metrics_to_compute:
-            results['Q_Y_unobserved'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=False)
+            nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=False)
+            results['NMSE_Y_unobserved'] = nmse
+            results['Q_Y_unobserved'] = fit
 
         if 'Q_Y_observed' in metrics_to_compute:
-            results['Q_Y_observed'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)
+            nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=True)
+            results['NMSE_Y_observed'] = nmse
+            results['Q_Y_observed'] = fit
+
+        if 'Q_Y_observed_PROJ_ABS' in metrics_to_compute:
+            results['Q_Y_observed_PROJ_ABS'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)
+
+        if 'Q_Y_unobserved_PROJ_ABS' in metrics_to_compute:
+            results['Q_Y_unobserved_PROJ_ABS'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=False)
 
         # Physical overlap on observed/unobserved positions
         if 'physical_overlap_Y_observed' in metrics_to_compute:
@@ -366,6 +580,23 @@ def _compute_qy_masked(
         return 0.0
 
     return projection_abs(y_s, y_t)
+
+
+@torch.no_grad()
+def _compute_nmse_fit_masked(
+    Y_student: torch.Tensor,
+    Y_teacher: torch.Tensor,
+    mask: torch.Tensor,
+    observed: bool = False,
+) -> tuple[float, float]:
+    """Compute (NMSE, FIT) on observed or unobserved positions."""
+    if mask.dim() == 3:
+        mask = mask[0]
+
+    selection_mask = mask > 0.5 if observed else mask < 0.5
+    y_s = Y_student[selection_mask].flatten()
+    y_t = Y_teacher[selection_mask].flatten()
+    return normalized_mse_and_fit(y_s, y_t)
 
 
 @torch.no_grad()

@@ -3,8 +3,8 @@ Evaluation metrics for random spreading model.
 
 Key difference from standard metrics:
 - Q_Y uses the same F coefficients for both teacher and student.
-- Formal Q_Y is absolute projection, not cosine or reconstruction error.
-- Q_W/Q_X are coordinate projection overlaps; Cos-root metrics are diagnostics.
+- Formal Q_Y is FIT = 1 - NMSE on the configured measurement set.
+- Q_W/Q_X are fixed-denominator physical overlaps; Cos-root metrics are diagnostics.
 """
 
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ import torch
 from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING
 
 from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
-from .overlap import sign_aligned_projection_abs
+from .overlap import normalized_mse_and_fit, physical_overlap_fixed, projection_abs, sign_gauge_overlap_fixed
 
 if TYPE_CHECKING:
     from ..teachers.random_spreading import SpreadingDataParallel
@@ -73,6 +73,15 @@ def _projection_abs_batch(student: torch.Tensor, teacher: torch.Tensor, reduce_d
 
 
 @torch.no_grad()
+def _fixed_overlap_batch(student: torch.Tensor, teacher: torch.Tensor, reduce_dims: tuple[int, ...]) -> torch.Tensor:
+    dot = (student.float() * teacher.float()).sum(dim=reduce_dims)
+    denom = 1
+    for dim in reduce_dims:
+        denom *= int(student.shape[dim])
+    return (dot / (float(max(denom, 1)) + PROJECTION_NORM_EPS)).float()
+
+
+@torch.no_grad()
 def _sign_aligned_projection_abs_batch(
     student: torch.Tensor,
     teacher: torch.Tensor,
@@ -97,12 +106,37 @@ def _sign_aligned_projection_abs_batch(
 
 
 @torch.no_grad()
+def _sign_gauge_overlap_fixed_batch(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    channel_sum_dim: int,
+    channel_axis_after_sum: int = -1,
+) -> torch.Tensor:
+    per_channel_dot = (student.float() * teacher.float()).sum(dim=channel_sum_dim).abs()
+    if channel_axis_after_sum != -1:
+        per_channel_dot = per_channel_dot.movedim(channel_axis_after_sum, -1)
+    denom = float(max(int(teacher.expand_as(student).shape[-2] * teacher.expand_as(student).shape[-1]), 1))
+    return (per_channel_dot.sum(dim=-1) / (denom + PROJECTION_NORM_EPS)).float()
+
+
+@torch.no_grad()
 def _projection_abs_from_sums(dot: torch.Tensor, norm_teacher_sq: torch.Tensor) -> torch.Tensor:
     return torch.where(
         norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
         torch.zeros_like(dot, dtype=torch.float32),
         (dot.abs() / (norm_teacher_sq + PROJECTION_NORM_EPS)).float(),
     )
+
+
+@torch.no_grad()
+def _fit_from_sums(sse: torch.Tensor, norm_teacher_sq: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    nmse = torch.where(
+        norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
+        torch.ones_like(sse, dtype=torch.float32),
+        (sse / (norm_teacher_sq + PROJECTION_NORM_EPS)).float(),
+    )
+    return 1.0 - nmse, nmse
 
 
 @torch.no_grad()
@@ -117,12 +151,13 @@ def _observed_edge_projection_sums(
     sqrt_m_inv: float,
     edge_chunk_size: int,
     sample_chunk_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Accumulate spreading measurement projection sums on GPU in edge chunks."""
 
     S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
     dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    sse = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     chunk = max(1, int(edge_chunk_size))
     sample_chunk = max(1, min(int(sample_chunk_size), S))
     for sample_start in range(0, S, sample_chunk):
@@ -143,7 +178,9 @@ def _observed_edge_projection_sums(
             Y_teacher_chunk = Y_teacher[sample_start:sample_stop, start:stop]
             dot[sample_start:sample_stop] += (Y_student * Y_teacher_chunk).sum(dim=-1).float()
             norm_teacher_sq[sample_start:sample_stop] += (Y_teacher_chunk * Y_teacher_chunk).sum(dim=-1).float()
-    return dot, norm_teacher_sq
+            diff = Y_student - Y_teacher_chunk
+            sse[sample_start:sample_stop] += (diff * diff).sum(dim=-1).float()
+    return dot, norm_teacher_sq, sse
 
 
 @torch.no_grad()
@@ -159,12 +196,13 @@ def _heldout_edge_projection_sums(
     sqrt_m_inv: float,
     edge_chunk_size: int,
     sample_chunk_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Accumulate heldout spreading measurement projection sums on GPU."""
 
     S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
     dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    sse = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     chunk = max(1, int(edge_chunk_size))
     sample_chunk = max(1, min(int(sample_chunk_size), S))
     for sample_start in range(0, S, sample_chunk):
@@ -190,7 +228,9 @@ def _heldout_edge_projection_sums(
 
             dot[sample_start:sample_stop] += (Y_student * Y_teacher).sum(dim=-1).float()
             norm_teacher_sq[sample_start:sample_stop] += (Y_teacher * Y_teacher).sum(dim=-1).float()
-    return dot, norm_teacher_sq
+            diff = Y_student - Y_teacher
+            sse[sample_start:sample_stop] += (diff * diff).sum(dim=-1).float()
+    return dot, norm_teacher_sq, sse
 
 
 @torch.no_grad()
@@ -263,7 +303,7 @@ def _best_scale_gauge_scalar_from_sums(a: float, b: float, c: float, d: float) -
     """Solve the per-channel W/X scale-gauge alignment problem.
 
     The minimized objective is
-    ||g W_s[:,k] - W_t[:,k]||^2 + ||g^-1 X_s[k,:] - X_t[k,:]||^2.
+    ||k W_s[:,mu] - W_t[:,mu]||^2 + ||k^-1 X_s[mu,:] - X_t[mu,:]||^2.
     This mirrors scripts/analysis/posthoc_scale_gauge.py so runtime metrics
     and legacy posthoc diagnostics use the same convention.
     """
@@ -298,9 +338,9 @@ def _scale_gauge_projection_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute joint per-channel scale-gauge aligned factor diagnostics.
 
-    Inputs are W: (S, A, N1, M), X: (S, A, M, N2).  The scalar gauge g_k is
+    Inputs are W: (S, A, N1, M), X: (S, A, M, N2).  The scalar gauge k_mu is
     chosen jointly for W channel k and X channel k, so this is a diagnostic
-    for the diagonal scale gauge W_:k -> g_k W_:k, X_k: -> g_k^-1 X_k:.
+    for the diagonal scale gauge W_:mu -> k_mu W_:mu, X_mu: -> k_mu^-1 X_mu:.
     """
     device = W_students.device
     W_s = W_students.detach().float().cpu().numpy()
@@ -314,8 +354,8 @@ def _scale_gauge_projection_batch(
     c_vals = np.sum(X_s.astype(np.float64) * X_s.astype(np.float64), axis=3)
     d_vals = np.sum(X_s.astype(np.float64) * X_t.astype(np.float64)[None, None, :, :], axis=3)
 
-    w_teacher_norm = float(np.sum(W_t.astype(np.float64) * W_t.astype(np.float64))) + PROJECTION_NORM_EPS
-    x_teacher_norm = float(np.sum(X_t.astype(np.float64) * X_t.astype(np.float64))) + PROJECTION_NORM_EPS
+    w_denominator = float(np.prod(W_t.shape)) + PROJECTION_NORM_EPS
+    x_denominator = float(np.prod(X_t.shape)) + PROJECTION_NORM_EPS
     q_w = np.full((S, A), np.nan, dtype=np.float64)
     q_x = np.full((S, A), np.nan, dtype=np.float64)
     gauge_mag = np.full((S, A), np.nan, dtype=np.float64)
@@ -327,22 +367,22 @@ def _scale_gauge_projection_batch(
             gauges = np.empty(M, dtype=np.float64)
             valid = True
             for channel_idx in range(M):
-                g = _best_scale_gauge_scalar_from_sums(
+                k = _best_scale_gauge_scalar_from_sums(
                     float(a_vals[sample_idx, alpha_idx, channel_idx]),
                     float(b_vals[sample_idx, alpha_idx, channel_idx]),
                     float(c_vals[sample_idx, alpha_idx, channel_idx]),
                     float(d_vals[sample_idx, alpha_idx, channel_idx]),
                 )
-                if not np.isfinite(g) or abs(g) <= 1e-12:
+                if not np.isfinite(k) or abs(k) <= 1e-12:
                     valid = False
                     break
-                gauges[channel_idx] = g
-                w_dot += g * float(b_vals[sample_idx, alpha_idx, channel_idx])
-                x_dot += (1.0 / g) * float(d_vals[sample_idx, alpha_idx, channel_idx])
+                gauges[channel_idx] = k
+                w_dot += k * float(b_vals[sample_idx, alpha_idx, channel_idx])
+                x_dot += (1.0 / k) * float(d_vals[sample_idx, alpha_idx, channel_idx])
             if not valid:
                 continue
-            q_w[sample_idx, alpha_idx] = w_dot / w_teacher_norm
-            q_x[sample_idx, alpha_idx] = x_dot / x_teacher_norm
+            q_w[sample_idx, alpha_idx] = w_dot / w_denominator
+            q_x[sample_idx, alpha_idx] = x_dot / x_denominator
             gauge_mag[sample_idx, alpha_idx] = float(
                 np.median(np.abs(np.log(np.maximum(np.abs(gauges), 1e-12))))
             )
@@ -427,7 +467,7 @@ def compute_qy_spreading(
     Both teacher Y and student Y are computed at observed positions
     using the SAME F coefficients. This ensures fair comparison.
 
-    Q_Y = |<Y_student, Y_teacher>| / <Y_teacher, Y_teacher>
+    Q_Y = 1 - ||Y_student - Y_teacher||^2 / ||Y_teacher||^2
 
     Args:
         W_student: (N1, M) or (S, N1, M) student W matrix
@@ -435,7 +475,7 @@ def compute_qy_spreading(
         spreading_data: SpreadingData with F and teacher Y_values
 
     Returns:
-        Absolute projection overlap, not clipped.
+        Output fit, not clipped.
 
     Note:
         If W_student has batch dimension, returns mean Q_Y across samples.
@@ -463,7 +503,8 @@ def compute_qy_spreading(
 
     Y_teacher_values = spreading_data.Y_values
 
-    return float(_projection_abs_values(Y_student_values, Y_teacher_values))
+    _, fit = normalized_mse_and_fit(Y_student_values, Y_teacher_values)
+    return float(fit)
 
 
 @torch.no_grad()
@@ -574,7 +615,7 @@ def compute_all_metrics_spreading(
     Returns:
         Dictionary with all metrics
     """
-    from .overlap import cos_overlap_root, projection_abs
+    from .overlap import cos_overlap_root
 
     results = {}
 
@@ -586,16 +627,22 @@ def compute_all_metrics_spreading(
         W_s = W_student
         X_s = X_student
 
-    results['Q_W'] = projection_abs(W_s, W_teacher)
-    results['Q_X'] = projection_abs(X_s, X_teacher)
-    results['Q_W_SIGN_ALIGNED'] = sign_aligned_projection_abs(W_s, W_teacher, latent_axis=-1)
-    results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_s, X_teacher, latent_axis=0)
+    results['Q_W'] = physical_overlap_fixed(W_s, W_teacher)
+    results['Q_X'] = physical_overlap_fixed(X_s, X_teacher)
+    results['Q_W_PROJ_ABS'] = projection_abs(W_s, W_teacher)
+    results['Q_X_PROJ_ABS'] = projection_abs(X_s, X_teacher)
+    results['Q_W_SIGN_GAUGE'] = sign_gauge_overlap_fixed(W_s, W_teacher, latent_axis=-1)
+    results['Q_X_SIGN_GAUGE'] = sign_gauge_overlap_fixed(X_s, X_teacher, latent_axis=0)
+    results['Q_W_SIGN_ALIGNED'] = results['Q_W_SIGN_GAUGE']
+    results['Q_X_SIGN_ALIGNED'] = results['Q_X_SIGN_GAUGE']
     results['Q_W_COS_ROOT'] = cos_overlap_root(W_s, W_teacher, use_left=True)
     results['Q_X_COS_ROOT'] = cos_overlap_root(X_s, X_teacher, use_left=False)
 
     # Spreading-aware Q_Y
     results['Q_Y'] = compute_qy_spreading(W_student, X_student, spreading_data)
     results['Q_Y_observed'] = results['Q_Y']
+    results['Q_Y_PROJ_ABS'] = compute_physical_overlap_spreading(W_student, X_student, spreading_data)
+    results['Q_Y_observed_PROJ_ABS'] = results['Q_Y_PROJ_ABS']
 
     return results
 
@@ -648,22 +695,34 @@ def compute_all_metrics_spreading_parallel(
     W_local = W_students[:, local_alpha_indices]
     X_local = X_students[:, local_alpha_indices]
 
-    Q_W_all = _projection_abs_batch(
+    Q_W_all = _fixed_overlap_batch(
         W_local,
         W_teacher.unsqueeze(0).unsqueeze(0),
         reduce_dims=(-2, -1),
     )
-    Q_X_all = _projection_abs_batch(
+    Q_X_all = _fixed_overlap_batch(
         X_local,
         X_teacher.unsqueeze(0).unsqueeze(0),
         reduce_dims=(-2, -1),
     )
-    Q_W_sign_aligned_all = _sign_aligned_projection_abs_batch(
+    Q_W_proj_abs_all = _projection_abs_batch(
+        W_local,
+        W_teacher.unsqueeze(0).unsqueeze(0),
+        reduce_dims=(-2, -1),
+    )
+    Q_X_proj_abs_all = _projection_abs_batch(
+        X_local,
+        X_teacher.unsqueeze(0).unsqueeze(0),
+        reduce_dims=(-2, -1),
+    )
+    R_W_all = _fixed_overlap_batch(W_local, W_local, reduce_dims=(-2, -1))
+    R_X_all = _fixed_overlap_batch(X_local, X_local, reduce_dims=(-2, -1))
+    Q_W_sign_gauge_all = _sign_gauge_overlap_fixed_batch(
         W_local,
         W_teacher.unsqueeze(0).unsqueeze(0),
         channel_sum_dim=-2,
     )
-    Q_X_sign_aligned_all = _sign_aligned_projection_abs_batch(
+    Q_X_sign_gauge_all = _sign_gauge_overlap_fixed_batch(
         X_local,
         X_teacher.unsqueeze(0).unsqueeze(0),
         channel_sum_dim=-1,
@@ -674,6 +733,12 @@ def compute_all_metrics_spreading_parallel(
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_full_all = torch.zeros(S, output_A, device=device)
+    NMSE_Y_observed_all = torch.ones(S, output_A, device=device)
+    NMSE_Y_unobserved_all = torch.ones(S, output_A, device=device)
+    NMSE_Y_full_all = torch.ones(S, output_A, device=device)
+    Q_Y_observed_proj_abs_all = torch.zeros(S, output_A, device=device)
+    Q_Y_unobserved_proj_abs_all = torch.zeros(S, output_A, device=device)
+    Q_Y_full_proj_abs_all = torch.zeros(S, output_A, device=device)
     Q_W_replica_all = torch.zeros(output_A, device=device)
     Q_X_replica_all = torch.zeros(output_A, device=device)
     Q_W_prime_replica_all = torch.zeros(output_A, device=device)
@@ -694,7 +759,7 @@ def compute_all_metrics_spreading_parallel(
             X_a_t = X_students[:, local_alpha_idx].transpose(1, 2)
 
             Y_teacher_obs = spreading_data.Y_super[:, :C_k]
-            dot_obs, norm_obs = _observed_edge_projection_sums(
+            dot_obs, norm_obs, sse_obs = _observed_edge_projection_sums(
                 W_a,
                 X_a_t,
                 i_current,
@@ -705,7 +770,10 @@ def compute_all_metrics_spreading_parallel(
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
-            Q_Y_observed_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
+            q_obs, nmse_obs = _fit_from_sums(sse_obs, norm_obs)
+            Q_Y_observed_all[:, out_idx] = q_obs
+            NMSE_Y_observed_all[:, out_idx] = nmse_obs
+            Q_Y_observed_proj_abs_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
 
             N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
             h_i_all = torch.empty(S, C_k, dtype=torch.long, device=device)
@@ -748,7 +816,7 @@ def compute_all_metrics_spreading_parallel(
                         dtype=torch.int8,
                     ) * 2 - 1
 
-            dot_unobs, norm_unobs = _heldout_edge_projection_sums(
+            dot_unobs, norm_unobs, sse_unobs = _heldout_edge_projection_sums(
                 W_a,
                 X_a_t,
                 W_teacher,
@@ -760,9 +828,18 @@ def compute_all_metrics_spreading_parallel(
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
-            q_unobs = _projection_abs_from_sums(dot_unobs, norm_unobs)
+            q_unobs, nmse_unobs = _fit_from_sums(sse_unobs, norm_unobs)
             Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs, torch.zeros_like(q_unobs))
-            Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
+            NMSE_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, nmse_unobs, torch.ones_like(nmse_unobs))
+            Q_Y_unobserved_proj_abs_all[:, out_idx] = torch.where(
+                valid_samples,
+                _projection_abs_from_sums(dot_unobs, norm_unobs),
+                torch.zeros_like(q_unobs),
+            )
+            q_full, nmse_full = _fit_from_sums(sse_obs + sse_unobs, norm_obs + norm_unobs)
+            Q_Y_full_all[:, out_idx] = q_full
+            NMSE_Y_full_all[:, out_idx] = nmse_full
+            Q_Y_full_proj_abs_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
 
         w_root, w_replica, w_prime = _cos_root_and_replica_by_alpha(
             W_students[:, local_alpha_idx],
@@ -784,10 +861,20 @@ def compute_all_metrics_spreading_parallel(
     qy_mean, qy_std = _mean_std(Q_Y_full_all, dim=0)
     qy_obs_mean, qy_obs_std = _mean_std(Q_Y_observed_all, dim=0)
     qy_unobs_mean, qy_unobs_std = _mean_std(Q_Y_unobserved_all, dim=0)
+    nmse_y_mean, nmse_y_std = _mean_std(NMSE_Y_full_all, dim=0)
+    nmse_y_obs_mean, nmse_y_obs_std = _mean_std(NMSE_Y_observed_all, dim=0)
+    nmse_y_unobs_mean, nmse_y_unobs_std = _mean_std(NMSE_Y_unobserved_all, dim=0)
+    qy_proj_abs_mean, qy_proj_abs_std = _mean_std(Q_Y_full_proj_abs_all, dim=0)
+    qy_obs_proj_abs_mean, qy_obs_proj_abs_std = _mean_std(Q_Y_observed_proj_abs_all, dim=0)
+    qy_unobs_proj_abs_mean, qy_unobs_proj_abs_std = _mean_std(Q_Y_unobserved_proj_abs_all, dim=0)
     qw_mean, qw_std = _mean_std(Q_W_all, dim=0)
     qx_mean, qx_std = _mean_std(Q_X_all, dim=0)
-    qw_sign_aligned_mean, qw_sign_aligned_std = _mean_std(Q_W_sign_aligned_all, dim=0)
-    qx_sign_aligned_mean, qx_sign_aligned_std = _mean_std(Q_X_sign_aligned_all, dim=0)
+    qw_proj_abs_mean, qw_proj_abs_std = _mean_std(Q_W_proj_abs_all, dim=0)
+    qx_proj_abs_mean, qx_proj_abs_std = _mean_std(Q_X_proj_abs_all, dim=0)
+    rw_mean, rw_std = _mean_std(R_W_all, dim=0)
+    rx_mean, rx_std = _mean_std(R_X_all, dim=0)
+    qw_sign_gauge_mean, qw_sign_gauge_std = _mean_std(Q_W_sign_gauge_all, dim=0)
+    qx_sign_gauge_mean, qx_sign_gauge_std = _mean_std(Q_X_sign_gauge_all, dim=0)
     qw_cos_root_mean, qw_cos_root_std = _mean_std(Q_W_cos_root_all, dim=0)
     qx_cos_root_mean, qx_cos_root_std = _mean_std(Q_X_cos_root_all, dim=0)
     q_w_scale_gauge_all, q_x_scale_gauge_all, q_wx_scale_gauge_all, gauge_mag_all = _scale_gauge_projection_batch(
@@ -804,18 +891,42 @@ def compute_all_metrics_spreading_parallel(
     return {
         'Q_Y_mean': qy_mean,
         'Q_Y_std': qy_std,
+        'NMSE_Y_mean': nmse_y_mean,
+        'NMSE_Y_std': nmse_y_std,
         'Q_Y_observed_mean': qy_obs_mean,
         'Q_Y_observed_std': qy_obs_std,
+        'NMSE_Y_observed_mean': nmse_y_obs_mean,
+        'NMSE_Y_observed_std': nmse_y_obs_std,
         'Q_Y_unobserved_mean': qy_unobs_mean,
         'Q_Y_unobserved_std': qy_unobs_std,
+        'NMSE_Y_unobserved_mean': nmse_y_unobs_mean,
+        'NMSE_Y_unobserved_std': nmse_y_unobs_std,
+        'Q_Y_PROJ_ABS_mean': qy_proj_abs_mean,
+        'Q_Y_PROJ_ABS_std': qy_proj_abs_std,
+        'Q_Y_observed_PROJ_ABS_mean': qy_obs_proj_abs_mean,
+        'Q_Y_observed_PROJ_ABS_std': qy_obs_proj_abs_std,
+        'Q_Y_unobserved_PROJ_ABS_mean': qy_unobs_proj_abs_mean,
+        'Q_Y_unobserved_PROJ_ABS_std': qy_unobs_proj_abs_std,
         'Q_W_mean': qw_mean,
         'Q_W_std': qw_std,
         'Q_X_mean': qx_mean,
         'Q_X_std': qx_std,
-        'Q_W_SIGN_ALIGNED_mean': qw_sign_aligned_mean,
-        'Q_W_SIGN_ALIGNED_std': qw_sign_aligned_std,
-        'Q_X_SIGN_ALIGNED_mean': qx_sign_aligned_mean,
-        'Q_X_SIGN_ALIGNED_std': qx_sign_aligned_std,
+        'R_W_mean': rw_mean,
+        'R_W_std': rw_std,
+        'R_X_mean': rx_mean,
+        'R_X_std': rx_std,
+        'Q_W_PROJ_ABS_mean': qw_proj_abs_mean,
+        'Q_W_PROJ_ABS_std': qw_proj_abs_std,
+        'Q_X_PROJ_ABS_mean': qx_proj_abs_mean,
+        'Q_X_PROJ_ABS_std': qx_proj_abs_std,
+        'Q_W_SIGN_GAUGE_mean': qw_sign_gauge_mean,
+        'Q_W_SIGN_GAUGE_std': qw_sign_gauge_std,
+        'Q_X_SIGN_GAUGE_mean': qx_sign_gauge_mean,
+        'Q_X_SIGN_GAUGE_std': qx_sign_gauge_std,
+        'Q_W_SIGN_ALIGNED_mean': qw_sign_gauge_mean,
+        'Q_W_SIGN_ALIGNED_std': qw_sign_gauge_std,
+        'Q_X_SIGN_ALIGNED_mean': qx_sign_gauge_mean,
+        'Q_X_SIGN_ALIGNED_std': qx_sign_gauge_std,
         'Q_W_COS_ROOT_mean': qw_cos_root_mean,
         'Q_W_COS_ROOT_std': qw_cos_root_std,
         'Q_X_COS_ROOT_mean': qx_cos_root_mean,
@@ -826,6 +937,8 @@ def compute_all_metrics_spreading_parallel(
         'Q_X_SCALE_GAUGE_std': qx_scale_gauge_std,
         'Q_WX_SCALE_GAUGE_mean': qwx_scale_gauge_mean,
         'Q_WX_SCALE_GAUGE_std': qwx_scale_gauge_std,
+        'median_abs_log_k_mean': gauge_mag_mean,
+        'median_abs_log_k_std': gauge_mag_std,
         'median_abs_log_g_mean': gauge_mag_mean,
         'median_abs_log_g_std': gauge_mag_std,
         'Q_W_replica_mean': Q_W_replica_all,

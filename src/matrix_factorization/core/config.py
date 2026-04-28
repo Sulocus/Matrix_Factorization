@@ -82,8 +82,8 @@ class ExecutionConfig:
             'Q_Y',
             'Q_W',
             'Q_X',
-            'Q_W_SIGN_ALIGNED',
-            'Q_X_SIGN_ALIGNED',
+            'Q_W_SIGN_GAUGE',
+            'Q_X_SIGN_GAUGE',
             'Q_W_COS_ROOT',
             'Q_X_COS_ROOT',
         ]
@@ -104,7 +104,7 @@ class ExecutionConfig:
     # Heatmap configuration
     enable_heatmap: bool = False
     rsb_ordering: bool = False
-    heatmap_metric: str = "Q_Y" # "Q_W" (Factor Gram) or "Q_Y" (Tensor)
+    heatmap_metric: str = "Q_Y" # "Q_W_SIGN_GAUGE" for factor heatmap or "Q_Y" for tensor fit
 
 
 @dataclass
@@ -149,7 +149,7 @@ class Config:
         exec_data = data.get('execution', {})
         execution = ExecutionConfig(
             metrics_to_compute=exec_data.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_ALIGNED', 'Q_X_SIGN_ALIGNED', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_GAUGE', 'Q_X_SIGN_GAUGE', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),

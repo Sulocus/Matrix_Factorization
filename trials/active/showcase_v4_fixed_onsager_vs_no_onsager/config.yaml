@@ -1,0 +1,130 @@
+tensor_order: 2
+algorithm: bigamp_spreading
+teacher: standard
+
+teacher_config:
+  init_distribution: gaussian
+  mean_scale: 0.0
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  axes:
+    onsager_policy:
+      kind: composite
+      values:
+        onsager_fixed_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+        no_onsager:
+          spreading.onsager_correction: false
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.5
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 4.0
+        step: 0.1
+  continuation:
+    enabled: false
+    axis: alpha
+    order: descending
+    state_transfer: full_algorithm_state
+    observation_policy: nested_prefix
+    strict_state: true
+    adaptive_controller_state: reset
+
+training:
+  samples_per_alpha: 20
+  max_steps: 2000
+
+seeds:
+  model: 42
+  data: 42
+
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  learning_rate: 0.01
+  use_compile: true
+  compile_fallback_policy: allow
+  normalization_profile: paper_sparse_sampling
+  precision_profile: aggressive
+  precision_fallback_policy: allow
+  use_bf16: true
+  dtype_fallback_policy: allow
+  use_tf32: true
+  seed_partition_policy: partition_invariant
+  use_early_stop: false
+  target_loss_threshold: 1.0e-8
+  default_alpha: 1.0
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
+  adaptive_restart: false
+  restart_patience: 50
+  restart_noise: 0.1
+  acceptance_tolerance: 0.0
+  init_mode: random
+  init_overlap: 0.0
+  debug_verbose: false
+
+spreading:
+  f_distribution: ising
+  onsager_correction: false
+  allow_intra_connection: false
+  seed: 12345
+  chunk_size: 8192
+  tensor_order: 2
+
+output:
+  name: showcase_v4_fixed_onsager_vs_no_onsager
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  rsb_ordering: false
+  heatmap_metric: Q_W_SIGN_GAUGE
+  uniform_colormap: true
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      series_by: [onsager_policy]
+      filename: qy_fit_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_mean
+      series_by: [onsager_policy]
+      filename: qw_overlap_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_mean
+      series_by: [onsager_policy]
+      filename: qx_overlap_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_SIGN_GAUGE_mean
+      series_by: [onsager_policy]
+      filename: qw_sign_gauge_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_SIGN_GAUGE_mean
+      series_by: [onsager_policy]
+      filename: qx_sign_gauge_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_COS_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qw_cos_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_WX_SCALE_GAUGE_mean
+      series_by: [onsager_policy]
+      filename: qwqx_scale_gauge_by_onsager_policy.png
+  group_results:
+    enabled: false
+    save_tensors: false
+    enable_heatmap: false
+    write_plots: false

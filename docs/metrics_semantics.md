@@ -8,6 +8,39 @@
 - `MetricSemanticClass`：metric 的 canonical 语义类。
 - `get_metric_schema()`：生成写入 `metrics.json` 的 result schema metadata。
 
+## Schema v4: `physical_overlap_v1`
+
+当前 active schema v4 使用这些 canonical keys：
+
+```text
+measurement.full.teacher_student.Q_Y_fit
+measurement.observed.teacher_student.Q_Y_fit
+measurement.unobserved.teacher_student.Q_Y_fit
+measurement.full.teacher_student.NMSE_Y
+measurement.observed.teacher_student.NMSE_Y
+measurement.unobserved.teacher_student.NMSE_Y
+measurement.full.teacher_student.Q_Y_PROJ_ABS
+measurement.observed.teacher_student.Q_Y_PROJ_ABS
+measurement.unobserved.teacher_student.Q_Y_PROJ_ABS
+latent.W.teacher_student.Q_W_overlap
+latent.X.teacher_student.Q_X_overlap
+latent.W.teacher_student.Q_W_PROJ_ABS
+latent.X.teacher_student.Q_X_PROJ_ABS
+latent.W.student.R_W
+latent.X.student.R_X
+latent.W.teacher_student.Q_W_SIGN_GAUGE
+latent.X.teacher_student.Q_X_SIGN_GAUGE
+latent.W.teacher_student.Q_W_SCALE_GAUGE
+latent.X.teacher_student.Q_X_SCALE_GAUGE
+latent.WX.teacher_student.Q_WX_SCALE_GAUGE
+latent.WX.teacher_student.scale_gauge_magnitude
+latent.N.teacher_student.Q_N_overlap
+```
+
+`Q_Y_mean` 是 `1 - NMSE_Y`。`Q_W_mean`、`Q_X_mean`、`Q_N_mean`
+是固定分母 coordinate overlap。`*_PROJ_ABS` 是旧 schema v3
+absolute projection diagnostic。
+
 ## 读法
 
 每个 metric 至少由这些属性共同决定：
@@ -261,13 +294,13 @@ Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如
 
 ## 同名不同义风险
 
-- schema v3 之后，active `Q_Y_mean` 统一解释为 measurement absolute projection。
-- 旧 schema 的 `Q_Y_mean` 仍可能是 cosine 或 reconstruction-quality diagnostic，不能和 schema v3 的 `Q_Y_mean` 混合比较。
-- `metrics.json.metric_schema.compatibility.legacy_q_y_cosine_not_comparable=true` 用来提醒这一点。
+- schema v4 之后，active `Q_Y_mean` 统一解释为 `1 - NMSE_Y`。
+- schema v3 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 是 absolute projection，不能和 schema v4 的同名字段混合比较。
+- 旧 schema `<3` 的 `Q_Y_mean` 仍可能是 cosine 或 reconstruction-quality diagnostic。
 
 ## 同义不同名风险
 
-- `physical_overlap_Y/W/X` 是旧 projection 名，schema v3 的正式名是 `Q_Y/Q_W/Q_X`。
+- `Q_Y_PROJ_ABS/Q_W_PROJ_ABS/Q_X_PROJ_ABS` 是旧 projection diagnostic 名。
 - `Q_W_prime / Q_X_prime` 是旧 baseline-corrected Gram 名，schema v3 的正式 diagnostic 是 `Q_W_COS_ROOT / Q_X_COS_ROOT`。
 - `MSE` 和 legacy `Gen_Error` 不再是 formal result metric；只能作为 algorithm 内部 loss/debug 或 legacy result 解释。
 - `overlap_matrix_metric=Q_Y` 指的是 heatmap cell 的选择，不等价于 scalar `Q_Y_mean`。
@@ -276,9 +309,12 @@ Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如
 
 当前 canonical 名称是机器语义名，不是最终论文图例名。需要用户最终选择显示名称的内容集中记录在 `docs/semantic_review_queue.md`。
 
-## Projection Metric Migration v3
+## Projection Metric Migration v3 (legacy)
 
-从 schema v3 开始，active formal metrics 使用 projection-first 定义。旧 cosine / reconstruction / physical_overlap key 只作为 legacy 解释存在，不能和新 run 的同名 flat key 直接比较。
+schema v3 的 active formal metrics 使用 projection-first 定义。schema v4
+已经把这些 projection 移到 `*_PROJ_ABS` diagnostic；旧 cosine /
+reconstruction / physical_overlap key 只作为 legacy 解释存在，不能和新 run
+的同名 flat key 直接比较。
 
 ```text
 measurement.full.teacher_student.Q_Y_projection

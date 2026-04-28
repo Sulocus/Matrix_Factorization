@@ -997,15 +997,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         # Z_hat: (A, S*C_max) -> (A, S, C_max)
         Z_hat_reshaped = Z_hat.reshape(A, S, C_max)
 
-        # Compute formal observed Q_Y per alpha/sample as absolute projection
+        # Compute formal observed Q_Y per alpha/sample as FIT = 1 - NMSE
         # on the training hyperedge measurements.
         alpha_mask_reshaped = supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_max)  # (A, S, C_max)
         mask_float = alpha_mask_reshaped.float()
-        obs_dot = (Y_reshaped.unsqueeze(0) * Z_hat_reshaped * mask_float).sum(dim=2).abs()
+        obs_dot = (Y_reshaped.unsqueeze(0) * Z_hat_reshaped * mask_float).sum(dim=2)
         obs_norm = ((Y_reshaped.unsqueeze(0) ** 2) * mask_float).sum(dim=2)
+        obs_sse = (((Z_hat_reshaped - Y_reshaped.unsqueeze(0)) ** 2) * mask_float).sum(dim=2)
         Q_Y_per_alpha_sample = torch.where(
             obs_norm > 1e-12,
-            obs_dot / (obs_norm + 1e-12),
+            1.0 - obs_sse / (obs_norm + 1e-12),
+            torch.zeros_like(obs_norm),
+        )
+        NMSE_Y_per_alpha_sample = torch.where(
+            obs_norm > 1e-12,
+            obs_sse / (obs_norm + 1e-12),
+            torch.ones_like(obs_norm),
+        )
+        Q_Y_observed_proj_abs_sample = torch.where(
+            obs_norm > 1e-12,
+            obs_dot.abs() / (obs_norm + 1e-12),
             torch.zeros_like(obs_norm),
         )
 
@@ -1040,28 +1051,62 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         Y_holdout_reshaped = Y_holdout_flat.reshape(S, C_holdout_max)
         Z_holdout_reshaped = Z_holdout.reshape(A, S, C_holdout_max)
         holdout_mask = heldout_supergraph.alpha_mask.unsqueeze(1).expand(A, S, C_holdout_max).float()
-        holdout_dot = (Y_holdout_reshaped.unsqueeze(0) * Z_holdout_reshaped * holdout_mask).sum(dim=2).abs()
+        holdout_dot = (Y_holdout_reshaped.unsqueeze(0) * Z_holdout_reshaped * holdout_mask).sum(dim=2)
         holdout_norm = ((Y_holdout_reshaped.unsqueeze(0) ** 2) * holdout_mask).sum(dim=2)
+        holdout_sse = (((Z_holdout_reshaped - Y_holdout_reshaped.unsqueeze(0)) ** 2) * holdout_mask).sum(dim=2)
         Q_Y_unobserved_sample = torch.where(
             holdout_norm > 1e-12,
-            holdout_dot / (holdout_norm + 1e-12),
+            1.0 - holdout_sse / (holdout_norm + 1e-12),
+            torch.zeros_like(holdout_norm),
+        )
+        NMSE_Y_unobserved_sample = torch.where(
+            holdout_norm > 1e-12,
+            holdout_sse / (holdout_norm + 1e-12),
+            torch.ones_like(holdout_norm),
+        )
+        Q_Y_unobserved_proj_abs_sample = torch.where(
+            holdout_norm > 1e-12,
+            holdout_dot.abs() / (holdout_norm + 1e-12),
             torch.zeros_like(holdout_norm),
         )
         full_dot = obs_dot + holdout_dot
         full_norm = obs_norm + holdout_norm
+        full_sse = obs_sse + holdout_sse
         Q_Y_full_sample = torch.where(
             full_norm > 1e-12,
-            full_dot / (full_norm + 1e-12),
+            1.0 - full_sse / (full_norm + 1e-12),
+            torch.zeros_like(full_norm),
+        )
+        NMSE_Y_full_sample = torch.where(
+            full_norm > 1e-12,
+            full_sse / (full_norm + 1e-12),
+            torch.ones_like(full_norm),
+        )
+        Q_Y_full_proj_abs_sample = torch.where(
+            full_norm > 1e-12,
+            full_dot.abs() / (full_norm + 1e-12),
             torch.zeros_like(full_norm),
         )
 
         # Aggregate: mean and std over samples
         Q_Y_observed_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
         Q_Y_observed_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        NMSE_Y_observed_per_alpha = NMSE_Y_per_alpha_sample.mean(dim=1).cpu().tolist()
+        NMSE_Y_observed_std_per_alpha = NMSE_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_observed_proj_abs_per_alpha = Q_Y_observed_proj_abs_sample.mean(dim=1).cpu().tolist()
+        Q_Y_observed_proj_abs_std_per_alpha = Q_Y_observed_proj_abs_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         Q_Y_unobserved_per_alpha = Q_Y_unobserved_sample.mean(dim=1).cpu().tolist()
         Q_Y_unobserved_std_per_alpha = Q_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        NMSE_Y_unobserved_per_alpha = NMSE_Y_unobserved_sample.mean(dim=1).cpu().tolist()
+        NMSE_Y_unobserved_std_per_alpha = NMSE_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_unobserved_proj_abs_per_alpha = Q_Y_unobserved_proj_abs_sample.mean(dim=1).cpu().tolist()
+        Q_Y_unobserved_proj_abs_std_per_alpha = Q_Y_unobserved_proj_abs_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         Q_Y_full_per_alpha = Q_Y_full_sample.mean(dim=1).cpu().tolist()
         Q_Y_full_std_per_alpha = Q_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        NMSE_Y_full_per_alpha = NMSE_Y_full_sample.mean(dim=1).cpu().tolist()
+        NMSE_Y_full_std_per_alpha = NMSE_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        Q_Y_full_proj_abs_per_alpha = Q_Y_full_proj_abs_sample.mean(dim=1).cpu().tolist()
+        Q_Y_full_proj_abs_std_per_alpha = Q_Y_full_proj_abs_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
 
         # Reshape factors from (A, S*N_d, M) to (A, S, N_d, M)
         # We need access to individual samples for correct metrics.
@@ -1119,10 +1164,22 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         result = {
             'Q_Y': Q_Y_full_per_alpha,
             'Q_Y_std': Q_Y_full_std_per_alpha,
+            'NMSE_Y': NMSE_Y_full_per_alpha,
+            'NMSE_Y_std': NMSE_Y_full_std_per_alpha,
+            'Q_Y_PROJ_ABS': Q_Y_full_proj_abs_per_alpha,
+            'Q_Y_PROJ_ABS_std': Q_Y_full_proj_abs_std_per_alpha,
             'Q_Y_observed': Q_Y_observed_per_alpha,
             'Q_Y_observed_std': Q_Y_observed_std_per_alpha,
+            'NMSE_Y_observed': NMSE_Y_observed_per_alpha,
+            'NMSE_Y_observed_std': NMSE_Y_observed_std_per_alpha,
+            'Q_Y_observed_PROJ_ABS': Q_Y_observed_proj_abs_per_alpha,
+            'Q_Y_observed_PROJ_ABS_std': Q_Y_observed_proj_abs_std_per_alpha,
             'Q_Y_unobserved': Q_Y_unobserved_per_alpha,
             'Q_Y_unobserved_std': Q_Y_unobserved_std_per_alpha,
+            'NMSE_Y_unobserved': NMSE_Y_unobserved_per_alpha,
+            'NMSE_Y_unobserved_std': NMSE_Y_unobserved_std_per_alpha,
+            'Q_Y_unobserved_PROJ_ABS': Q_Y_unobserved_proj_abs_per_alpha,
+            'Q_Y_unobserved_PROJ_ABS_std': Q_Y_unobserved_proj_abs_std_per_alpha,
             'Q_N': Q_N,
             'Q_N_std': Q_N_std,
             **{

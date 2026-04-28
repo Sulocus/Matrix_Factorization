@@ -219,14 +219,22 @@ def compute_factor_projection_abs(student: torch.Tensor, teacher: torch.Tensor) 
     return float((student_flat * teacher_flat).sum().abs() / (norm_teacher_sq + 1e-12))
 
 
+def compute_factor_fixed_overlap(student: torch.Tensor, teacher: torch.Tensor) -> float:
+    """Fixed-denominator tensor factor overlap for one mode."""
+    if student.shape != teacher.shape:
+        raise ValueError("student and teacher tensor factors must have the same shape")
+    denom = max(int(teacher.numel()), 1)
+    return float((student.float().flatten() * teacher.float().flatten()).sum() / (float(denom) + 1e-12))
+
+
 def compute_tensor_factor_projection_overlaps(
     teacher_factors: List[torch.Tensor],
     student_factors: List[torch.Tensor],
 ) -> List[float]:
-    """Per-mode Q_N projection overlaps for tensor latent factors."""
+    """Per-mode Q_N fixed-denominator overlaps for tensor latent factors."""
     if len(teacher_factors) != len(student_factors):
         raise ValueError("Tensor orders must match")
     return [
-        compute_factor_projection_abs(student_factors[d], teacher_factors[d])
+        compute_factor_fixed_overlap(student_factors[d], teacher_factors[d])
         for d in range(len(teacher_factors))
     ]

@@ -1495,3 +1495,19 @@ runs/trials/onsager_damping_probe/20260428_052930_onsager_damping_probe_bgs_N200
   value/cost 和 damping state machine 做逐项修正。
 - 若必须跑 adaptive，只能先用单独 trial/单独进程隔离；不要接在已知发散的
   fixed Onsager group 后面。
+
+## 2026-04-28 21:30 metric schema v4 迁移状态
+
+当前 active metric profile 已迁移为 `physical_overlap_v1`：
+
+- `Q_Y_mean/std`：不再是 absolute projection；现在是 `1 - NMSE_Y`。
+- `NMSE_Y_mean/std`：同步输出，用来解释 `Q_Y`。
+- `Q_W_mean/std`、`Q_X_mean/std`：不再除以 teacher norm squared；现在是固定分母 physical overlap。
+- `Q_N_mean/std`：tensor latent factor 同步改为固定分母 overlap。
+- 旧 projection 指标保留为 `Q_Y_PROJ_ABS`、`Q_W_PROJ_ABS`、`Q_X_PROJ_ABS`。
+- `Q_W_SIGN_GAUGE` / `Q_X_SIGN_GAUGE` 是正式 sign-gauge 名；`Q_W_SIGN_ALIGNED` / `Q_X_SIGN_ALIGNED` 只作为 legacy alias 保留。
+- `median_abs_log_k` 是正式 scale-gauge magnitude 名；`median_abs_log_g` 只作为 legacy alias 保留。
+- `metrics.json.metric_schema.schema_version = 4`，并写入 `metric_definition_profile = physical_overlap_v1`。
+
+不要把 schema v3 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 和 schema v4 的同名字段直接比较。
+正式定义见 `docs/METRICS_GUIDE.md`。

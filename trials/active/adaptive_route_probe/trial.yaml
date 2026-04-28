@@ -1,0 +1,13 @@
+key: adaptive_route_probe
+status: active
+runtime_class: gpu_diagnostic
+purpose: Probe formal-size adaptive Onsager route before long 2000-step scans.
+owner_area: bigamp_onsager
+config: trials/active/adaptive_route_probe/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/adaptive_route_probe
+expected_metrics:
+  - Q_Y_mean
+  - Q_W_SIGN_GAUGE_mean
+  - Q_X_SIGN_GAUGE_mean
+notes: 200x200x50, S=100. Current config isolates capped adaptive Onsager on sparse alpha points for route/stability diagnostics; previous five-step route probes are recorded under runs/trials/adaptive_route_probe.

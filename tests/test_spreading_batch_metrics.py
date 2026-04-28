@@ -67,24 +67,30 @@ def test_spreading_batch_metrics_perfect_teacher_recovery():
         "Q_Y_mean",
         "Q_Y_observed_mean",
         "Q_Y_unobserved_mean",
-        "Q_W_mean",
-        "Q_X_mean",
-        "Q_W_SIGN_ALIGNED_mean",
-        "Q_X_SIGN_ALIGNED_mean",
         "Q_W_COS_ROOT_mean",
         "Q_X_COS_ROOT_mean",
-        "Q_W_SCALE_GAUGE_mean",
-        "Q_X_SCALE_GAUGE_mean",
-        "Q_WX_SCALE_GAUGE_mean",
         "Q_W_replica_mean",
         "Q_X_replica_mean",
         "Q_W_prime_replica_mean",
         "Q_X_prime_replica_mean",
     ]:
         assert torch.allclose(metrics[key], torch.ones_like(metrics[key]), atol=1e-5), key
+    w_self = (data.W_teacher * data.W_teacher).mean()
+    x_self = (data.X_teacher * data.X_teacher).mean()
+    assert torch.allclose(metrics["Q_W_mean"], torch.full_like(metrics["Q_W_mean"], float(w_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_X_mean"], torch.full_like(metrics["Q_X_mean"], float(x_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_W_SIGN_GAUGE_mean"], torch.full_like(metrics["Q_W_SIGN_GAUGE_mean"], float(w_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_X_SIGN_GAUGE_mean"], torch.full_like(metrics["Q_X_SIGN_GAUGE_mean"], float(x_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_W_SCALE_GAUGE_mean"], torch.full_like(metrics["Q_W_SCALE_GAUGE_mean"], float(w_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_X_SCALE_GAUGE_mean"], torch.full_like(metrics["Q_X_SCALE_GAUGE_mean"], float(x_self)), atol=1e-5)
     assert torch.allclose(
-        metrics["median_abs_log_g_mean"],
-        torch.zeros_like(metrics["median_abs_log_g_mean"]),
+        metrics["Q_WX_SCALE_GAUGE_mean"],
+        torch.full_like(metrics["Q_WX_SCALE_GAUGE_mean"], float(0.5 * (w_self + x_self))),
+        atol=1e-5,
+    )
+    assert torch.allclose(
+        metrics["median_abs_log_k_mean"],
+        torch.zeros_like(metrics["median_abs_log_k_mean"]),
         atol=1e-5,
     )
 
@@ -101,11 +107,17 @@ def test_spreading_batch_metrics_separate_coordinate_and_sign_aligned_overlap():
 
     metrics = compute_all_metrics_spreading_parallel(w_students, x_students, data)
 
-    assert torch.all(metrics["Q_W_mean"] < metrics["Q_W_SIGN_ALIGNED_mean"])
-    assert torch.all(metrics["Q_X_mean"] < metrics["Q_X_SIGN_ALIGNED_mean"])
-    assert torch.allclose(metrics["Q_W_SIGN_ALIGNED_mean"], torch.ones_like(metrics["Q_W_SIGN_ALIGNED_mean"]), atol=1e-5)
-    assert torch.allclose(metrics["Q_X_SIGN_ALIGNED_mean"], torch.ones_like(metrics["Q_X_SIGN_ALIGNED_mean"]), atol=1e-5)
-    assert torch.allclose(metrics["Q_WX_SCALE_GAUGE_mean"], torch.ones_like(metrics["Q_WX_SCALE_GAUGE_mean"]), atol=1e-5)
+    w_self = (data.W_teacher * data.W_teacher).mean()
+    x_self = (data.X_teacher * data.X_teacher).mean()
+    assert torch.all(metrics["Q_W_mean"] < metrics["Q_W_SIGN_GAUGE_mean"])
+    assert torch.all(metrics["Q_X_mean"] < metrics["Q_X_SIGN_GAUGE_mean"])
+    assert torch.allclose(metrics["Q_W_SIGN_GAUGE_mean"], torch.full_like(metrics["Q_W_SIGN_GAUGE_mean"], float(w_self)), atol=1e-5)
+    assert torch.allclose(metrics["Q_X_SIGN_GAUGE_mean"], torch.full_like(metrics["Q_X_SIGN_GAUGE_mean"], float(x_self)), atol=1e-5)
+    assert torch.allclose(
+        metrics["Q_WX_SCALE_GAUGE_mean"],
+        torch.full_like(metrics["Q_WX_SCALE_GAUGE_mean"], float(0.5 * (w_self + x_self))),
+        atol=1e-5,
+    )
 
 
 def test_spreading_batch_metric_payload_materializes_once_per_alpha():

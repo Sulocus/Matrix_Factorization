@@ -1,0 +1,15 @@
+key: onsager_formal_shape_transition_smoke
+status: active
+runtime_class: quick
+purpose: Formal-shape end-to-end smoke for Onsager group routing and plotting before S=20 skyline.
+owner_area: bigamp_onsager
+config: trials/active/onsager_formal_shape_transition_smoke/config.yaml
+artifact_policy: ignored_workspace
+output_root: runs/trials/onsager_formal_shape_transition_smoke
+expected_metrics:
+  - Q_Y_mean
+  - Q_W_mean
+  - Q_X_mean
+  - Q_W_SIGN_GAUGE_mean
+  - Q_X_SIGN_GAUGE_mean
+notes: "N=200,M=50 but S=4,steps=10,alpha=4 points; output-complete path with heatmaps."
