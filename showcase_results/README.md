@@ -1,16 +1,16 @@
 # Showcase Results
 
-Lightweight plots selected from local `dev` runs.
+Selected lightweight plots from local `dev` runs.
 
-## Result Folders
+## Folders
 
-- `01_warmstart_hysteresis`: warmstart hysteresis.
-- `02_onsager_fixed_vs_none`: fixed Onsager vs no Onsager.
-- `03_hot_start_onsager`: hot-start Onsager.
+- `01_warm_start_hysteresis`: warm start hysteresis.
+- `02_fixed_onsager_vs_no_onsager`: fixed Onsager vs no Onsager.
+- `03_warm_start_onsager`: warm start Onsager, overlap `0.2`.
 
 ## Sign And Gauge
 
-The matrix factorization has an $M$-dimensional gauge vector
+Matrix factorization has an $M$-dimensional gauge vector
 $\boldsymbol{k} = (k_1,\ldots,k_M)$:
 
 $$

@@ -19,9 +19,9 @@ Matrix_Factorization/
 │       └── 20260206_0458_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
 └── showcase_results/
     ├── README.md
-    ├── 01_warmstart_hysteresis/
-    ├── 02_onsager_fixed_vs_none/
-    └── 03_hot_start_onsager/
+    ├── 01_warm_start_hysteresis/
+    ├── 02_fixed_onsager_vs_no_onsager/
+    └── 03_warm_start_onsager/
 ```
 
 `results/latest/` contains tracked lightweight summaries only. Large tensors,
