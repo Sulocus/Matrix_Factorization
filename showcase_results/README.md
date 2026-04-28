@@ -1,17 +1,18 @@
 # Showcase Results
 
-Selected lightweight plots from local `dev` runs.
+このディレクトリには、`dev` ブランチで実行した局所実験から選んだ軽量な図だけを置いている。
+大きな tensor payload や checkpoint は含めない。
 
-## Folders
+## ディレクトリ
 
-- `01_warm_start`: warm start.
-- `02_fixed_onsager_vs_no_onsager`: fixed Onsager vs no Onsager.
-- `03_warm_start_onsager`: warm start Onsager, overlap `0.2`.
+- `01_warm_start`: warm start の初期 overlap を変えた比較。
+- `02_fixed_onsager_vs_no_onsager`: fixed Onsager と no Onsager の比較。
+- `03_warm_start_onsager`: 初期 overlap `0.2` の warm start Onsager。
 
-## Metric Definitions
+## 基本 overlap
 
-The basic overlaps are absolute projections onto the teacher, normalized by the
-teacher norm squared:
+ここでの基本的な overlap は、teacher 方向への absolute projection である。
+正規化には teacher の二乗ノルムを使う。
 
 $$
 Q_Y =
@@ -21,13 +22,13 @@ Q_W =
 \frac{|\langle W_s,W_t\rangle|}{\langle W_t,W_t\rangle}.
 $$
 
-These projection values are not clipped, so values above `1` are possible when
-the student has a different scale.
+この値は `1` で clip しない。したがって student の scale が teacher と異なる場合、
+`1` を超える値も数値エラーではなく scale 情報として残る。
 
-## Sign And Gauge
+## Sign Gauge と Scale Gauge
 
-Matrix factorization has an $M$-dimensional gauge vector
-$\boldsymbol{k} = (k_1,\ldots,k_M)$:
+この行列分解には、潜在次元に対応する $M$ 次元の gauge vector
+$\boldsymbol{k} = (k_1,\ldots,k_M)$ がある。
 
 $$
 W_{:m} \mapsto k_m W_{:m},
@@ -35,8 +36,8 @@ W_{:m} \mapsto k_m W_{:m},
 X_{m:} \mapsto k_m^{-1} X_{m:}.
 $$
 
-The sign view only uses the sign of each $k_m$ and ignores its magnitude. For W
-this is equivalent to choosing the sign from each teacher/student inner product:
+sign 補正では、各 $k_m$ の大きさは使わず、符号だけを見る。
+W 側では、各 latent channel の teacher/student 内積の符号を合わせることに相当する。
 
 $$
 Q_W^{\mathrm{sign}} =
@@ -44,7 +45,7 @@ Q_W^{\mathrm{sign}} =
 {\sum_{m=1}^M \|W_{t,:m}\|^2}.
 $$
 
-The scale-gauge view fits a continuous scalar for each channel:
+scale-gauge 補正では、各 channel ごとに連続値の scalar $g_m$ を fitting する。
 
 $$
 g_m^\star =
@@ -55,28 +56,29 @@ g_m^\star =
 \right).
 $$
 
-With
+ここで
 $a_m=\|W_{s,:m}\|^2$,
 $b_m=\langle W_{s,:m},W_{t,:m}\rangle$,
-$c_m=\|X_{s,m:}\|^2$, and
-$d_m=\langle X_{s,m:},X_{t,m:}\rangle$, the optimized part is
+$c_m=\|X_{s,m:}\|^2$,
+$d_m=\langle X_{s,m:},X_{t,m:}\rangle$
+とおくと、最小化する $g$ 依存部分は
 
 $$
 a_m g^2 - 2b_m g + \frac{c_m}{g^2} - \frac{2d_m}{g}.
 $$
 
-The implementation checks real nonzero roots of
+実装では、次の四次方程式の実数かつ非零の根を候補にする。
 
 $$
 a_m g^4 - b_m g^3 + d_m g - c_m = 0
 $$
 
-plus fallback candidates $\pm\sqrt{c_m/a_m}$ and $\pm 1$, then selects the
-candidate with the smallest objective. This does not force $|g_m|$ toward `1`;
-the reported gauge magnitude uses median $\left|\log |g_m|\right|$ only as a
-side measurement.
+さらに fallback candidate として $\pm\sqrt{c_m/a_m}$ と $\pm 1$ も加え、
+目的関数が最小になる候補を選ぶ。この処理は $|g_m|$ を `1` に近づける制約ではない。
+表示される gauge magnitude は median $\left|\log |g_m|\right|$ であり、
+scale ずれの大きさを表す補助量である。
 
-After alignment,
+alignment 後の projection は
 
 $$
 Q_W^{\mathrm{gauge}} =
@@ -88,8 +90,14 @@ Q_X^{\mathrm{gauge}} =
 {\sum_m \|X_{t,m:}\|^2}.
 $$
 
-The `qwqx_gauge` plot shows
-$\frac{1}{2}(Q_W^{\mathrm{gauge}}+Q_X^{\mathrm{gauge}})$.
+`qwqx_gauge` の図では
 
-These views do not guarantee early-training physical correctness. They only
-remove later symmetry breaking and teacher/student gauge mismatch.
+$$
+\frac{1}{2}(Q_W^{\mathrm{gauge}}+Q_X^{\mathrm{gauge}})
+$$
+
+を表示している。
+
+これらの補正表示は、training 初期の物理的正しさを保証するものではない。
+後段で生じる symmetry breaking や teacher/student 間の gauge mismatch を取り除いて、
+同じ解を異なる gauge で見ている可能性を確認するための表示である。
