@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from matrix_factorization.core.experiment import (
     ExperimentConfig, ExperimentRunner,
     MatrixParams, TrainingParams, SeedConfig, ScanConfig,
-    AlgorithmParams, SpreadingConfig, TeacherConfig
+    AlgorithmParams, SpreadingConfig, TeacherConfig, SampleShardingConfig
 )
 from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING, normalize_f_distribution
 from matrix_factorization.core.planning import build_experiment_plan
@@ -63,7 +63,7 @@ def load_yaml_config(yaml_path: Path):
         raise ValueError("配置必须包含 canonical scan.axes")
 
     # 数字选项映射
-    ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 4: 'bigamp_tensor', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd', 'bigamp_tensor': 'bigamp_tensor'}
+    ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 4: 'bigamp_tensor', 5: 'agd_tensor', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd', 'bigamp_tensor': 'bigamp_tensor', 'agd_tensor': 'agd_tensor'}
     TEACHER_MAP = {1: 'orthogonal', 2: 'standard', 'orthogonal': 'orthogonal', 'standard': 'standard'}
     F_DIST_MAP = {
         1: F_DISTRIBUTION_ISING,
@@ -202,6 +202,7 @@ def load_yaml_config(yaml_path: Path):
         teacher_key=teacher_key,
         teacher=teacher_config,
         scan_spec=scan_spec,
+        sample_sharding=SampleShardingConfig.from_scan_spec(scan_spec),
     ), output_options, raw_yaml
 
 

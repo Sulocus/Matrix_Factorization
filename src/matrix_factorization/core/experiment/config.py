@@ -128,6 +128,64 @@ class TrainingParams:
 
 
 @dataclass
+class SampleShardingConfig:
+    """Scan-level execution strategy for slicing the sample axis S."""
+
+    enabled: str | bool = "auto"  # "auto", true, false
+    max_samples_per_shard: Optional[int] = None
+
+    def __post_init__(self):
+        valid = {"auto", "true", "false"}
+        if isinstance(self.enabled, str):
+            token = self.enabled.lower()
+            if token not in valid:
+                raise ValueError(
+                    "scan.sample_sharding.enabled must be 'auto', true, or false, "
+                    f"got {self.enabled!r}"
+                )
+            self.enabled = token
+        elif not isinstance(self.enabled, bool):
+            raise ValueError(
+                "scan.sample_sharding.enabled must be 'auto', true, or false, "
+                f"got {self.enabled!r}"
+            )
+        if self.max_samples_per_shard is not None and int(self.max_samples_per_shard) <= 0:
+            raise ValueError(
+                "scan.sample_sharding.max_samples_per_shard must be positive when set, "
+                f"got {self.max_samples_per_shard!r}"
+            )
+
+    @classmethod
+    def from_scan_spec(cls, scan_spec: Optional[Dict[str, Any]]) -> "SampleShardingConfig":
+        if not isinstance(scan_spec, dict):
+            return cls()
+        raw = scan_spec.get("sample_sharding") or {}
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(
+            enabled=raw.get("enabled", "auto"),
+            max_samples_per_shard=raw.get("max_samples_per_shard"),
+        )
+
+    def effective_enabled(self, total_samples: int) -> bool:
+        if self.enabled is False or self.enabled == "false":
+            return False
+        if self.max_samples_per_shard is None:
+            return bool(self.enabled is True or self.enabled == "true") and total_samples > 1
+        if self.enabled is True or self.enabled == "true":
+            return int(total_samples) > int(self.max_samples_per_shard)
+        if self.enabled == "auto":
+            return int(total_samples) > int(self.max_samples_per_shard)
+        return False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_samples_per_shard": self.max_samples_per_shard,
+        }
+
+
+@dataclass
 class SeedConfig:
     """Random seed configuration for reproducibility."""
     base_seed: int = 42           # Graph structure seed
@@ -362,10 +420,11 @@ class ExperimentConfig:
     teacher_key: str = "standard"  # "standard" or "orthogonal"
     notes: str = ""
     scan_spec: Optional[Dict[str, Any]] = None
+    sample_sharding: SampleShardingConfig = field(default_factory=SampleShardingConfig)
     
     def __post_init__(self):
         # Validate algorithm key
-        valid_algos = ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel"]
+        valid_algos = ["agd", "bigamp", "bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel", "agd_tensor"]
         if self.algorithm_key not in valid_algos:
             raise ValueError(
                 f"Invalid algorithm_key: {self.algorithm_key}. "
@@ -373,7 +432,7 @@ class ExperimentConfig:
             )
         
         # Auto-create spreading config if needed
-        if self.algorithm_key in ("bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel") and self.spreading is None:
+        if self.algorithm_key in ("bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel", "agd_tensor") and self.spreading is None:
             self.spreading = SpreadingConfig()
     
     @property
@@ -425,6 +484,7 @@ class ExperimentConfig:
             "experiment_name": self.experiment_name,
             "teacher_key": self.teacher_key,
             "notes": self.notes,
+            "sample_sharding": self.sample_sharding.to_dict(),
         }
     
     def save(self, path: Path):
@@ -459,6 +519,7 @@ class ExperimentConfig:
             teacher_key=data.get("teacher_key", "standard"),
             notes=data.get("notes", ""),
             scan_spec=data.get("scan") if isinstance(data.get("scan"), dict) and "axes" in data.get("scan", {}) else None,
+            sample_sharding=SampleShardingConfig(**data.get("sample_sharding", {})),
         )
     
     def __repr__(self) -> str:

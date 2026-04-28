@@ -5,7 +5,7 @@ purpose: Compare smaller fixed Onsager damping and capped adaptive damping befor
 owner_area: bigamp_onsager
 config: trials/active/onsager_damping_probe/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/onsager_damping_probe
+output_root: artifacts/trials/onsager_damping_probe
 expected_metrics:
   - Q_Y_mean
   - Q_W_SIGN_GAUGE_mean

@@ -5,7 +5,7 @@ purpose: 验证 max_steps 作为 scan axis 时进入 unified canonical executor
 owner_area: scan
 config: trials/active/scan_steps_quick/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/scan_steps_quick
+output_root: artifacts/trials/scan_steps_quick
 expected_metrics:
   - Q_Y_mean
 promotion_target:

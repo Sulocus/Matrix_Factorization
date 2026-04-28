@@ -8,7 +8,7 @@ def _write(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
-def test_sample_folding_request_is_preflight_error(tmp_path):
+def test_sample_folding_request_is_allowed_after_sample_sharding_contract(tmp_path):
     config_path = tmp_path / "sample_fold.yaml"
     _write(
         config_path,
@@ -30,7 +30,8 @@ output: {save_tensors: false, enable_heatmap: false}
     config, _, raw_yaml = load_yaml_config(config_path)
     plan = build_experiment_plan(config, raw_yaml=raw_yaml, config_path=config_path)
 
-    assert any("sample folding requested" in error for error in plan.errors)
+    assert not any("sample folding requested" in error for error in plan.errors)
+    assert not any("unsupported axis 'sample'" in error for error in plan.errors)
 
 
 def test_single_alpha_full_sample_oversize_is_preflight_error(tmp_path):

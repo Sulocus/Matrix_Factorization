@@ -366,7 +366,7 @@ def test_tensor_parallel_resource_and_batching_specs_remain_metadata_only():
     assert "algorithm internal probe batches" in batching.planner_layers
     assert batching.seed_partition_sensitive is True
     assert batching.metadata_only is True
-    assert batching.sample_range_honored is False
+    assert batching.sample_range_honored is True
     assert memory_model.probe_required is True
     assert memory_model.drives_execution is False
     assert "tensorsupergraph" in memory_model.formula_basis.lower()

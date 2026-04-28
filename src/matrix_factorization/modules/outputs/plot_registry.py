@@ -6,7 +6,8 @@ Plot Registry - 绘图指标映射表
   - 不加 :R = 教师-学生
 
 类别:
-  A: Formal metrics (Q_Y fit, Q_W/Q_X physical overlap)
+  A: Formal metrics (Q_Y projection, Q_W/Q_X physical overlap)
+  F: Output fit diagnostics (FIT_Y)
   B: Cos-root diagnostics (Q_W_COS_ROOT, Q_X_COS_ROOT)
   C: Observed Split (Q_Y_observed, Q_Y_unobserved)
   D: Sign-gauge diagnostics (Q_W_SIGN_GAUGE, Q_X_SIGN_GAUGE)
@@ -31,6 +32,9 @@ METRIC_MAP: Dict[Tuple[str, str], str] = {
     ('A', 'y'): 'Q_Y',
     ('A', 'w'): 'Q_W',
     ('A', 'x'): 'Q_X',
+
+    # F: FIT diagnostics
+    ('F', 'y'): 'FIT_Y',
     
     # B: Cos-root diagnostics
     ('B', 'w'): 'Q_W_COS_ROOT',

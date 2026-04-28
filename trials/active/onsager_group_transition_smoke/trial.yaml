@@ -5,7 +5,7 @@ purpose: End-to-end small scan for Onsager group routing, group plots, sign heat
 owner_area: bigamp_onsager
 config: trials/active/onsager_group_transition_smoke/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/onsager_group_transition_smoke
+output_root: artifacts/trials/onsager_group_transition_smoke
 expected_metrics:
   - Q_Y_mean
   - Q_W_mean

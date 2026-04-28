@@ -80,6 +80,7 @@ class ExecutionConfig:
     metrics_to_compute: List[str] = field(
         default_factory=lambda: [
             'Q_Y',
+            'FIT_Y',
             'Q_W',
             'Q_X',
             'Q_W_SIGN_GAUGE',
@@ -149,7 +150,7 @@ class Config:
         exec_data = data.get('execution', {})
         execution = ExecutionConfig(
             metrics_to_compute=exec_data.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_GAUGE', 'Q_X_SIGN_GAUGE', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
+                ['Q_Y', 'FIT_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_GAUGE', 'Q_X_SIGN_GAUGE', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),

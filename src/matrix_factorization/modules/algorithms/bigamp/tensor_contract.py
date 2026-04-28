@@ -30,6 +30,10 @@ def pack_tensor_parallel_metrics(result: Dict[str, Any], local_idx: int) -> Dict
         metrics["NMSE_Y_mean"] = result["NMSE_Y"][local_idx]
     if "NMSE_Y_std" in result:
         metrics["NMSE_Y_std"] = result["NMSE_Y_std"][local_idx]
+    if "FIT_Y" in result:
+        metrics["FIT_Y_mean"] = result["FIT_Y"][local_idx]
+    if "FIT_Y_std" in result:
+        metrics["FIT_Y_std"] = result["FIT_Y_std"][local_idx]
     if "Q_Y_PROJ_ABS" in result:
         metrics["Q_Y_PROJ_ABS_mean"] = result["Q_Y_PROJ_ABS"][local_idx]
     if "Q_Y_PROJ_ABS_std" in result:
@@ -42,6 +46,10 @@ def pack_tensor_parallel_metrics(result: Dict[str, Any], local_idx: int) -> Dict
         metrics["NMSE_Y_observed_mean"] = result["NMSE_Y_observed"][local_idx]
     if "NMSE_Y_observed_std" in result:
         metrics["NMSE_Y_observed_std"] = result["NMSE_Y_observed_std"][local_idx]
+    if "FIT_Y_observed" in result:
+        metrics["FIT_Y_observed_mean"] = result["FIT_Y_observed"][local_idx]
+    if "FIT_Y_observed_std" in result:
+        metrics["FIT_Y_observed_std"] = result["FIT_Y_observed_std"][local_idx]
     if "Q_Y_observed_PROJ_ABS" in result:
         metrics["Q_Y_observed_PROJ_ABS_mean"] = result["Q_Y_observed_PROJ_ABS"][local_idx]
     if "Q_Y_observed_PROJ_ABS_std" in result:
@@ -54,6 +62,10 @@ def pack_tensor_parallel_metrics(result: Dict[str, Any], local_idx: int) -> Dict
         metrics["NMSE_Y_unobserved_mean"] = result["NMSE_Y_unobserved"][local_idx]
     if "NMSE_Y_unobserved_std" in result:
         metrics["NMSE_Y_unobserved_std"] = result["NMSE_Y_unobserved_std"][local_idx]
+    if "FIT_Y_unobserved" in result:
+        metrics["FIT_Y_unobserved_mean"] = result["FIT_Y_unobserved"][local_idx]
+    if "FIT_Y_unobserved_std" in result:
+        metrics["FIT_Y_unobserved_std"] = result["FIT_Y_unobserved_std"][local_idx]
     if "Q_Y_unobserved_PROJ_ABS" in result:
         metrics["Q_Y_unobserved_PROJ_ABS_mean"] = result["Q_Y_unobserved_PROJ_ABS"][local_idx]
     if "Q_Y_unobserved_PROJ_ABS_std" in result:

@@ -43,7 +43,7 @@ def test_trial_run_command_generates_run_directory():
     output_path = Path(output_line.split("output:", 1)[1].strip())
 
     assert output_path.exists()
-    assert "runs/trials/matrix_bigamp_quick" in str(output_path)
+    assert "artifacts/trials/matrix_bigamp_quick" in str(output_path)
     for filename in ["config.json", "metadata.json", "metrics.json", "manifest.json"]:
         assert (output_path / filename).exists()
     metadata = json.loads((output_path / "metadata.json").read_text(encoding="utf-8"))
@@ -62,7 +62,7 @@ key: medium_trial
 status: active
 runtime_class: medium
 config: trials/active/medium_trial/config.yaml
-output_root: runs/trials/medium_trial
+output_root: artifacts/trials/medium_trial
 artifact_policy: ignored_workspace
 """,
         encoding="utf-8",

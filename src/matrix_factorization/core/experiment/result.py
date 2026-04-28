@@ -17,8 +17,8 @@ import torch
 
 
 METRIC_DEFINITION_POLICY = {
-    "metric_definition_profile": "physical_overlap_v1",
-    "Q_Y_formula": "1 - normalized_mse",
+    "metric_definition_profile": "projection_qy_physical_latent_v2",
+    "Q_Y_formula": "absolute_projection_teacher_norm_squared",
     "Q_W_Q_X_normalization": "fixed_coordinate_count",
     "legacy_projection_suffix": "_PROJ_ABS",
     "teacher_norm_epsilon": 1e-12,
@@ -737,8 +737,8 @@ class ExperimentResult:
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]
         self._write_json(path / 'metrics.json', {
-            "schema_version": 4,
-            "metric_definition_profile": "physical_overlap_v1",
+            "schema_version": 5,
+            "metric_definition_profile": "projection_qy_physical_latent_v2",
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
             "contract": self.metadata.contract,
@@ -842,8 +842,8 @@ class ExperimentResult:
 
         if self.result_cube.artifacts:
             self._write_json(path / 'metrics.json', {
-                "schema_version": 4,
-                "metric_definition_profile": "physical_overlap_v1",
+                "schema_version": 5,
+                "metric_definition_profile": "projection_qy_physical_latent_v2",
                 "experiment_id": self.experiment_id,
                 "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
                 "contract": self.metadata.contract,
@@ -1097,8 +1097,8 @@ class ExperimentResult:
 
         completed_values = [str(value) for value, _ in self._sorted_result_items()]
         payload = {
-            "schema_version": 4,
-            "metric_definition_profile": "physical_overlap_v1",
+            "schema_version": 5,
+            "metric_definition_profile": "projection_qy_physical_latent_v2",
             "partial_snapshot": True,
             "snapshot_mode": "compact_progress",
             "experiment_id": self.experiment_id,
@@ -1492,21 +1492,29 @@ class ExperimentResult:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
                 "q_y_mean_interpretation": "legacy_cosine_or_reconstruction_proxy",
-                "new_schema_q_y_mean_interpretation": "fit_1_minus_nmse",
+                "new_schema_q_y_mean_interpretation": "absolute_projection",
                 "new_old_q_y_mean_not_comparable": True,
             })
         elif loaded_schema_version < 4:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
                 "q_y_mean_interpretation": "absolute_projection",
-                "new_schema_q_y_mean_interpretation": "fit_1_minus_nmse",
+                "new_schema_q_y_mean_interpretation": "absolute_projection",
                 "schema_v3_v4_q_y_mean_not_comparable": True,
+            })
+        elif loaded_schema_version < 5:
+            result.metadata.contract.setdefault("metric_schema_compatibility", {
+                "loaded_schema_version": loaded_schema_version,
+                "q_y_mean_interpretation": "fit_1_minus_nmse",
+                "new_schema_q_y_mean_interpretation": "absolute_projection",
+                "schema_v4_v5_q_y_mean_not_comparable": True,
+                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_physical_latent_v2"),
             })
         else:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
-                "q_y_mean_interpretation": "fit_1_minus_nmse",
-                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "physical_overlap_v1"),
+                "q_y_mean_interpretation": "absolute_projection",
+                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_physical_latent_v2"),
             })
         cube_payload = metrics_payload.get("result_cube", {}) if isinstance(metrics_payload, dict) else {}
         if cube_payload:

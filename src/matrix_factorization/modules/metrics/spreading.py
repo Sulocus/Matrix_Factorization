@@ -503,8 +503,7 @@ def compute_qy_spreading(
 
     Y_teacher_values = spreading_data.Y_values
 
-    _, fit = normalized_mse_and_fit(Y_student_values, Y_teacher_values)
-    return float(fit)
+    return float(_projection_abs_values(Y_student_values, Y_teacher_values))
 
 
 @torch.no_grad()
@@ -639,10 +638,17 @@ def compute_all_metrics_spreading(
     results['Q_X_COS_ROOT'] = cos_overlap_root(X_s, X_teacher, use_left=False)
 
     # Spreading-aware Q_Y
+    _, fit_y = normalized_mse_and_fit(
+        compute_sparse_Y(W_s, X_s, spreading_data.F, spreading_data.i_idx, spreading_data.j_idx)
+        if W_s.dim() == 2 else torch.zeros((), device=W_s.device),
+        spreading_data.Y_values,
+    ) if W_s.dim() == 2 else (1.0, 0.0)
     results['Q_Y'] = compute_qy_spreading(W_student, X_student, spreading_data)
     results['Q_Y_observed'] = results['Q_Y']
     results['Q_Y_PROJ_ABS'] = compute_physical_overlap_spreading(W_student, X_student, spreading_data)
     results['Q_Y_observed_PROJ_ABS'] = results['Q_Y_PROJ_ABS']
+    results['FIT_Y'] = fit_y
+    results['FIT_Y_observed'] = fit_y
 
     return results
 
@@ -733,6 +739,9 @@ def compute_all_metrics_spreading_parallel(
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_full_all = torch.zeros(S, output_A, device=device)
+    FIT_Y_observed_all = torch.zeros(S, output_A, device=device)
+    FIT_Y_unobserved_all = torch.zeros(S, output_A, device=device)
+    FIT_Y_full_all = torch.zeros(S, output_A, device=device)
     NMSE_Y_observed_all = torch.ones(S, output_A, device=device)
     NMSE_Y_unobserved_all = torch.ones(S, output_A, device=device)
     NMSE_Y_full_all = torch.ones(S, output_A, device=device)
@@ -770,10 +779,11 @@ def compute_all_metrics_spreading_parallel(
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
-            q_obs, nmse_obs = _fit_from_sums(sse_obs, norm_obs)
-            Q_Y_observed_all[:, out_idx] = q_obs
+            fit_obs, nmse_obs = _fit_from_sums(sse_obs, norm_obs)
+            Q_Y_observed_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
+            FIT_Y_observed_all[:, out_idx] = fit_obs
             NMSE_Y_observed_all[:, out_idx] = nmse_obs
-            Q_Y_observed_proj_abs_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
+            Q_Y_observed_proj_abs_all[:, out_idx] = Q_Y_observed_all[:, out_idx]
 
             N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
             h_i_all = torch.empty(S, C_k, dtype=torch.long, device=device)
@@ -828,18 +838,21 @@ def compute_all_metrics_spreading_parallel(
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
-            q_unobs, nmse_unobs = _fit_from_sums(sse_unobs, norm_unobs)
-            Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs, torch.zeros_like(q_unobs))
+            fit_unobs, nmse_unobs = _fit_from_sums(sse_unobs, norm_unobs)
+            q_unobs_proj = _projection_abs_from_sums(dot_unobs, norm_unobs)
+            Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs_proj, torch.zeros_like(q_unobs_proj))
+            FIT_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, fit_unobs, torch.zeros_like(fit_unobs))
             NMSE_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, nmse_unobs, torch.ones_like(nmse_unobs))
             Q_Y_unobserved_proj_abs_all[:, out_idx] = torch.where(
                 valid_samples,
-                _projection_abs_from_sums(dot_unobs, norm_unobs),
-                torch.zeros_like(q_unobs),
+                q_unobs_proj,
+                torch.zeros_like(q_unobs_proj),
             )
-            q_full, nmse_full = _fit_from_sums(sse_obs + sse_unobs, norm_obs + norm_unobs)
-            Q_Y_full_all[:, out_idx] = q_full
+            fit_full, nmse_full = _fit_from_sums(sse_obs + sse_unobs, norm_obs + norm_unobs)
+            Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
+            FIT_Y_full_all[:, out_idx] = fit_full
             NMSE_Y_full_all[:, out_idx] = nmse_full
-            Q_Y_full_proj_abs_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
+            Q_Y_full_proj_abs_all[:, out_idx] = Q_Y_full_all[:, out_idx]
 
         w_root, w_replica, w_prime = _cos_root_and_replica_by_alpha(
             W_students[:, local_alpha_idx],
@@ -864,6 +877,9 @@ def compute_all_metrics_spreading_parallel(
     nmse_y_mean, nmse_y_std = _mean_std(NMSE_Y_full_all, dim=0)
     nmse_y_obs_mean, nmse_y_obs_std = _mean_std(NMSE_Y_observed_all, dim=0)
     nmse_y_unobs_mean, nmse_y_unobs_std = _mean_std(NMSE_Y_unobserved_all, dim=0)
+    fit_y_mean, fit_y_std = _mean_std(FIT_Y_full_all, dim=0)
+    fit_y_obs_mean, fit_y_obs_std = _mean_std(FIT_Y_observed_all, dim=0)
+    fit_y_unobs_mean, fit_y_unobs_std = _mean_std(FIT_Y_unobserved_all, dim=0)
     qy_proj_abs_mean, qy_proj_abs_std = _mean_std(Q_Y_full_proj_abs_all, dim=0)
     qy_obs_proj_abs_mean, qy_obs_proj_abs_std = _mean_std(Q_Y_observed_proj_abs_all, dim=0)
     qy_unobs_proj_abs_mean, qy_unobs_proj_abs_std = _mean_std(Q_Y_unobserved_proj_abs_all, dim=0)
@@ -893,14 +909,20 @@ def compute_all_metrics_spreading_parallel(
         'Q_Y_std': qy_std,
         'NMSE_Y_mean': nmse_y_mean,
         'NMSE_Y_std': nmse_y_std,
+        'FIT_Y_mean': fit_y_mean,
+        'FIT_Y_std': fit_y_std,
         'Q_Y_observed_mean': qy_obs_mean,
         'Q_Y_observed_std': qy_obs_std,
         'NMSE_Y_observed_mean': nmse_y_obs_mean,
         'NMSE_Y_observed_std': nmse_y_obs_std,
+        'FIT_Y_observed_mean': fit_y_obs_mean,
+        'FIT_Y_observed_std': fit_y_obs_std,
         'Q_Y_unobserved_mean': qy_unobs_mean,
         'Q_Y_unobserved_std': qy_unobs_std,
         'NMSE_Y_unobserved_mean': nmse_y_unobs_mean,
         'NMSE_Y_unobserved_std': nmse_y_unobs_std,
+        'FIT_Y_unobserved_mean': fit_y_unobs_mean,
+        'FIT_Y_unobserved_std': fit_y_unobs_std,
         'Q_Y_PROJ_ABS_mean': qy_proj_abs_mean,
         'Q_Y_PROJ_ABS_std': qy_proj_abs_std,
         'Q_Y_observed_PROJ_ABS_mean': qy_obs_proj_abs_mean,

@@ -34,6 +34,7 @@ from .config import (
     SpreadingConfig,
     AlgorithmParams,
     TeacherConfig,
+    SampleShardingConfig,
 )
 
 from .result import (
@@ -56,6 +57,7 @@ __all__ = [
     'SpreadingConfig',
     'AlgorithmParams',
     'TeacherConfig',
+    'SampleShardingConfig',
     # Result
     'ExperimentResult',
     'SingleRunResult',

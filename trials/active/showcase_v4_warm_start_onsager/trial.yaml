@@ -5,7 +5,7 @@ purpose: Recompute overlap-0.2 warm-start fixed Onsager showcase under metric sc
 owner_area: metric_schema_v4
 config: trials/active/showcase_v4_warm_start_onsager/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/showcase_v4_warm_start_onsager
+output_root: artifacts/trials/showcase_v4_warm_start_onsager
 expected_metrics:
   - Q_Y_mean
   - NMSE_Y_mean

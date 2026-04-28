@@ -5,7 +5,7 @@ purpose: 验证 cold/warm init composite axis 进入 ScanPlan 和 intervention c
 owner_area: scan
 config: trials/active/scan_init_quick/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/scan_init_quick
+output_root: artifacts/trials/scan_init_quick
 expected_metrics:
   - Q_Y_mean
 promotion_target:

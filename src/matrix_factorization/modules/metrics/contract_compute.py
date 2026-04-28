@@ -130,10 +130,13 @@ def compute_matrix_metric_payload(
     # Y metrics
     Q_Y_list = []
     NMSE_Y_list = []
+    FIT_Y_list = []
     Q_Y_observed_list = []
     Q_Y_unobserved_list = []
     NMSE_Y_observed_list = []
     NMSE_Y_unobserved_list = []
+    FIT_Y_observed_list = []
+    FIT_Y_unobserved_list = []
     Q_Y_observed_proj_abs_list = []
     Q_Y_unobserved_proj_abs_list = []
     Q_W_scale_gauge_list = []
@@ -170,8 +173,9 @@ def compute_matrix_metric_payload(
         median_abs_log_k_list.append(scale_metrics["median_abs_log_k"])
         nmse_y, fit_y = normalized_mse_and_fit(Y_students[s], Y_teacher)
         NMSE_Y_list.append(nmse_y)
-        Q_Y_list.append(fit_y)
-        Q_Y_proj_abs_list.append(projection_abs(Y_students[s], Y_teacher))
+        Q_Y_list.append(projection_abs(Y_students[s], Y_teacher))
+        Q_Y_proj_abs_list.append(Q_Y_list[-1])
+        FIT_Y_list.append(fit_y)
 
         if data.masks is not None:
             if data.masks.dim() == 3:
@@ -182,11 +186,13 @@ def compute_matrix_metric_payload(
             nmse_obs, fit_obs = _compute_nmse_fit_masked(Y_students[s], Y_teacher, mask, observed=True)
             nmse_unobs, fit_unobs = _compute_nmse_fit_masked(Y_students[s], Y_teacher, mask, observed=False)
             NMSE_Y_observed_list.append(nmse_obs)
-            Q_Y_observed_list.append(fit_obs)
             NMSE_Y_unobserved_list.append(nmse_unobs)
-            Q_Y_unobserved_list.append(fit_unobs)
+            FIT_Y_observed_list.append(fit_obs)
+            FIT_Y_unobserved_list.append(fit_unobs)
             Q_Y_observed_proj_abs_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=True))
             Q_Y_unobserved_proj_abs_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=False))
+            Q_Y_observed_list.append(Q_Y_observed_proj_abs_list[-1])
+            Q_Y_unobserved_list.append(Q_Y_unobserved_proj_abs_list[-1])
 
     # Replica metrics (Student-Student)
     Q_W_replica_list = []
@@ -227,6 +233,8 @@ def compute_matrix_metric_payload(
         "Q_Y_std": float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
         "NMSE_Y_mean": float(np.mean(NMSE_Y_list)),
         "NMSE_Y_std": float(np.std(NMSE_Y_list, ddof=1)) if len(NMSE_Y_list) > 1 else 0.0,
+        "FIT_Y_mean": float(np.mean(FIT_Y_list)) if FIT_Y_list else 0.0,
+        "FIT_Y_std": float(np.std(FIT_Y_list, ddof=1)) if len(FIT_Y_list) > 1 else 0.0,
         "Q_Y_PROJ_ABS_mean": float(np.mean(Q_Y_proj_abs_list)),
         "Q_Y_PROJ_ABS_std": float(np.std(Q_Y_proj_abs_list, ddof=1)) if len(Q_Y_proj_abs_list) > 1 else 0.0,
         "Q_W_COS_ROOT_mean": float(np.mean(Q_W_cos_root_list)),
@@ -256,6 +264,8 @@ def compute_matrix_metric_payload(
         result["Q_Y_observed_std"] = float(np.std(Q_Y_observed_list, ddof=1)) if len(Q_Y_observed_list) > 1 else 0.0
         result["NMSE_Y_observed_mean"] = float(np.mean(NMSE_Y_observed_list))
         result["NMSE_Y_observed_std"] = float(np.std(NMSE_Y_observed_list, ddof=1)) if len(NMSE_Y_observed_list) > 1 else 0.0
+        result["FIT_Y_observed_mean"] = float(np.mean(FIT_Y_observed_list)) if FIT_Y_observed_list else 0.0
+        result["FIT_Y_observed_std"] = float(np.std(FIT_Y_observed_list, ddof=1)) if len(FIT_Y_observed_list) > 1 else 0.0
         result["Q_Y_observed_PROJ_ABS_mean"] = float(np.mean(Q_Y_observed_proj_abs_list))
         result["Q_Y_observed_PROJ_ABS_std"] = float(np.std(Q_Y_observed_proj_abs_list, ddof=1)) if len(Q_Y_observed_proj_abs_list) > 1 else 0.0
     if Q_Y_unobserved_list:
@@ -263,6 +273,8 @@ def compute_matrix_metric_payload(
         result["Q_Y_unobserved_std"] = float(np.std(Q_Y_unobserved_list, ddof=1)) if len(Q_Y_unobserved_list) > 1 else 0.0
         result["NMSE_Y_unobserved_mean"] = float(np.mean(NMSE_Y_unobserved_list))
         result["NMSE_Y_unobserved_std"] = float(np.std(NMSE_Y_unobserved_list, ddof=1)) if len(NMSE_Y_unobserved_list) > 1 else 0.0
+        result["FIT_Y_unobserved_mean"] = float(np.mean(FIT_Y_unobserved_list)) if FIT_Y_unobserved_list else 0.0
+        result["FIT_Y_unobserved_std"] = float(np.std(FIT_Y_unobserved_list, ddof=1)) if len(FIT_Y_unobserved_list) > 1 else 0.0
         result["Q_Y_unobserved_PROJ_ABS_mean"] = float(np.mean(Q_Y_unobserved_proj_abs_list))
         result["Q_Y_unobserved_PROJ_ABS_std"] = float(np.std(Q_Y_unobserved_proj_abs_list, ddof=1)) if len(Q_Y_unobserved_proj_abs_list) > 1 else 0.0
 

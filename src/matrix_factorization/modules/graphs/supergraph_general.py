@@ -171,6 +171,7 @@ def create_supergraph_general(
     base_seed: int,
     device: torch.device,
     num_workers: int = 1,
+    sample_offset: int = 0,
 ) -> SuperGraphDataGeneral:
     """
     Create a SuperGraph for general graphs (allowing W-W, W-X, X-X edges).
@@ -231,7 +232,7 @@ def create_supergraph_general(
 
     # Prepare seeds
     for s in range(S):
-        seeds[s] = base_seed + s * 1000
+        seeds[s] = base_seed + (int(sample_offset) + s) * 1000
 
     # Generate edges for each sample
     if device.type == 'cuda':

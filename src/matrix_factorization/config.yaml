@@ -52,8 +52,8 @@ teacher_config:
 # 矩阵尺寸
 # =============================================================================
 matrix:
-  N1: 200      # 行数
-  N2: 200      # 列数
+  N1: 2000     # 行数
+  N2: 2000     # 列数
   M: 50       # 秩（隐藏维度）
 
 # =============================================================================
@@ -63,27 +63,33 @@ matrix:
 # kind: composite 用于一个 axis 同时覆盖多个参数，例如 size 或 cold/warm init。
 scan:
   axes:
-    onsager_policy:
+    experiment_policy:
       kind: composite
       values:
-        no_onsager:
+        fixed_onsager_cold:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+          algorithm_params.init_mode: random
+          algorithm_params.init_overlap: 0.0
+        fixed_onsager_warm_start_050:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+          algorithm_params.init_mode: teacher
+          algorithm_params.init_overlap: 0.5
+        no_onsager_cold:
           spreading.onsager_correction: false
           algorithm_params.adaptive_damping: false
           algorithm_params.damping: 0.5
-        onsager_fixed_beta005:
-          spreading.onsager_correction: true
+          algorithm_params.init_mode: random
+          algorithm_params.init_overlap: 0.0
+        no_onsager_warm_start_050:
+          spreading.onsager_correction: false
           algorithm_params.adaptive_damping: false
-          algorithm_params.damping: 0.05
-        onsager_adaptive_beta005:
-          spreading.onsager_correction: true
-          algorithm_params.adaptive_damping: true
-          algorithm_params.damping: 0.05
-          algorithm_params.step_min: 0.05
-          algorithm_params.step_max: 0.5
-          algorithm_params.step_incr: 1.1
-          algorithm_params.step_decr: 0.5
-          algorithm_params.step_window: 1
-          algorithm_params.acceptance_tolerance: 0.0
+          algorithm_params.damping: 0.5
+          algorithm_params.init_mode: teacher
+          algorithm_params.init_overlap: 0.5
     alpha:
       path: alpha
       values:
@@ -98,13 +104,16 @@ scan:
     observation_policy: nested_prefix
     strict_state: true
     adaptive_controller_state: reset
+  sample_sharding:
+    enabled: true
+    max_samples_per_shard: 5
 
 # =============================================================================
 # 训练参数
 # =============================================================================
 training:
   samples_per_alpha: 20   # 每个 alpha 值的样本数
-  max_steps: 2000          # BiG-AMP 最大迭代步数
+  max_steps: 5000          # BiG-AMP 最大迭代步数
 
 # =============================================================================
 # 随机种子（用于复现）
@@ -122,9 +131,9 @@ algorithm_params:
   learning_rate: 0.01     # AGD 学习率
   use_compile: true       # 启用 torch.compile；no_onsager 走 compiled legacy fast，corrected Onsager route 在算法内禁用 compile
   normalization_profile: paper_sparse_sampling # paper_sparse_sampling=论文 Var(x)=1；internal_normalized_legacy=旧 1/M convention
-  precision_profile: aggressive # safe / fast / aggressive
+  precision_profile: safe # safe / fast / aggressive
   precision_fallback_policy: allow  # allow=BF16 不可用时回退 FP32；error=严格报错
-  use_bf16: true          # legacy alias；新配置以 precision_profile 为准
+  use_bf16: false         # legacy alias；新配置以 precision_profile 为准
   seed_partition_policy: partition_invariant
   use_early_stop: false   # 早停
   target_loss_threshold: 1.0e-08
@@ -175,7 +184,7 @@ spreading:
 # 输出设置
 # =============================================================================
 output:
-  name: ""                # 留空自动生成
+  name: "overnight"       # 留空自动生成
   
   # 存储模式：full | lightweight | plotting_only
   storage_mode: full
@@ -193,7 +202,8 @@ output:
   # 格式: 类别.指标[:R]，其中 :R = replica (学生-学生 overlap)
   #
   # 指标类别：
-  #   A (Formal):     A.y=Q_Y fit  A.w=Q_W physical overlap  A.x=Q_X physical overlap
+  #   A (Formal):     A.y=Q_Y projection  A.w=Q_W physical overlap  A.x=Q_X physical overlap
+  #   F (Fit):        F.y=FIT_Y=1-NMSE_Y
   #   B (Cos root):  B.w=Q_W_COS_ROOT  B.x=Q_X_COS_ROOT
   #   C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
   #   D (Sign gauge): D.w=Q_W_SIGN_GAUGE  D.x=Q_X_SIGN_GAUGE
@@ -205,36 +215,36 @@ output:
   plots:
     - x: alpha
       y: Q_Y_mean
-      series_by: [onsager_policy]
-      filename: qy_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qy_by_experiment_policy.png
     - x: alpha
       y: Q_W_mean
-      series_by: [onsager_policy]
-      filename: qw_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qw_by_experiment_policy.png
     - x: alpha
       y: Q_X_mean
-      series_by: [onsager_policy]
-      filename: qx_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qx_by_experiment_policy.png
     - x: alpha
       y: Q_W_COS_ROOT_mean
-      series_by: [onsager_policy]
-      filename: qw_cos_root_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qw_cos_root_by_experiment_policy.png
     - x: alpha
       y: Q_X_COS_ROOT_mean
-      series_by: [onsager_policy]
-      filename: qx_cos_root_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qx_cos_root_by_experiment_policy.png
     - x: alpha
       y: Q_W_SIGN_GAUGE_mean
-      series_by: [onsager_policy]
-      filename: qw_sign_gauge_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qw_sign_gauge_by_experiment_policy.png
     - x: alpha
       y: Q_X_SIGN_GAUGE_mean
-      series_by: [onsager_policy]
-      filename: qx_sign_gauge_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qx_sign_gauge_by_experiment_policy.png
     - x: alpha
       y: Q_WX_SCALE_GAUGE_mean
-      series_by: [onsager_policy]
-      filename: qwqx_scale_gauge_by_onsager_policy.png
+      series_by: [experiment_policy]
+      filename: qwqx_scale_gauge_by_experiment_policy.png
 
   # 多轴 scan 中每个外层 warmstart 组完成后，立即生成组内完整结果。
   group_results:

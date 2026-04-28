@@ -7,4 +7,4 @@
 - trial 专用 config 被读取。
 - `mf trial validate` 能通过。
 - `mf trial run` 能生成 `config.json`、`metadata.json`、`metrics.json`、`manifest.json`。
-- 输出只进入 `runs/trials/matrix_bigamp_quick/`。
+- 输出只进入 `artifacts/trials/matrix_bigamp_quick/`。

@@ -486,7 +486,8 @@ def compute_all_metrics(
     if 'Q_Y' in metrics_to_compute:
         nmse, fit = normalized_mse_and_fit(Y_student, Y_teacher)
         results['NMSE_Y'] = nmse
-        results['Q_Y'] = fit
+        results['FIT_Y'] = fit
+        results['Q_Y'] = projection_abs(Y_student, Y_teacher)
 
     if 'Q_W_PROJ_ABS' in metrics_to_compute:
         results['Q_W_PROJ_ABS'] = projection_abs(W_student, W_teacher)
@@ -517,12 +518,14 @@ def compute_all_metrics(
         if 'Q_Y_unobserved' in metrics_to_compute:
             nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=False)
             results['NMSE_Y_unobserved'] = nmse
-            results['Q_Y_unobserved'] = fit
+            results['FIT_Y_unobserved'] = fit
+            results['Q_Y_unobserved'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=False)
 
         if 'Q_Y_observed' in metrics_to_compute:
             nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=True)
             results['NMSE_Y_observed'] = nmse
-            results['Q_Y_observed'] = fit
+            results['FIT_Y_observed'] = fit
+            results['Q_Y_observed'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)
 
         if 'Q_Y_observed_PROJ_ABS' in metrics_to_compute:
             results['Q_Y_observed_PROJ_ABS'] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)

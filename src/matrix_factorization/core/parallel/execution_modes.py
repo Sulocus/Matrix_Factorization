@@ -17,8 +17,8 @@ from matrix_factorization.core.distributions import (
 
 class ParallelMode(Enum):
     """Parallel execution modes for algorithms."""
-    LINEAR = auto()           # One alpha per runner batch; current runner keeps full S
-    SAMPLE_PARALLEL = auto()  # Reserved until sample_range is honored by algorithms
+    LINEAR = auto()           # One alpha per runner batch; sample sharding may slice S
+    SAMPLE_PARALLEL = auto()  # Sample sharding path with global sample_context
     ALPHA_PARALLEL = auto()   # Reserved for future sample-aware alpha planning
     HYBRID = auto()           # Hybrid: S parallel, A batched
     FULL_PARALLEL = auto()    # Full parallel: S×A all parallel

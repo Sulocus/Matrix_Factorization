@@ -259,6 +259,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         This is the main entry point called by runner.
         """
         A = len(alpha_values)
+        sample_offset = int((kwargs.get("sample_context") or {}).get("sample_start", 0))
         
         # Create teacher factors
         teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
@@ -291,7 +292,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             # TODO: Consider reusing hypergraph for samples (resample_mask=False case)
             
             for s in range(self.S):
-                sample_seed = seed + s * 1000 + int(alpha * 100)
+                global_sample = sample_offset + s
+                sample_seed = seed + global_sample * 1000 + int(alpha * 100)
                 
                 result = self._train_single_internal(
                     teacher_factors, alpha, sample_seed, self.device,
@@ -312,12 +314,18 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 completed_steps += self.max_steps
             
             # Store aggregated metrics per alpha
-            mean_qy = sum(alpha_q_y_list) / len(alpha_q_y_list)
+            qy_values = alpha_q_y_proj_abs_list or alpha_q_y_list
+            mean_qy = sum(qy_values) / len(qy_values)
+            fit_mean = sum(alpha_q_y_list) / len(alpha_q_y_list)
             self._batch_metrics[alpha] = {
                 'Q_Y_mean': mean_qy,
                 'Q_Y_observed_mean': mean_qy,
-                'Q_Y_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
-                'Q_Y_observed_std': (sum((q - mean_qy)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
+                'Q_Y_std': (sum((q - mean_qy)**2 for q in qy_values) / max(1, len(qy_values)-1)) ** 0.5 if len(qy_values) > 1 else 0.0,
+                'Q_Y_observed_std': (sum((q - mean_qy)**2 for q in qy_values) / max(1, len(qy_values)-1)) ** 0.5 if len(qy_values) > 1 else 0.0,
+                'FIT_Y_mean': fit_mean,
+                'FIT_Y_observed_mean': fit_mean,
+                'FIT_Y_std': (sum((q - fit_mean)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
+                'FIT_Y_observed_std': (sum((q - fit_mean)**2 for q in alpha_q_y_list) / max(1, len(alpha_q_y_list)-1)) ** 0.5 if len(alpha_q_y_list) > 1 else 0.0,
             }
             if alpha_nmse_y_list:
                 mean_nmse = sum(alpha_nmse_y_list) / len(alpha_nmse_y_list)
@@ -588,18 +596,21 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         norm_teacher_sq = (Y.flatten() ** 2).sum()
         if float(norm_teacher_sq.abs().item()) < 1e-12:
             Q_Y = 0.0
+            FIT_Y = 0.0
             NMSE_Y = 1.0
             Q_Y_PROJ_ABS = 0.0
         else:
             diff = Y_student.flatten() - Y.flatten()
             NMSE_Y = float((diff * diff).sum() / (norm_teacher_sq + 1e-12))
-            Q_Y = 1.0 - NMSE_Y
+            FIT_Y = 1.0 - NMSE_Y
             Q_Y_PROJ_ABS = float((Y_student.flatten() * Y.flatten()).sum().abs() / (norm_teacher_sq + 1e-12))
+            Q_Y = Q_Y_PROJ_ABS
         qn_modes = compute_tensor_factor_projection_overlaps(teacher_factors, factors)
         Q_N = sum(qn_modes) / len(qn_modes)
         
         result = {
             'Q_Y': Q_Y,
+            'FIT_Y': FIT_Y,
             'NMSE_Y': NMSE_Y,
             'Q_Y_PROJ_ABS': Q_Y_PROJ_ABS,
             'Q_N': Q_N,
@@ -632,7 +643,8 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             alpha_results = []
             
             for s in range(S):
-                seed = base_seed + s * 1000 + int(alpha * 100)
+                global_sample = sample_offset + s if 'sample_offset' in locals() else s
+                seed = base_seed + global_sample * 1000 + int(alpha * 100)
                 
                 if verbose:
                     print(f"Alpha {alpha:.2f}, Sample {s + 1}/{S}")

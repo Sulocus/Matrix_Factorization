@@ -165,12 +165,9 @@ class ParallelCoordinator:
             self.stats["plans_created"] += 1
             return self._attach_plan_provenance(plan, params)
         
-        # Strategy 3 intentionally does not reduce S/sample count yet.
-        # The current runner records sample_range but does not pass sample offsets
-        # into algorithms.  Planning with a smaller S would under-estimate memory
-        # while still executing the full sample count, which is unsafe.  Actual
-        # sample/student folding must be added only after the algorithm contract
-        # exposes sample_offset and partition-invariant random streams.
+        # Strategy 3 does not mutate S inside this coordinator.  Formal sample
+        # slicing is now handled by scan.sample_sharding in ExperimentRunner,
+        # which passes sample_context and preserves partition-invariant seeds.
 
         # Strategy 4: Fallback to one alpha per batch, full S preserved.
         logger.warning("Falling back to LINEAR mode due to memory constraints")

@@ -1,26 +1,33 @@
 # Metric Guide
 
-本文档记录当前 active path 的正式指标。schema v4 的 profile 是
-`physical_overlap_v1`：`Q_W/Q_X/Q_N` 是固定分母 latent overlap，
-`Q_Y` 是输出重构 fit。旧 schema v3 的 absolute projection 只保留在
-`*_PROJ_ABS` diagnostic 里。
+本文档记录当前 active path 的正式指标。schema v5 的 profile 是
+`projection_qy_physical_latent_v2`：`Q_W/Q_X/Q_N` 是固定分母 latent
+overlap，`Q_Y` 是 output absolute projection，`FIT_Y` 是输出重构 fit。
+旧 schema 的同名字段必须靠 `metric_schema.schema_version` 解释。
 
 ## Formal Metrics
 
 ### `Q_Y`
 
-`Q_Y` 是 output fit：
+`Q_Y` 是 output absolute projection：
+
+```text
+Q_Y = |<Y_student, Y_teacher>| / <Y_teacher, Y_teacher>
+```
+
+`FIT_Y` 是 output reconstruction fit：
 
 ```text
 NMSE_Y = sum_e (Y_student[e] - Y_teacher[e])^2 / sum_e Y_teacher[e]^2
-Q_Y = 1 - NMSE_Y
+FIT_Y = 1 - NMSE_Y
 ```
 
 规则：
 
-- 不裁切；坏结果可以小于 `0`。
-- 完美重构时 `Q_Y = 1`，零输出通常给 `Q_Y = 0`。
-- 若 evaluation set 为空或 teacher norm 小于 `1e-12`，`NMSE_Y=1`、`Q_Y=0`。
+- `Q_Y` 不裁切；scale 错误会反映为大于 `1`。
+- `FIT_Y` 不裁切；坏结果可以小于 `0`。
+- 完美重构时 `Q_Y = 1` 且 `FIT_Y = 1`，零输出通常给 `Q_Y = 0`、`FIT_Y = 0`。
+- 若 evaluation set 为空或 teacher norm 小于 `1e-12`，`Q_Y=0`、`NMSE_Y=1`、`FIT_Y=0`。
 - `Q_Y_observed` 表示 observed/training measurement set。
 - `Q_Y_unobserved` 表示 heldout 或 unobserved measurement set。
 - `Q_Y_PROJ_ABS` 是旧 absolute projection diagnostic，不是正式 `Q_Y`。
@@ -92,17 +99,17 @@ scale gauge 的大小。这个 diagnostic 不改变训练轨迹。
 
 ## Result Schema
 
-新 run 的 `metrics.json.metric_schema.schema_version` 为 `4`，并包含：
+新 run 的 `metrics.json.metric_schema.schema_version` 为 `5`，并包含：
 
 ```text
-metric_definition_profile = physical_overlap_v1
+metric_definition_profile = projection_qy_physical_latent_v2
 compatibility.physical_overlap_metric_migration = true
-metric_policy.Q_Y_formula = 1 - normalized_mse
+metric_policy.Q_Y_formula = absolute_projection_teacher_norm_squared
 metric_policy.Q_W_Q_X_normalization = fixed_coordinate_count
 metric_policy.legacy_projection_suffix = _PROJ_ABS
 metric_policy.clipped = false
 ```
 
-因此 schema v3 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 不能重解释成 schema v4
-的同名字段；必须同时查看 `metric_schema.schema_version` 和
-`metric_definition_profile`。
+`FIT_Y_mean` 另外保存 `1 - NMSE_Y`。因此 schema v3/v4 的
+`Q_Y_mean/Q_W_mean/Q_X_mean` 不能重解释成 schema v5 的同名字段；必须同时查看
+`metric_schema.schema_version` 和 `metric_definition_profile`。

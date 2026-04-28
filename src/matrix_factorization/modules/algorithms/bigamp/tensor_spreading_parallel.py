@@ -448,6 +448,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     initial_state=kwargs.get("initial_state") if len(batch_alphas) == 1 else None,
                     return_continuation_state=bool(kwargs.get("return_continuation_state", False)) and len(batch_alphas) == 1,
                     continuation_context=kwargs.get("continuation_context"),
+                    sample_context=kwargs.get("sample_context"),
                 )
                 if result.get("_continuation_state") is not None:
                     self._last_continuation_state = result["_continuation_state"]
@@ -601,13 +602,15 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         dtype: torch.dtype,
         scale: float,
         role: str,
+        sample_offset: int = 0,
     ) -> torch.Tensor:
         """Generate (A, S*N_d, M) noise independent of alpha batch partition."""
         alpha_blocks = []
         for alpha in alpha_values:
             sample_blocks = []
             alpha_token = f"{float(alpha):.12g}"
-            for sample_idx in range(self.S):
+            for local_sample_idx in range(self.S):
+                sample_idx = int(sample_offset) + local_sample_idx
                 gen = torch.Generator(device=device).manual_seed(
                     stable_partition_seed(seed, role, alpha_token, dim_index, sample_idx)
                 )
@@ -733,6 +736,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
+        sample_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, any]:
         """
         Train all alphas AND all samples in parallel using TensorSuperGraph.
@@ -751,6 +755,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         """
         n = self.order
         S = self.S
+        sample_offset = int((sample_context or {}).get("sample_start", 0))
         A = len(alpha_values)
         M = teacher_factors[0].shape[1]
 
@@ -765,6 +770,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             seed,
             device,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
+            sample_offset=sample_offset,
         )
 
         # Create TensorSuperData
@@ -774,6 +780,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution,
             seed + 1000,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
+            sample_offset=sample_offset,
         )
         superdata = self._apply_observation_precision(superdata)
 
@@ -815,6 +822,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                         dtype=t_expanded.dtype,
                         scale=self._norm.student_init_std,
                         role="warm_start_noise",
+                        sample_offset=sample_offset,
                     )
                 else:
                     noise = torch.randn_like(t_expanded) * self._norm.student_init_std
@@ -841,6 +849,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                          dtype=self.storage_dtype,
                          scale=init_scale,
                          role="spectral_init",
+                         sample_offset=sample_offset,
                      )
                      for d, N_d in enumerate(self.dims)
                  ]
@@ -884,6 +893,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                          dtype=self.storage_dtype,
                          scale=init_scale,
                          role="random_init",
+                         sample_offset=sample_offset,
                      )
                      for d, N_d in enumerate(self.dims)
                  ]
@@ -1030,6 +1040,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             seed + 910_003,
             device,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
+            sample_offset=sample_offset,
         )
         heldout_superdata = create_tensor_superdata(
             heldout_supergraph,
@@ -1037,6 +1048,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.f_distribution,
             seed + 911_021,
             partition_invariant=self._uses_partition_invariant_seed_policy(),
+            sample_offset=sample_offset,
         )
         heldout_superdata = self._apply_observation_precision(heldout_superdata)
         F_holdout_flat, Y_holdout_flat = heldout_superdata.get_flat_tensors()
@@ -1089,20 +1101,20 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         )
 
         # Aggregate: mean and std over samples
-        Q_Y_observed_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
-        Q_Y_observed_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        FIT_Y_observed_per_alpha = Q_Y_per_alpha_sample.mean(dim=1).cpu().tolist()  # (A,)
+        FIT_Y_observed_std_per_alpha = Q_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         NMSE_Y_observed_per_alpha = NMSE_Y_per_alpha_sample.mean(dim=1).cpu().tolist()
         NMSE_Y_observed_std_per_alpha = NMSE_Y_per_alpha_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         Q_Y_observed_proj_abs_per_alpha = Q_Y_observed_proj_abs_sample.mean(dim=1).cpu().tolist()
         Q_Y_observed_proj_abs_std_per_alpha = Q_Y_observed_proj_abs_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
-        Q_Y_unobserved_per_alpha = Q_Y_unobserved_sample.mean(dim=1).cpu().tolist()
-        Q_Y_unobserved_std_per_alpha = Q_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        FIT_Y_unobserved_per_alpha = Q_Y_unobserved_sample.mean(dim=1).cpu().tolist()
+        FIT_Y_unobserved_std_per_alpha = Q_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         NMSE_Y_unobserved_per_alpha = NMSE_Y_unobserved_sample.mean(dim=1).cpu().tolist()
         NMSE_Y_unobserved_std_per_alpha = NMSE_Y_unobserved_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         Q_Y_unobserved_proj_abs_per_alpha = Q_Y_unobserved_proj_abs_sample.mean(dim=1).cpu().tolist()
         Q_Y_unobserved_proj_abs_std_per_alpha = Q_Y_unobserved_proj_abs_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
-        Q_Y_full_per_alpha = Q_Y_full_sample.mean(dim=1).cpu().tolist()
-        Q_Y_full_std_per_alpha = Q_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
+        FIT_Y_full_per_alpha = Q_Y_full_sample.mean(dim=1).cpu().tolist()
+        FIT_Y_full_std_per_alpha = Q_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         NMSE_Y_full_per_alpha = NMSE_Y_full_sample.mean(dim=1).cpu().tolist()
         NMSE_Y_full_std_per_alpha = NMSE_Y_full_sample.std(dim=1).cpu().tolist() if S > 1 else [0.0] * A
         Q_Y_full_proj_abs_per_alpha = Q_Y_full_proj_abs_sample.mean(dim=1).cpu().tolist()
@@ -1162,20 +1174,26 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             overlap_matrices.append(q_matrix)
 
         result = {
-            'Q_Y': Q_Y_full_per_alpha,
-            'Q_Y_std': Q_Y_full_std_per_alpha,
+            'Q_Y': Q_Y_full_proj_abs_per_alpha,
+            'Q_Y_std': Q_Y_full_proj_abs_std_per_alpha,
+            'FIT_Y': FIT_Y_full_per_alpha,
+            'FIT_Y_std': FIT_Y_full_std_per_alpha,
             'NMSE_Y': NMSE_Y_full_per_alpha,
             'NMSE_Y_std': NMSE_Y_full_std_per_alpha,
             'Q_Y_PROJ_ABS': Q_Y_full_proj_abs_per_alpha,
             'Q_Y_PROJ_ABS_std': Q_Y_full_proj_abs_std_per_alpha,
-            'Q_Y_observed': Q_Y_observed_per_alpha,
-            'Q_Y_observed_std': Q_Y_observed_std_per_alpha,
+            'Q_Y_observed': Q_Y_observed_proj_abs_per_alpha,
+            'Q_Y_observed_std': Q_Y_observed_proj_abs_std_per_alpha,
+            'FIT_Y_observed': FIT_Y_observed_per_alpha,
+            'FIT_Y_observed_std': FIT_Y_observed_std_per_alpha,
             'NMSE_Y_observed': NMSE_Y_observed_per_alpha,
             'NMSE_Y_observed_std': NMSE_Y_observed_std_per_alpha,
             'Q_Y_observed_PROJ_ABS': Q_Y_observed_proj_abs_per_alpha,
             'Q_Y_observed_PROJ_ABS_std': Q_Y_observed_proj_abs_std_per_alpha,
-            'Q_Y_unobserved': Q_Y_unobserved_per_alpha,
-            'Q_Y_unobserved_std': Q_Y_unobserved_std_per_alpha,
+            'Q_Y_unobserved': Q_Y_unobserved_proj_abs_per_alpha,
+            'Q_Y_unobserved_std': Q_Y_unobserved_proj_abs_std_per_alpha,
+            'FIT_Y_unobserved': FIT_Y_unobserved_per_alpha,
+            'FIT_Y_unobserved_std': FIT_Y_unobserved_std_per_alpha,
             'NMSE_Y_unobserved': NMSE_Y_unobserved_per_alpha,
             'NMSE_Y_unobserved_std': NMSE_Y_unobserved_std_per_alpha,
             'Q_Y_unobserved_PROJ_ABS': Q_Y_unobserved_proj_abs_per_alpha,

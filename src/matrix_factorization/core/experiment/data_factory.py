@@ -75,6 +75,7 @@ class DataFactory:
         config: 'ExperimentConfig',
         alpha_values: Optional[List[float]] = None,
         observation_policy: Optional[str] = None,
+        sample_context: Optional[dict[str, int]] = None,
     ) -> ExperimentData:
         """
         Create all data needed for an experiment.
@@ -123,6 +124,7 @@ class DataFactory:
                 W_teacher=W_teacher,
                 X_teacher=X_teacher,
                 alpha_values=alpha_values,
+                sample_context=sample_context,
             )
             return ExperimentData(
                 W_teacher=W_teacher,
@@ -273,6 +275,7 @@ class DataFactory:
         W_teacher: torch.Tensor,
         X_teacher: torch.Tensor,
         alpha_values: List[float],
+        sample_context: Optional[dict[str, int]] = None,
     ) -> Any:
         """
         Create SpreadingDataParallel for spreading algorithms.
@@ -303,6 +306,7 @@ class DataFactory:
         N1, M = W_teacher.shape
         _, N2 = X_teacher.shape
         S = config.training.samples_per_alpha
+        sample_start = int((sample_context or {}).get("sample_start", 0))
         
         f_distribution = config.spreading.f_distribution if config.spreading else F_DISTRIBUTION_ISING
         allow_intra = bool(getattr(config.spreading, "allow_intra_connection", False)) if config.spreading else False
@@ -314,6 +318,7 @@ class DataFactory:
                 alpha_values=alpha_values,
                 S=S,
                 base_seed=config.seeds.base_seed,
+                sample_offset=sample_start,
                 device=self.device,
             )
             F_super = generate_F_super_general(
@@ -338,6 +343,7 @@ class DataFactory:
                 alpha_values=alpha_values,
                 S=S,
                 base_seed=config.seeds.base_seed,
+                sample_offset=sample_start,
                 device=self.device,
                 num_workers=config.training.num_workers,
             )

@@ -5,7 +5,7 @@ purpose: 验证 paper normalization 下 matrix spreading cold-start corrected On
 owner_area: bigamp_onsager
 config: trials/active/onsager_cold_200_m50/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/onsager_cold_200_m50
+output_root: artifacts/trials/onsager_cold_200_m50
 expected_metrics:
   - Q_Y_mean
   - Q_W_mean

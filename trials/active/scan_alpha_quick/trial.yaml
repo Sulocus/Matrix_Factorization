@@ -5,7 +5,7 @@ purpose: 验证 canonical alpha axis -> runner -> ResultCube 链路
 owner_area: scan
 config: trials/active/scan_alpha_quick/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/scan_alpha_quick
+output_root: artifacts/trials/scan_alpha_quick
 expected_metrics:
   - Q_Y_mean
 promotion_target:

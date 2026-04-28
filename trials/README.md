@@ -6,7 +6,7 @@
 
 - 只改 `trials/active/<trial_key>/config.yaml`。
 - 不改 `src/matrix_factorization/config.yaml`，除非用户明确要求修改正式默认配置。
-- 结果只写到 `runs/trials/`、`artifacts/trials/` 或 `results/trials/`。
+- 结果只写到 `artifacts/trials/`。
 - `runtime_class: quick` 可以用 `mf trial run <key>` 运行。
 - `runtime_class: medium` 和 `gpu_heavy` 可以登记、解释和校验，但默认不能由 `mf trial run` 自动启动。
 

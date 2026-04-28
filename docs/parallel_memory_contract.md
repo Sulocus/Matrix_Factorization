@@ -30,15 +30,15 @@ scan.axes
           -> ResultCube point_id
 ```
 
-当前真实可自动折叠的执行维度只有 `alpha`：
+当前真实可自动折叠的执行维度有 `alpha` 和显式/auto `sample` sharding：
 
 - `size / init / damping / onsager / arbitrary parameter axis` 会形成不同
   `ResourceGroup`，不同 group 之间不折叠。
 - `max_steps` axis 会被隔离成 point-level batch，不和 alpha folding 混在一起。
-- `sample_range` 继续只是 contract metadata；`sample_range_honored=false`
-  的 algorithm 不能被 planner 用 sample splitting 降显存。
+- `scan.sample_sharding` 负责把 `S` 维切成多个 shard。未触发切片时仍走原 fast path；
+  触发后 runner 向 algorithm 传 `sample_context`，algorithm 使用全局 sample index。
 - `scan.execution.allowed_fold_axes` 只能收紧 `BatchingSpec.foldable_axes`，
-  不能绕过 contract。请求 `sample` folding 会 preflight error。
+  不能绕过 contract。请求 `sample` folding 只有在 `sample_range_honored=true` 的 algorithm 上允许。
 
 `scan.execution` 支持：
 
@@ -48,8 +48,11 @@ scan:
     max_allocated_gb: 24.0
     target_utilization: 0.75
     device_hard_stop_gb: 30.0
-    allowed_fold_axes: [alpha]
+    allowed_fold_axes: [alpha, sample]
     auto_rebatch: preflight_only
+  sample_sharding:
+    enabled: auto
+    max_samples_per_shard: 5
 ```
 
 默认 target 是 `min(cuda_free * target_utilization, max_allocated_gb)`；低
@@ -58,16 +61,17 @@ confidence 或 `theory_unchecked` memory model 会进一步降低 effective targ
 
 ### Normalization / Precision
 
-当前 active path 的 normalization schema 是 v4：
+当前 active path 的 normalization schema 是 v5：
 
 ```text
-latent factor scale: 1/sqrt(M)
-teacher/student init variance: 1/M
-prior precision base: M
+latent factor scale: O(1)
+teacher/student init variance: 1
+prior precision base: 1
+interaction scale: 1/sqrt(M)
 metric rescale policy: none
 ```
 
-这是一项 breaking semantic migration。旧 result 如果没有 schema v4
+这是一项 breaking semantic migration。旧 result 如果没有 schema v5
 metadata，不能和新 result 静默混比。
 
 Precision profile 是新的 dtype 入口：
@@ -96,7 +100,8 @@ dtype fallback: algorithm_params.precision_fallback_policy
 tf32: controlled by algorithm_params.use_tf32
 ```
 
-当前 contract 标记 `sample_range_honored=false`，因为 runner 的 sample-range plan 没有作为正式 algorithm 输入传入。
+当前 contract 标记 `sample_range_honored=true`；`scan.sample_sharding` 触发时会传入
+`sample_context.sample_start/sample_end`，partition-invariant seed policy 使用全局 sample index。
 
 ### Matrix BiGAMP
 
@@ -109,7 +114,8 @@ compile fallback: algorithm_params.compile_fallback_policy
 tf32: controlled by algorithm_params.use_tf32
 ```
 
-这是 matrix dense path。当前 `ResourceExecutionPlan` 会把 runner alpha batch 映射成 `WorkItem`；sample_range 仍未作为正式 algorithm 输入传入。
+这是 matrix dense path。当前 `ResourceExecutionPlan` 会把 runner alpha batch 映射成 `WorkItem`；
+`scan.sample_sharding` 触发时 sample_range 由 runner wrapper 执行并合并 per-sample metrics。
 
 ### BiGAMP Spreading
 
@@ -452,16 +458,19 @@ mf calibrate memory run matrix_bigamp_target_10gb
 
 ### 当前真实支持的 batching 维度
 
-当前 runner 真实接通的是 alpha batching：同一 batch 可以包含多个 `alpha_values`，算法实际收到这组 alpha 并并行或内部调度。
+当前 runner 真实接通的是 alpha batching 和 sample sharding：同一 batch 可以包含多个
+`alpha_values`，算法实际收到这组 alpha 并并行或内部调度；当 `scan.sample_sharding`
+生效时，runner 会按 `sample_start/sample_end` 多次调用算法再合并 metrics。
 
-`sample_range` / student folding 目前只允许作为 metadata 出现在 `ResourceExecutionPlan`，不能用于降低真实执行显存。原因是 runner 尚未把 sample offset 传入算法，算法初始化随机流也没有统一暴露 `sample_offset` contract。上一版 planner 曾尝试在内存不够时把 `S` 降到 1 做估算，但 runner 实际仍按完整 `samples_per_alpha` 执行，这会低估显存；现在已经禁用。后续要恢复 sample/student folding，必须先完成：
+`sample_range` 不再只是 metadata。当前实现的边界是：
 
-- `AlgorithmSpec/BatchingSpec` 声明 `sample_range_honored=true`。
-- runner 把 `sample_range` 和 `sample_offset` 传入 algorithm。
-- algorithm 的 partition-invariant seed 使用全局 sample index，而不是 batch-local index。
-- metrics 聚合能把多个 sample batch 合并回同一个 alpha 的统计量。
+- `scan.sample_sharding.enabled=false` 或 full `S` 能跑时，runner 不进入 shard wrapper。
+- 触发 sharding 时要求 `algorithm_params.seed_partition_policy=partition_invariant`；
+  legacy seed policy 下直接报错，避免静默改变随机语义。
+- metrics 按 per-sample mean/std 合并；replica/pairwise 类 metric 在 sample shard 下不做跨 shard 精确重算。
 
-在这些条件满足前，planner 的最小真实 batch 是“单 alpha + 完整 S”，不是 “S=1”。
+因此 planner 的最小真实 batch 可以是“单 alpha + 一个 sample shard”，但只在
+`scan.sample_sharding` 生效且 seed policy 允许时使用。
 
 linear fallback 的安全检查必须检查每一个 single-alpha/full-S batch；只要最大 alpha batch 超过当前安全分配，planner 就报错。不能只看最小 alpha batch，否则会把低 alpha 能跑误判成整组能跑。
 

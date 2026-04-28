@@ -41,7 +41,7 @@ key: bad_metric
 status: active
 runtime_class: quick
 config: trials/active/bad_metric/config.yaml
-output_root: runs/trials/bad_metric
+output_root: artifacts/trials/bad_metric
 artifact_policy: ignored_workspace
 expected_metrics:
   - not_a_metric
@@ -97,7 +97,7 @@ key: bad_config_path
 status: active
 runtime_class: quick
 config: configs/bad_trial.yaml
-output_root: runs/trials/bad_config_path
+output_root: artifacts/trials/bad_config_path
 artifact_policy: ignored_workspace
 """,
         encoding="utf-8",

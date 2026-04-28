@@ -30,6 +30,7 @@ from .overlap import (
 # Available metric keys
 ALL_METRICS = {
     "Q_Y",           # measurement projection
+    "FIT_Y",         # measurement fit=1-NMSE
     "Q_W",           # W coordinate projection
     "Q_X",           # X coordinate projection
     "Q_W_SIGN_GAUGE", # W sign-gauge diagnostic
@@ -50,6 +51,7 @@ METRIC_ALIASES = {
     "qy": "Q_Y",
     "q_y": "Q_Y",
     "reconstruction": "Q_Y",
+    "fit_y": "FIT_Y",
     "qw": "Q_W",
     "q_w": "Q_W",
     "qx": "Q_X",
@@ -153,7 +155,13 @@ class CombinedMetrics:
         if "Q_Y" in self.metrics:
             nmse, fit = normalized_mse_and_fit(Y_student, Y_teacher)
             results["NMSE_Y"] = nmse
-            results["Q_Y"] = fit
+            results["FIT_Y"] = fit
+            results["Q_Y"] = projection_abs(Y_student, Y_teacher)
+
+        if "FIT_Y" in self.metrics and "FIT_Y" not in results:
+            nmse, fit = normalized_mse_and_fit(Y_student, Y_teacher)
+            results["NMSE_Y"] = nmse
+            results["FIT_Y"] = fit
 
         if "Q_Y_PROJ_ABS" in self.metrics:
             results["Q_Y_PROJ_ABS"] = projection_abs(Y_student, Y_teacher)
@@ -198,12 +206,16 @@ class CombinedMetrics:
             if "Q_Y_unobserved" in self.metrics:
                 nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=False)
                 results["NMSE_Y_unobserved"] = nmse
-                results["Q_Y_unobserved"] = fit
+                results["FIT_Y_unobserved"] = fit
+                from .overlap import _compute_qy_masked
+                results["Q_Y_unobserved"] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=False)
 
             if "Q_Y_observed" in self.metrics:
                 nmse, fit = _compute_nmse_fit_masked(Y_student, Y_teacher, mask, observed=True)
                 results["NMSE_Y_observed"] = nmse
-                results["Q_Y_observed"] = fit
+                results["FIT_Y_observed"] = fit
+                from .overlap import _compute_qy_masked
+                results["Q_Y_observed"] = _compute_qy_masked(Y_student, Y_teacher, mask, observed=True)
 
         return results
 

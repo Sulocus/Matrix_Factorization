@@ -99,13 +99,16 @@
 | `latent.WX.teacher_student.scale_gauge_magnitude` | `median_abs_log_g_mean`, `median_abs_log_g_std` | scale-gauge magnitude | approved | 拟合出的 channel scale gauge 大小，公式是 median `|log |g_k||`。 |
 | `latent.N.teacher_student.Q_N_projection` | `Q_N_mean`, `Q_N_std`, `Q_N_mode*_mean`, `Q_N_mode*_std` | Q_N | approved | tensor latent node/spin/factor projection。 |
 
-## Physical Metric Migration v4: approved active names
+## Physical Metric Migration v5: approved active names
 
 | canonical_key | active aliases | display | decision status | 备注 |
 | --- | --- | --- | --- | --- |
-| `measurement.full.teacher_student.Q_Y_fit` | `Q_Y_mean`, `Q_Y_std` | Q_Y | approved | output fit `1 - NMSE_Y`，full scope。 |
-| `measurement.observed.teacher_student.Q_Y_fit` | `Q_Y_observed_mean`, `Q_Y_observed_std` | Q_Y observed | approved | observed/training measurement fit。 |
-| `measurement.unobserved.teacher_student.Q_Y_fit` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement fit。 |
+| `measurement.full.teacher_student.Q_Y_projection` | `Q_Y_mean`, `Q_Y_std` | Q_Y | approved | output absolute projection，full scope。 |
+| `measurement.observed.teacher_student.Q_Y_projection` | `Q_Y_observed_mean`, `Q_Y_observed_std` | Q_Y observed | approved | observed/training measurement projection。 |
+| `measurement.unobserved.teacher_student.Q_Y_projection` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement projection。 |
+| `measurement.full.teacher_student.FIT_Y` | `FIT_Y_mean`, `FIT_Y_std` | FIT_Y | approved | output fit `1 - NMSE_Y`，full scope diagnostic。 |
+| `measurement.observed.teacher_student.FIT_Y` | `FIT_Y_observed_mean`, `FIT_Y_observed_std` | FIT_Y observed | approved | observed output fit diagnostic。 |
+| `measurement.unobserved.teacher_student.FIT_Y` | `FIT_Y_unobserved_mean`, `FIT_Y_unobserved_std` | FIT_Y unobserved | approved | heldout/unobserved output fit diagnostic。 |
 | `measurement.full.teacher_student.NMSE_Y` | `NMSE_Y_mean`, `NMSE_Y_std` | NMSE_Y | approved | normalized output reconstruction error。 |
 | `measurement.observed.teacher_student.NMSE_Y` | `NMSE_Y_observed_mean`, `NMSE_Y_observed_std` | NMSE_Y observed | approved | observed normalized output reconstruction error。 |
 | `measurement.unobserved.teacher_student.NMSE_Y` | `NMSE_Y_unobserved_mean`, `NMSE_Y_unobserved_std` | NMSE_Y unobserved | approved | heldout normalized output reconstruction error。 |

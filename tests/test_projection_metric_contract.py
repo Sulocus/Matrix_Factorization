@@ -86,11 +86,12 @@ def test_matrix_projection_payload_matches_hand_calculation():
     assert metrics["Q_X_SIGN_GAUGE_mean"] == pytest.approx(12.5)
     assert metrics["Q_W_PROJ_ABS_mean"] == pytest.approx(2.0)
     assert metrics["Q_X_PROJ_ABS_mean"] == pytest.approx(1.0)
-    assert metrics["Q_Y_mean"] == pytest.approx(0.0)
+    assert metrics["Q_Y_mean"] == pytest.approx(2.0)
+    assert metrics["FIT_Y_mean"] == pytest.approx(0.0)
     assert metrics["NMSE_Y_mean"] == pytest.approx(1.0)
     assert metrics["Q_Y_PROJ_ABS_mean"] == pytest.approx(2.0)
-    assert metrics["Q_Y_observed_mean"] == pytest.approx(0.0)
-    assert metrics["Q_Y_unobserved_mean"] == pytest.approx(0.0)
+    assert metrics["Q_Y_observed_mean"] == pytest.approx(2.0)
+    assert metrics["Q_Y_unobserved_mean"] == pytest.approx(2.0)
     assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
     assert metrics["Q_X_COS_ROOT_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_mean"] != metrics["Q_W_COS_ROOT_mean"]
@@ -193,5 +194,5 @@ def test_metric_schema_records_projection_policy_and_legacy_qy_load(tmp_path):
 
     assert compatibility["loaded_schema_version"] == 2
     assert compatibility["q_y_mean_interpretation"] == "legacy_cosine_or_reconstruction_proxy"
-    assert compatibility["new_schema_q_y_mean_interpretation"] == "fit_1_minus_nmse"
+    assert compatibility["new_schema_q_y_mean_interpretation"] == "absolute_projection"
     assert compatibility["new_old_q_y_mean_not_comparable"] is True

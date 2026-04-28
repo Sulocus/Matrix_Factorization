@@ -5,7 +5,7 @@ purpose: 验证 size composite axis 按 shape 隔离执行并写入 ResultCube
 owner_area: scan
 config: trials/active/scan_size_quick/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/scan_size_quick
+output_root: artifacts/trials/scan_size_quick
 expected_metrics:
   - Q_Y_mean
 promotion_target:

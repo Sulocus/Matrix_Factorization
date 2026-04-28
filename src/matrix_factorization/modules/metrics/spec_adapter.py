@@ -43,8 +43,8 @@ class MetricPayloadCheck:
             "semantic_keys": dict(self.semantic_keys),
             "unexpected_keys": list(self.unexpected_keys),
             "metric_definition_policy": {
-                "metric_definition_profile": "physical_overlap_v1",
-                "Q_Y_formula": "1 - normalized_mse",
+                "metric_definition_profile": "projection_qy_physical_latent_v2",
+                "Q_Y_formula": "absolute_projection_teacher_norm_squared",
                 "Q_W_Q_X_normalization": "fixed_coordinate_count",
                 "legacy_projection_suffix": "_PROJ_ABS",
                 "teacher_norm_epsilon": 1e-12,

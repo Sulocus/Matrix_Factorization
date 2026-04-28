@@ -41,7 +41,7 @@ def test_trial_output_root_is_ignored_workspace():
     )
 
     assert plan.is_valid
-    assert str(plan.output_root).endswith("runs/trials/matrix_bigamp_quick")
+    assert str(plan.output_root).endswith("artifacts/trials/matrix_bigamp_quick")
     assert result.returncode == 0
 
 

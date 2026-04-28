@@ -37,7 +37,7 @@
 
 - `trials/active/<trial_key>/config.yaml` 是 quick/debug trial 的唯一受控参数入口。
 - `mf trial list/explain/validate/run` 已实现。
-- `mf trial run` 只自动运行 `runtime_class: quick`，输出进入 ignored `runs/trials/`，不刷新 `results/latest`。
+- `mf trial run` 只自动运行 `runtime_class: quick`，输出进入 ignored `artifacts/trials/`，不刷新 `results/latest`。
 - 已有 quick trials：`matrix_bigamp_quick`、`scan_alpha_quick`、`scan_steps_quick`、`scan_size_quick`、`scan_init_quick`、`scan_mixed_axes_quick`。
 
 ### Projection metric schema v3
@@ -110,8 +110,8 @@
 
 - tensor serial/parallel 物理合并。
 - tensor serial/parallel 数值 parity 长跑验证。
-- sample/student folding 的真实执行接入：
-  - runner 传 `sample_range/sample_offset`
+- sample sharding 的真实执行接入已完成：
+  - runner 传 `sample_context.sample_start/sample_end`
   - algorithm 使用 global sample index
   - metrics 合并 sample batch
 - 真正会改变训练轨迹的 intervention，例如 Metropolis-like kick。

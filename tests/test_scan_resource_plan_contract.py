@@ -149,7 +149,7 @@ def test_resource_execution_plan_exposes_work_items_for_alpha_batches():
     ) == ["p0000", "p0001", "p0002"]
     assert resource_plan.batches[0].batch_axes
     assert "sample" not in resource_plan.batches[0].batch_axes
-    assert resource_plan.sample_range_honored is False
+    assert resource_plan.sample_range_honored is True
 
 
 def test_resource_execution_plan_does_not_fold_nested_or_hysteresis_groups():

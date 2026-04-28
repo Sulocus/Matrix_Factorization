@@ -117,7 +117,7 @@ deprecated
 - run metadata 会保存 `experiment_plan` 摘要，方便回看本次 run 的 effective parameters 和 warnings。
 - run metadata 会保存 `algorithm_result_batches` 摘要，记录每个 batch 的 `AlgorithmResult` 来源、result kind、available outputs 和轻量 execution metadata。
 - `metrics.json` 同样写入 `contract` 摘要，方便轻量后处理只读一个 JSON 就能知道本次结果的 contract 背景。
-- Research Trial v1 已接入：`matrix_bigamp_quick` 是内置 quick trial，真实运行时写入 `runs/trials/matrix_bigamp_quick/`，不刷新 `results/latest`。
+- Research Trial v1 已接入：`matrix_bigamp_quick` 是内置 quick trial，真实运行时写入 `artifacts/trials/matrix_bigamp_quick/`，不刷新 `results/latest`。
 - nested scaling sweep 会透传 `teacher` 配置和 `experiment_plan`，避免外层 YAML 生效但内层尺寸 run 丢失配置。
 - `results/latest` 只接受同时具有 `config.json` 和 `metadata.json` 的 run；半成品目录不会进入 display schema。
 - runner 会构造 `RuntimeExtensionExecutor`，在高层 `before_initialize` / `after_run` hook 记录 runtime extension report；当前 executor 不进入算法 step，也不改变 warm start / restart 行为。

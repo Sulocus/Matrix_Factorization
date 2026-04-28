@@ -8,14 +8,17 @@
 - `MetricSemanticClass`：metric 的 canonical 语义类。
 - `get_metric_schema()`：生成写入 `metrics.json` 的 result schema metadata。
 
-## Schema v4: `physical_overlap_v1`
+## Schema v5: `projection_qy_physical_latent_v2`
 
-当前 active schema v4 使用这些 canonical keys：
+当前 active schema v5 使用这些 canonical keys：
 
 ```text
-measurement.full.teacher_student.Q_Y_fit
-measurement.observed.teacher_student.Q_Y_fit
-measurement.unobserved.teacher_student.Q_Y_fit
+measurement.full.teacher_student.Q_Y_projection
+measurement.observed.teacher_student.Q_Y_projection
+measurement.unobserved.teacher_student.Q_Y_projection
+measurement.full.teacher_student.FIT_Y
+measurement.observed.teacher_student.FIT_Y
+measurement.unobserved.teacher_student.FIT_Y
 measurement.full.teacher_student.NMSE_Y
 measurement.observed.teacher_student.NMSE_Y
 measurement.unobserved.teacher_student.NMSE_Y
@@ -37,9 +40,10 @@ latent.WX.teacher_student.scale_gauge_magnitude
 latent.N.teacher_student.Q_N_overlap
 ```
 
-`Q_Y_mean` 是 `1 - NMSE_Y`。`Q_W_mean`、`Q_X_mean`、`Q_N_mean`
-是固定分母 coordinate overlap。`*_PROJ_ABS` 是旧 schema v3
-absolute projection diagnostic。
+`Q_Y_mean` 是 output absolute projection。`FIT_Y_mean` 是 `1 - NMSE_Y`
+reconstruction fit。`Q_W_mean`、`Q_X_mean`、`Q_N_mean` 是固定分母
+coordinate overlap。`*_PROJ_ABS` 是旧 schema v3 absolute projection
+diagnostic；在 v5 中 `Q_Y_PROJ_ABS` 与 `Q_Y` 语义相同但保留为迁移显式字段。
 
 ## 读法
 

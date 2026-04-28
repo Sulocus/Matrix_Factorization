@@ -224,6 +224,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
         *,
         alpha_values: list[float],
         sample_count: int,
+        sample_offset: int = 0,
         shape: Tuple[int, ...],
         seed: int,
         device: torch.device,
@@ -236,7 +237,8 @@ class BiGAMPAlgorithm(AlgorithmBase):
         for alpha in alpha_values:
             sample_blocks = []
             alpha_token = f"{float(alpha):.12g}"
-            for sample_idx in range(sample_count):
+            for local_sample_idx in range(sample_count):
+                sample_idx = int(sample_offset) + local_sample_idx
                 gen = torch.Generator(device=device).manual_seed(
                     _stable_partition_seed(seed, "bigamp", role, alpha_token, sample_idx)
                 )
@@ -263,6 +265,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
         role: str,
         dtype: torch.dtype = torch.float32,
         alpha_values: Optional[list[float]] = None,
+        sample_offset: int = 0,
     ) -> torch.Tensor:
         """Initialize student factors with a prescribed teacher projection."""
 
@@ -277,6 +280,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
             noise = self._randn_partitioned_matrix(
                 alpha_values=alpha_values,
                 sample_count=int(target_shape[sample_axis]),
+                sample_offset=sample_offset,
                 shape=factor_shape,
                 seed=seed,
                 device=self.device,
@@ -493,11 +497,13 @@ class BiGAMPAlgorithm(AlgorithmBase):
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[dict] = None,
+        sample_context: Optional[dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train BiG-AMP for multiple alphas in parallel."""
         N1, M = W_teacher.shape
         N2 = X_teacher.shape[1]
         S = self.S
+        sample_offset = int((sample_context or {}).get("sample_start", 0))
         device = self.device
         num_alphas = len(alpha_values)
         
@@ -527,6 +533,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
                 role="W_student",
                 dtype=self.storage_dtype,
                 alpha_values=alpha_values,
+                sample_offset=sample_offset,
             )
             x_hat = self._teacher_assisted_initialization(
                 X_teacher,
@@ -537,11 +544,13 @@ class BiGAMPAlgorithm(AlgorithmBase):
                 role="X_student",
                 dtype=self.storage_dtype,
                 alpha_values=alpha_values,
+                sample_offset=sample_offset,
             )
         elif self._uses_partition_invariant_seed_policy():
             w_hat = self._randn_partitioned_matrix(
                 alpha_values=alpha_values,
                 sample_count=S,
+                sample_offset=sample_offset,
                 shape=(N1, M),
                 seed=seed,
                 device=device,
@@ -553,6 +562,7 @@ class BiGAMPAlgorithm(AlgorithmBase):
             x_hat = self._randn_partitioned_matrix(
                 alpha_values=alpha_values,
                 sample_count=S,
+                sample_offset=sample_offset,
                 shape=(M, N2),
                 seed=seed,
                 device=device,

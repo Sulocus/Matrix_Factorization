@@ -153,6 +153,7 @@ def create_tensor_supergraph(
     seed: int,
     device: torch.device,
     partition_invariant: bool = False,
+    sample_offset: int = 0,
 ) -> TensorSuperGraph:
     """
     Create TensorSuperGraph with shared index structure.
@@ -209,7 +210,8 @@ def create_tensor_supergraph(
         indices = []
         for d in range(n):
             sample_indices = []
-            for s in range(S):
+            for local_s in range(S):
+                s = int(sample_offset) + local_s
                 gen = torch.Generator(device=device).manual_seed(
                     stable_partition_seed(seed, "tensor_supergraph", "indices", d, s)
                 )
@@ -265,6 +267,7 @@ def create_tensor_superdata(
     f_distribution: str = 'ising',
     seed: int = 12345,
     partition_invariant: bool = False,
+    sample_offset: int = 0,
 ) -> TensorSuperData:
     """
     Create TensorSuperData with F and Y tensors.
@@ -290,7 +293,8 @@ def create_tensor_superdata(
     # sample its own stream so the first C edges do not depend on batch C_max.
     if partition_invariant:
         f_samples = []
-        for s in range(S):
+        for local_s in range(S):
+            s = int(sample_offset) + local_s
             gen = torch.Generator(device=device).manual_seed(
                 stable_partition_seed(seed, "tensor_superdata", "F", s)
             )

@@ -13,7 +13,7 @@ Supports nested scans:
 - Inner loop: alpha, steps (within each size)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 from pathlib import Path
 from enum import Enum
@@ -47,6 +47,53 @@ if TYPE_CHECKING:
     from ...modules.algorithms.base import AlgorithmBase
 
 logger = logging.getLogger(__name__)
+
+
+class _SampleMetricAccumulator:
+    """Merge per-shard mean/std metric payloads over the sample axis."""
+
+    def __init__(self) -> None:
+        self._stats: Dict[float, Dict[str, Dict[str, float]]] = {}
+
+    def add(self, alpha: float, metrics: Dict[str, Any], count: int) -> None:
+        alpha_key = float(alpha)
+        n = int(count)
+        if n <= 0:
+            return
+        alpha_stats = self._stats.setdefault(alpha_key, {})
+        for key, value in metrics.items():
+            if key.endswith("_std") or "replica" in key:
+                continue
+            if not key.endswith("_mean"):
+                continue
+            try:
+                mean = float(value)
+            except (TypeError, ValueError):
+                continue
+            std_key = f"{key[:-5]}_std"
+            try:
+                std = float(metrics.get(std_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                std = 0.0
+            stat = alpha_stats.setdefault(key[:-5], {"n": 0.0, "sum": 0.0, "sumsq": 0.0})
+            stat["n"] += n
+            stat["sum"] += mean * n
+            stat["sumsq"] += (std * std * max(n - 1, 0)) + (mean * mean * n)
+
+    def finalize(self) -> Dict[float, Dict[str, float]]:
+        merged: Dict[float, Dict[str, float]] = {}
+        for alpha, stats in self._stats.items():
+            payload: Dict[str, float] = {}
+            for base, stat in stats.items():
+                n = max(int(stat["n"]), 0)
+                if n <= 0:
+                    continue
+                mean = stat["sum"] / n
+                var = (stat["sumsq"] - n * mean * mean) / max(n - 1, 1) if n > 1 else 0.0
+                payload[f"{base}_mean"] = float(mean)
+                payload[f"{base}_std"] = float(max(var, 0.0) ** 0.5)
+            merged[alpha] = payload
+        return merged
 
 
 class ProgressEventType(Enum):
@@ -976,13 +1023,6 @@ class ExperimentRunner:
             #     print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
             
             try:
-                # Create data for this batch
-                data = self.data_factory.create(config, alpha_values=batch_alpha_values)
-                
-                # Check abort after data creation (OOM may occur during data setup)
-                if self._memory_guard and self._memory_guard.is_running:
-                    self._memory_guard.check_abort()
-                
                 # Create a localized step callback for this batch
                 def internal_step_callback(step, total, metrics=None):
                     # Check memory abort flag every step (no algorithm modification needed)
@@ -997,14 +1037,37 @@ class ExperimentRunner:
                     })
 
                 # Run algorithm for this batch
-                if output_options:
-                    setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
-                batch_algorithm_result = self._run_algorithm_result(
-                    algorithm=algorithm,
-                    config=config,
-                    data=data,
-                    step_callback=internal_step_callback,
-                )
+                sample_sharded = len(self._effective_sample_shard_ranges(config)) > 1
+                if sample_sharded:
+                    batch_algorithm_result = self._run_algorithm_result_sample_sharded(
+                        config=config,
+                        alpha_values=batch_alpha_values,
+                        step_callback=internal_step_callback,
+                        output_options=output_options,
+                    )
+                    data = ExperimentData(
+                        W_teacher=result.W_teacher,
+                        X_teacher=result.X_teacher,
+                        Y_teacher=result.Y_teacher,
+                        alpha_values=batch_alpha_values,
+                        device=self.device,
+                    )
+                else:
+                    # Create data for this batch
+                    data = self.data_factory.create(config, alpha_values=batch_alpha_values)
+                    
+                    # Check abort after data creation (OOM may occur during data setup)
+                    if self._memory_guard and self._memory_guard.is_running:
+                        self._memory_guard.check_abort()
+                    
+                    if output_options:
+                        setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
+                    batch_algorithm_result = self._run_algorithm_result(
+                        algorithm=algorithm,
+                        config=config,
+                        data=data,
+                        step_callback=internal_step_callback,
+                    )
                 self._record_algorithm_result_summary(
                     result=result,
                     batch_idx=batch_idx,
@@ -1801,6 +1864,8 @@ class ExperimentRunner:
         allocation = getattr(plan, "allocation_config", None)
         algorithm_params = getattr(config, "algorithm_params", None)
         spreading = getattr(config, "spreading", None)
+        shard_ranges = self._effective_sample_shard_ranges(config)
+        sharding = getattr(config, "sample_sharding", None)
         return {
             "algorithm_key": config.algorithm_key,
             "device": str(self.device),
@@ -1827,6 +1892,12 @@ class ExperimentRunner:
                 "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
             },
             "seed_policy": self._effective_runtime_seed_policy(config),
+            "sample_sharding": {
+                "configured": sharding.to_dict() if sharding is not None else None,
+                "effective": len(shard_ranges) > 1,
+                "shard_count": len(shard_ranges),
+                "shard_ranges": [list(item) for item in shard_ranges],
+            },
             "replan_safety": {
                 "seed_partition_policy": getattr(plan, "seed_partition_policy", "legacy"),
                 "replan_policy_key": getattr(plan, "replan_policy_key", ""),
@@ -1842,7 +1913,7 @@ class ExperimentRunner:
                 {
                     "batch_index": idx,
                     "sample_range": list(batch.sample_range),
-                    "sample_range_honored_by_runner": False,
+                    "sample_range_honored_by_runner": len(shard_ranges) > 1,
                     "alpha_range": list(batch.alpha_range),
                     "alpha_values": [float(value) for value in self._batch_alpha_values(batch)],
                     "batch_axes": list(getattr(batch, "batch_axes", []) or []),
@@ -1901,6 +1972,7 @@ class ExperimentRunner:
         initial_state: Optional[Any] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
+        sample_context: Optional[Dict[str, Any]] = None,
     ) -> AlgorithmResult:
         """Run algorithm through the formal AlgorithmResult interface."""
         is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
@@ -1923,6 +1995,7 @@ class ExperimentRunner:
                     "initial_state": initial_state,
                     "return_continuation_state": return_continuation_state,
                     "continuation_context": continuation_context,
+                    "sample_context": sample_context,
                 },
             )
             return algorithm.train_batch_result(**call_kwargs)
@@ -1939,6 +2012,148 @@ class ExperimentRunner:
             W_students=W_students,
             X_students=X_students,
         )
+
+    def _run_algorithm_result_sample_sharded(
+        self,
+        *,
+        config: ExperimentConfig,
+        alpha_values: List[float],
+        step_callback: Optional[Callable],
+        output_options: Optional[Dict[str, Any]] = None,
+    ) -> AlgorithmResult:
+        """Run one alpha batch as multiple S shards and merge scalar metrics."""
+        ranges = self._effective_sample_shard_ranges(config)
+        if len(ranges) <= 1:
+            data = self.data_factory.create(config, alpha_values=alpha_values)
+            algorithm = self._get_algorithm(config)
+            if output_options:
+                setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
+            return self._run_algorithm_result(
+                algorithm=algorithm,
+                config=config,
+                data=data,
+                step_callback=step_callback,
+            )
+
+        self._validate_sample_sharding_seed_policy(config)
+        accumulator = _SampleMetricAccumulator()
+        W_parts: List[torch.Tensor] = []
+        X_parts: List[torch.Tensor] = []
+        diagnostics: Dict[str, Any] = {
+            "sample_sharding": {
+                "effective": True,
+                "shard_count": len(ranges),
+                "shard_ranges": [list(item) for item in ranges],
+                "sample_total": int(config.training.samples_per_alpha),
+            }
+        }
+
+        for shard_index, (sample_start, sample_end) in enumerate(ranges):
+            sample_count = int(sample_end - sample_start)
+            shard_training = replace(config.training, samples_per_alpha=sample_count)
+            shard_config = replace(config, training=shard_training)
+            sample_context = {
+                "sample_start": int(sample_start),
+                "sample_end": int(sample_end),
+                "sample_count": sample_count,
+                "sample_total": int(config.training.samples_per_alpha),
+                "sample_shard_index": int(shard_index),
+                "sample_shard_count": int(len(ranges)),
+            }
+            shard_data = self.data_factory.create(
+                shard_config,
+                alpha_values=alpha_values,
+                sample_context=sample_context,
+            )
+            shard_algorithm = self._get_algorithm(shard_config)
+            if output_options:
+                setattr(shard_algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
+            shard_result = self._run_algorithm_result(
+                algorithm=shard_algorithm,
+                config=shard_config,
+                data=shard_data,
+                step_callback=step_callback,
+                sample_context=sample_context,
+            )
+            W_students, X_students = self._matrix_factors_from_result(shard_result)
+            for alpha_idx, alpha in enumerate(alpha_values):
+                single_data = ExperimentData(
+                    W_teacher=shard_data.W_teacher,
+                    X_teacher=shard_data.X_teacher,
+                    Y_teacher=shard_data.Y_teacher,
+                    masks=(
+                        shard_data.masks[alpha_idx:alpha_idx + 1]
+                        if shard_data.masks is not None and shard_data.masks.dim() == 3
+                        else shard_data.masks
+                    ),
+                    spreading_data=shard_data.spreading_data,
+                    alpha_values=[float(alpha)],
+                    device=shard_data.device,
+                )
+                W_single = self._slice_alpha_factor(W_students, alpha_idx)
+                X_single = self._slice_alpha_factor(X_students, alpha_idx)
+                metrics = self._compute_metrics(
+                    W_students=W_single.unsqueeze(0) if W_single is not None and W_single.dim() == 3 else W_single,
+                    X_students=X_single.unsqueeze(0) if X_single is not None and X_single.dim() == 3 else X_single,
+                    data=single_data,
+                    algorithm=shard_algorithm,
+                    algorithm_result=shard_result,
+                )
+                accumulator.add(float(alpha), metrics, sample_count)
+            if W_students is not None:
+                W_parts.append(W_students.detach())
+            if X_students is not None:
+                X_parts.append(X_students.detach())
+            del shard_data, shard_result
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        W_merged = self._concat_sample_axis(W_parts) if W_parts else None
+        X_merged = self._concat_sample_axis(X_parts) if X_parts else None
+        metadata = {
+            "result_source": "runner_sample_sharded_algorithm_result",
+            "algorithm_key": config.algorithm_key,
+            "sample_sharding": diagnostics["sample_sharding"],
+        }
+        result = AlgorithmResult(
+            metrics_by_alpha=accumulator.finalize(),
+            matrix_factors=(
+                {"W_students": W_merged, "X_students": X_merged}
+                if W_merged is not None and X_merged is not None
+                else {}
+            ),
+            metadata=metadata,
+        )
+        result.diagnostics.update(diagnostics)
+        return result
+
+    def _effective_sample_shard_ranges(self, config: ExperimentConfig) -> List[tuple[int, int]]:
+        total = int(config.training.samples_per_alpha)
+        sharding = getattr(config, "sample_sharding", None)
+        if sharding is None or not sharding.effective_enabled(total):
+            return [(0, total)]
+        max_per = int(sharding.max_samples_per_shard or total)
+        if max_per >= total:
+            return [(0, total)]
+        return [(start, min(total, start + max_per)) for start in range(0, total, max_per)]
+
+    @staticmethod
+    def _validate_sample_sharding_seed_policy(config: ExperimentConfig) -> None:
+        policy = getattr(config.algorithm_params, "seed_partition_policy", "legacy")
+        if policy != "partition_invariant":
+            raise RuntimeError(
+                "scan.sample_sharding requires algorithm_params.seed_partition_policy='partition_invariant' "
+                f"for algorithm {config.algorithm_key!r}; got {policy!r}"
+            )
+
+    @staticmethod
+    def _concat_sample_axis(parts: List[torch.Tensor]) -> Optional[torch.Tensor]:
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        dim = 1 if parts[0].dim() == 4 else 0
+        return torch.cat(parts, dim=dim)
 
     @staticmethod
     def _matrix_factors_from_result(

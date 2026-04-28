@@ -5,7 +5,7 @@ This module provides an implementation of Alternating Gradient Descent (AGD)
 specifically for high-order Tensor CP Decomposition.
 """
 
-from typing import Tuple, List, Optional, Callable
+from typing import Tuple, List, Optional, Callable, Any
 import torch
 import math
 
@@ -178,17 +178,20 @@ class TensorAGD(AlgorithmBase):
             if float(norm_teacher_sq.abs().item()) < 1e-12:
                 nmse_y = 1.0
                 q_y = 0.0
+                fit_y = 0.0
                 q_y_proj_abs = 0.0
             else:
                 sse = ((T_student - T_teacher) ** 2).sum()
                 nmse_y = float(sse / (norm_teacher_sq + 1e-12))
-                q_y = 1.0 - nmse_y
+                fit_y = 1.0 - nmse_y
                 q_y_proj_abs = float(inner.abs() / (norm_teacher_sq + 1e-12))
+                q_y = q_y_proj_abs
             
             # Save for metrics reporting
             self._last_result = {
                 'alpha': alpha,
                 'Q_Y': q_y,
+                'FIT_Y': fit_y,
                 'NMSE_Y': nmse_y,
                 'Q_Y_PROJ_ABS': q_y_proj_abs,
                 'MSE': mse
@@ -202,3 +205,60 @@ class TensorAGD(AlgorithmBase):
         # student_factors[1] is (N2, M). transpose -> (M, N2).
         
         return w_out, x_out.transpose(1, 2) 
+
+    def train_batch_alphas(
+        self,
+        W_teacher: torch.Tensor,
+        X_teacher: torch.Tensor,
+        Y_teacher: torch.Tensor,
+        masks: torch.Tensor,
+        alpha_values: list[float],
+        seed: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Train tensor AGD over alpha and sample axes with global sample seeds."""
+        sample_offset = int((kwargs.get("sample_context") or {}).get("sample_start", 0))
+        W_by_alpha = []
+        X_by_alpha = []
+        self._batch_metrics = {}
+        for alpha_idx, alpha in enumerate(alpha_values):
+            W_samples = []
+            X_samples = []
+            qy = []
+            fit = []
+            nmse = []
+            qy_proj = []
+            for local_s in range(int(self.config.training.samples_per_alpha)):
+                global_s = sample_offset + local_s
+                W_s, X_s = self.train_single_alpha(
+                    W_teacher,
+                    X_teacher,
+                    Y_teacher,
+                    masks[alpha_idx] if masks is not None and getattr(masks, "dim", lambda: 0)() == 3 else masks,
+                    float(alpha),
+                    int(seed) + global_s * 1000,
+                )
+                W_samples.append(W_s[0])
+                X_samples.append(X_s[0])
+                last = dict(getattr(self, "_last_result", {}) or {})
+                qy.append(float(last.get("Q_Y", last.get("Q_Y_PROJ_ABS", 0.0))))
+                fit.append(float(last.get("FIT_Y", 0.0)))
+                nmse.append(float(last.get("NMSE_Y", 1.0)))
+                qy_proj.append(float(last.get("Q_Y_PROJ_ABS", 0.0)))
+            W_by_alpha.append(torch.stack(W_samples, dim=0))
+            X_by_alpha.append(torch.stack(X_samples, dim=0))
+            import numpy as np
+
+            self._batch_metrics[float(alpha)] = {
+                "Q_Y_mean": float(np.mean(qy)),
+                "Q_Y_std": float(np.std(qy, ddof=1)) if len(qy) > 1 else 0.0,
+                "FIT_Y_mean": float(np.mean(fit)),
+                "FIT_Y_std": float(np.std(fit, ddof=1)) if len(fit) > 1 else 0.0,
+                "NMSE_Y_mean": float(np.mean(nmse)),
+                "NMSE_Y_std": float(np.std(nmse, ddof=1)) if len(nmse) > 1 else 0.0,
+                "Q_Y_PROJ_ABS_mean": float(np.mean(qy_proj)),
+                "Q_Y_PROJ_ABS_std": float(np.std(qy_proj, ddof=1)) if len(qy_proj) > 1 else 0.0,
+            }
+        return torch.stack(W_by_alpha, dim=0), torch.stack(X_by_alpha, dim=0)

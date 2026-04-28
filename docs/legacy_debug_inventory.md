@@ -110,7 +110,7 @@ tests/verification/
 - 用户要求“试跑、调试参数、quick trial、看一下能不能跑”时，应优先改 trial config，而不是正式 `src/matrix_factorization/config.yaml`。
 - `mf trial run` v1 只运行 `runtime_class: quick`。
 - `medium` 和 `gpu_heavy` 只允许登记、解释和校验，不能被默认自动运行。
-- trial 结果写入 ignored workspace：`runs/trials/`、`artifacts/trials/` 或 `results/trials/`。
+- trial 结果写入 ignored workspace：`artifacts/trials/`。
 
 ## Artifact 区域
 

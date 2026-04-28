@@ -15,9 +15,7 @@ from matrix_factorization.core.planning import ExperimentPlan, build_experiment_
 VALID_TRIAL_STATUSES = {"draft", "active", "promoted", "archived", "abandoned"}
 VALID_RUNTIME_CLASSES = {"quick", "medium", "gpu_heavy"}
 IGNORED_ARTIFACT_PREFIXES = (
-    Path("runs") / "trials",
     Path("artifacts") / "trials",
-    Path("results") / "trials",
 )
 
 
@@ -151,7 +149,7 @@ def load_trial_spec(ref: str, root: Optional[Path] = None) -> Tuple[TrialSpec, P
     key = str(data.get("key") or (registry_record or {}).get("key") or manifest_path.parent.name)
     runtime_class = str(data.get("runtime_class", data.get("expected_runtime", "quick")))
     config_path = str(data.get("config", data.get("config_path", f"trials/active/{key}/config.yaml")))
-    output_root = str(data.get("output_root", f"runs/trials/{key}"))
+    output_root = str(data.get("output_root", f"artifacts/trials/{key}"))
     spec = TrialSpec(
         key=key,
         status=str(data.get("status", "draft")),
@@ -200,12 +198,12 @@ def build_trial_plan(ref: str, root: Optional[Path] = None) -> TrialPlan:
             spec=placeholder,
             manifest_path=(root / "trials" / "missing.yaml"),
             config_path=(root / "trials" / "missing_config.yaml"),
-            output_root=(root / "runs" / "trials" / str(ref)),
+            output_root=(root / "artifacts" / "trials" / str(ref)),
             errors=[str(exc)],
         )
 
     config_path = _resolve_repo_path(spec.config_path, root)
-    output_root = _resolve_repo_path(spec.output_root or f"runs/trials/{spec.key}", root)
+    output_root = _resolve_repo_path(spec.output_root or f"artifacts/trials/{spec.key}", root)
     plan = TrialPlan(
         spec=spec,
         manifest_path=manifest_path,
@@ -252,7 +250,7 @@ def _validate_manifest_contract(plan: TrialPlan, root: Path) -> None:
     if not plan.config_path.exists():
         plan.errors.append(f"trial config 不存在: {_repo_display_path(plan.config_path)}")
     if not _is_ignored_artifact_workspace(plan.output_root, root):
-        plan.errors.append("output_root 必须位于 runs/trials、artifacts/trials 或 results/trials 下")
+        plan.errors.append("output_root 必须位于 artifacts/trials 下")
     for root_text in spec.artifact_roots:
         artifact_root = _resolve_repo_path(root_text, root)
         if not _is_ignored_artifact_workspace(artifact_root, root):

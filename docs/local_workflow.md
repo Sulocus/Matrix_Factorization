@@ -20,7 +20,7 @@ mf trial validate matrix_bigamp_quick
 mf trial run matrix_bigamp_quick
 ```
 
-trial 参数只改 `trials/active/<trial_key>/config.yaml`，输出写入被 ignore 的 `runs/trials/`。
+trial 参数只改 `trials/active/<trial_key>/config.yaml`，输出写入被 ignore 的 `artifacts/trials/`。
 
 ## Local GPU Calibration
 

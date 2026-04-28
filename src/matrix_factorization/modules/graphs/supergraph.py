@@ -139,6 +139,7 @@ def create_supergraph(
     base_seed: int,
     device: torch.device,
     num_workers: int = 1,
+    sample_offset: int = 0,
 ) -> SuperGraphData:
     """
     Create a SuperGraph for coupled sampling.
@@ -196,7 +197,7 @@ def create_supergraph(
 
     # Prepare seeds
     for s in range(S):
-        seeds[s] = base_seed + s * 1000
+        seeds[s] = base_seed + (int(sample_offset) + s) * 1000
 
     # PARALLEL GENERATION (CPU ONLY)
     # If device is CUDA, generation inside the loop using CUDA generator is often faster

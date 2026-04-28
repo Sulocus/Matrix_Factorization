@@ -481,6 +481,7 @@ class BiGAMPSpreading(AlgorithmBase):
         *,
         alpha_values: List[float],
         sample_count: int,
+        sample_offset: int = 0,
         node_count: int,
         latent_dim: int,
         seed: int,
@@ -492,7 +493,8 @@ class BiGAMPSpreading(AlgorithmBase):
         for alpha in alpha_values:
             sample_blocks = []
             alpha_token = f"{float(alpha):.12g}"
-            for sample_idx in range(sample_count):
+            for local_sample_idx in range(sample_count):
+                sample_idx = int(sample_offset) + local_sample_idx
                 gen = torch.Generator(device=self.device).manual_seed(
                     _stable_partition_seed(
                         seed,
@@ -529,6 +531,7 @@ class BiGAMPSpreading(AlgorithmBase):
         teacher_tensor: torch.Tensor,
         init_overlap: float,
         sample_count: int,
+        sample_offset: int = 0,
         seed: int,
         role: str,
     ) -> torch.Tensor:
@@ -543,6 +546,7 @@ class BiGAMPSpreading(AlgorithmBase):
         noise = self._randn_partitioned_spreading_flat(
             alpha_values=alpha_values,
             sample_count=sample_count,
+            sample_offset=sample_offset,
             node_count=node_count,
             latent_dim=latent_dim,
             seed=seed,
@@ -558,6 +562,7 @@ class BiGAMPSpreading(AlgorithmBase):
         *,
         alpha_values: List[float],
         sample_count: int,
+        sample_offset: int = 0,
         node_count: int,
         latent_dim: int,
         seed: int,
@@ -569,7 +574,8 @@ class BiGAMPSpreading(AlgorithmBase):
         for alpha in alpha_values:
             sample_blocks = []
             alpha_token = f"{float(alpha):.12g}"
-            for sample_idx in range(sample_count):
+            for local_sample_idx in range(sample_count):
+                sample_idx = int(sample_offset) + local_sample_idx
                 gen = torch.Generator(device=self.device).manual_seed(
                     _stable_partition_seed(
                         seed,
@@ -647,6 +653,7 @@ class BiGAMPSpreading(AlgorithmBase):
         alpha_values: List[float],
         S: int,
         base_seed: int,
+        sample_offset: int = 0,
     ) -> SpreadingDataParallel:
         """
         Create SpreadingDataParallel for training.
@@ -673,6 +680,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 alpha_values=alpha_values,
                 S=S,
                 base_seed=base_seed,
+                sample_offset=sample_offset,
                 device=self.device,
             )
 
@@ -702,6 +710,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 alpha_values=alpha_values,
                 S=S,
                 base_seed=base_seed,
+                sample_offset=sample_offset,
                 device=self.device,
             )
 
@@ -869,6 +878,7 @@ class BiGAMPSpreading(AlgorithmBase):
         max_steps: Optional[int] = None,  # Allow override for step scanning
         batch_alpha_values: Optional[List[float]] = None,
         base_seed: Optional[int] = None,
+        sample_offset: int = 0,
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
@@ -912,6 +922,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 max_steps,
                 batch_alpha_values,
                 base_seed,
+                sample_offset=sample_offset,
                 initial_state=initial_state,
                 return_continuation_state=return_continuation_state,
                 continuation_context=continuation_context,
@@ -927,6 +938,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 max_steps,
                 batch_alpha_values,
                 base_seed,
+                sample_offset=sample_offset,
                 initial_state=initial_state,
                 return_continuation_state=return_continuation_state,
                 continuation_context=continuation_context,
@@ -972,6 +984,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 teacher_tensor=spreading_data.W_teacher,
                 init_overlap=init_overlap,
                 sample_count=S,
+                sample_offset=sample_offset,
                 seed=base_seed,
                 role="W_student",
             )
@@ -980,6 +993,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 teacher_tensor=spreading_data.X_teacher.T,
                 init_overlap=init_overlap,
                 sample_count=S,
+                sample_offset=sample_offset,
                 seed=base_seed,
                 role="X_student",
             )
@@ -1011,6 +1025,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 W_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     node_count=N1,
                     latent_dim=M,
                     seed=base_seed,
@@ -1021,6 +1036,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     node_count=N2,
                     latent_dim=M,
                     seed=base_seed,
@@ -1199,6 +1215,7 @@ class BiGAMPSpreading(AlgorithmBase):
         max_steps: Optional[int],
         batch_alpha_values: Optional[List[float]] = None,
         base_seed: Optional[int] = None,
+        sample_offset: int = 0,
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
@@ -1260,6 +1277,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 teacher_tensor=spreading_data.W_teacher,
                 init_overlap=init_overlap,
                 sample_count=S,
+                sample_offset=sample_offset,
                 seed=base_seed,
                 role="W_student",
             )
@@ -1268,6 +1286,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 teacher_tensor=spreading_data.X_teacher.T,
                 init_overlap=init_overlap,
                 sample_count=S,
+                sample_offset=sample_offset,
                 seed=base_seed,
                 role="X_student",
             )
@@ -1299,6 +1318,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 W_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     node_count=N1,
                     latent_dim=M,
                     seed=base_seed,
@@ -1309,6 +1329,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 X_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     node_count=N2,
                     latent_dim=M,
                     seed=base_seed,
@@ -1542,6 +1563,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     noise_W = self._randn_partitioned_restart_noise(
                         alpha_values=effective_alpha_values,
                         sample_count=S,
+                        sample_offset=sample_offset,
                         node_count=N1,
                         latent_dim=M,
                         seed=base_seed,
@@ -1552,6 +1574,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     noise_X = self._randn_partitioned_restart_noise(
                         alpha_values=effective_alpha_values,
                         sample_count=S,
+                        sample_offset=sample_offset,
                         node_count=N2,
                         latent_dim=M,
                         seed=base_seed,
@@ -1928,6 +1951,7 @@ class BiGAMPSpreading(AlgorithmBase):
         sample_callback=None,  # Optional sample-level callback (now batch_callback)
         max_memory_gb: float = 24.0,  # Maximum GPU memory to use (default 24GB for safety)
         spreading_data: Optional[SpreadingDataParallel] = None,
+        sample_context: Optional[Dict[str, Any]] = None,
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
@@ -1964,6 +1988,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # Input alpha_values are already batched by ParallelCoordinator in runner.py
         # We process them as a single chunk here.
         S = self.config.training.samples_per_alpha
+        sample_offset = int((sample_context or {}).get("sample_start", 0))
         N1, M = W_teacher.shape
         N2 = X_teacher.shape[1]
         A = len(alpha_values)
@@ -1992,6 +2017,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     max_steps=max_steps,
                     batch_alpha_values=alpha_values,
                     base_seed=batch_seed,
+                    sample_offset=sample_offset,
                     initial_state=initial_state,
                     return_continuation_state=return_continuation_state,
                     continuation_context=continuation_context,
@@ -2029,6 +2055,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     max_steps=max_steps,
                     batch_alpha_values=batch_alpha_list,
                     base_seed=batch_seed,
+                    sample_offset=sample_offset,
                 )
                 W_result[alpha_start:alpha_end] = W_batch.transpose(0, 1)
                 X_result[alpha_start:alpha_end] = X_batch.transpose(0, 1)
@@ -2071,7 +2098,7 @@ class BiGAMPSpreading(AlgorithmBase):
             # Legacy offsets seed by batch_idx; partition_invariant keeps base_seed stable.
             batch_seed = self._spreading_batch_seed(seed, batch_idx)
             batch_spreading_data = self.create_spreading_data(
-                W_teacher, X_teacher, batch_alpha_list, S, batch_seed
+                W_teacher, X_teacher, batch_alpha_list, S, batch_seed, sample_offset=sample_offset
             )
 
             # Train this batch using LOCAL spreading_data
@@ -2084,6 +2111,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 max_steps=max_steps,
                 batch_alpha_values=batch_alpha_list,
                 base_seed=batch_seed,
+                sample_offset=sample_offset,
                 initial_state=initial_state if len(batch_alpha_list) == 1 else None,
                 return_continuation_state=return_continuation_state and len(batch_alpha_list) == 1,
                 continuation_context=continuation_context,
@@ -2224,6 +2252,7 @@ class BiGAMPSpreading(AlgorithmBase):
         max_steps: Optional[int] = None,
         batch_alpha_values: Optional[List[float]] = None,
         base_seed: Optional[int] = None,
+        sample_offset: int = 0,
         initial_state: Optional[AlgorithmStateView] = None,
         return_continuation_state: bool = False,
         continuation_context: Optional[Dict[str, Any]] = None,
@@ -2316,6 +2345,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     teacher_tensor=V_teacher,
                     init_overlap=init_overlap,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     seed=base_seed,
                     role="V_student",
                 )
@@ -2337,6 +2367,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 V_flat = self._randn_partitioned_spreading_flat(
                     alpha_values=effective_alpha_values,
                     sample_count=S,
+                    sample_offset=sample_offset,
                     node_count=N_total,
                     latent_dim=M,
                     seed=base_seed,

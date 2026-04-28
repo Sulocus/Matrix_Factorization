@@ -5,11 +5,9 @@ purpose: 验证 trial config -> runner -> result save 链路
 owner_area: framework
 config: trials/active/matrix_bigamp_quick/config.yaml
 artifact_policy: ignored_workspace
-output_root: runs/trials/matrix_bigamp_quick
+output_root: artifacts/trials/matrix_bigamp_quick
 artifact_roots:
-  - runs/trials/matrix_bigamp_quick
   - artifacts/trials/matrix_bigamp_quick
-  - results/trials/matrix_bigamp_quick
 expected_metrics:
   - Q_Y_mean
 promotion_target:
