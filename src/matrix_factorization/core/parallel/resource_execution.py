@@ -228,27 +228,54 @@ def build_scan_resource_execution_plan(
                 })
                 if not alpha_values:
                     alpha_values = [float(group_config.algorithm_params.default_alpha)]
-                params = estimation_params_from_config(group_config, alpha_values)
-                execution_plan = planner.plan_execution(params)
-                for template in execution_plan.batches:
-                    template_alphas = [float(value) for value in getattr(template, "alpha_values", []) or []]
-                    work_items = [
-                        _work_item_from_point(point, tuple(getattr(template, "sample_range", (0, params.S))), base_config.algorithm_key)
-                        for point in group_points
-                        if point.alpha is None or float(point.alpha) in template_alphas
-                    ]
-                    if not work_items:
-                        continue
-                    resource_batch = _resource_batch_from_template(
-                        batch_index=batch_index,
-                        group_id=group.group_id,
-                        template=template,
-                        work_items=work_items,
-                        seed_partition_policy=getattr(execution_plan, "seed_partition_policy", seed_policy),
+                if "alpha" not in options.allowed_fold_axes:
+                    representative_params = estimation_params_from_config(
+                        effective_config_for_scan_points(base_config, [group_points[0]]),
+                        [float(group_points[0].alpha or base_config.algorithm_params.default_alpha)],
                     )
-                    batches.append(resource_batch)
-                    batch_index += 1
-                representative_params = params
+                    for point in group_points:
+                        point_alpha = float(point.alpha or group_config.algorithm_params.default_alpha)
+                        point_config = effective_config_for_scan_points(base_config, [point])
+                        point_params = estimation_params_from_config(point_config, [point_alpha])
+                        execution_plan = planner.plan_execution(point_params)
+                        template = execution_plan.batches[0] if execution_plan.batches else None
+                        resource_batch = _resource_batch_from_template(
+                            batch_index=batch_index,
+                            group_id=group.group_id,
+                            template=template,
+                            work_items=[
+                                _work_item_from_point(
+                                    point,
+                                    tuple(getattr(template, "sample_range", (0, point_params.S))) if template else (0, point_params.S),
+                                    base_config.algorithm_key,
+                                )
+                            ],
+                            seed_partition_policy=getattr(execution_plan, "seed_partition_policy", seed_policy),
+                        )
+                        batches.append(resource_batch)
+                        batch_index += 1
+                else:
+                    params = estimation_params_from_config(group_config, alpha_values)
+                    execution_plan = planner.plan_execution(params)
+                    for template in execution_plan.batches:
+                        template_alphas = [float(value) for value in getattr(template, "alpha_values", []) or []]
+                        work_items = [
+                            _work_item_from_point(point, tuple(getattr(template, "sample_range", (0, params.S))), base_config.algorithm_key)
+                            for point in group_points
+                            if point.alpha is None or float(point.alpha) in template_alphas
+                        ]
+                        if not work_items:
+                            continue
+                        resource_batch = _resource_batch_from_template(
+                            batch_index=batch_index,
+                            group_id=group.group_id,
+                            template=template,
+                            work_items=work_items,
+                            seed_partition_policy=getattr(execution_plan, "seed_partition_policy", seed_policy),
+                        )
+                        batches.append(resource_batch)
+                        batch_index += 1
+                    representative_params = params
         except MemoryError as exc:
             message = f"group {group.group_id}: {exc}"
             group_errors.append(message)

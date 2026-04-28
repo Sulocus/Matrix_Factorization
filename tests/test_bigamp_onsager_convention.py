@@ -105,6 +105,178 @@ def test_flat_adaptive_output_variance_includes_cross_variance_at_cold_start():
     assert torch.allclose(pvar, torch.tensor([[1.0]]))
 
 
+def test_corrected_pvar_controls_cold_start_residual_scale():
+    from matrix_factorization.modules.algorithms.bigamp.step import (
+        forward_disjoint_union_flat_corrected,
+        forward_disjoint_union_flat_legacy_fast,
+    )
+
+    torch.manual_seed(0)
+    M = 50
+    edges = 512
+    W = torch.randn(1, edges, M) * 0.1
+    X = torch.randn(1, edges, M) * 0.1
+    W_var = torch.ones_like(W)
+    X_var = torch.ones_like(X)
+    F = torch.randint(0, 2, (edges, M), dtype=torch.float32) * 2 - 1
+    idx = torch.arange(edges)
+    mask = torch.ones(1, edges, dtype=torch.bool)
+
+    _, zvar_legacy = forward_disjoint_union_flat_legacy_fast(
+        W,
+        X,
+        W_var,
+        X_var,
+        F,
+        idx,
+        idx,
+        mask,
+        is_rademacher=True,
+    )
+    _, pvar_corrected = forward_disjoint_union_flat_corrected(
+        W,
+        X,
+        W_var,
+        X_var,
+        F,
+        idx,
+        idx,
+        mask,
+        is_rademacher=True,
+    )
+
+    ratio = torch.median(pvar_corrected / zvar_legacy)
+    assert 35.0 < float(ratio) < 70.0
+
+    Y = torch.randn(edges)
+    legacy_s = (Y.unsqueeze(0) / zvar_legacy).abs()
+    corrected_s = (Y.unsqueeze(0) / pvar_corrected).abs()
+    s_ratio = torch.median(legacy_s / corrected_s)
+    assert 35.0 < float(s_ratio) < 70.0
+
+
+def test_spreading_onsager_update_route_metadata():
+    from matrix_factorization.core.experiment.config import (
+        AlgorithmParams,
+        ExperimentConfig,
+        MatrixParams,
+        ScanConfig,
+        SpreadingConfig,
+        TrainingParams,
+    )
+    from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+
+    def make_algorithm(*, onsager: bool, adaptive: bool):
+        config = ExperimentConfig(
+            matrix=MatrixParams(N1=3, N2=3, M=2),
+            training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
+            algorithm_key="bigamp_spreading",
+            scan=ScanConfig(dimension="alpha", values=[0.5]),
+            spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=onsager, chunk_size=0),
+            algorithm_params=AlgorithmParams(
+                damping=0.05,
+                adaptive_damping=adaptive,
+                use_compile=False,
+                use_bf16=False,
+                precision_profile="safe",
+                seed_partition_policy="partition_invariant",
+            ),
+        )
+        return BiGAMPSpreading(config, torch.device("cpu"))
+
+    assert make_algorithm(onsager=False, adaptive=False)._contract_execution_metadata[
+        "onsager_update_route"
+    ] == "legacy_no_onsager"
+    assert make_algorithm(onsager=True, adaptive=False)._contract_execution_metadata[
+        "onsager_update_route"
+    ] == "corrected_fixed_onsager"
+    assert make_algorithm(onsager=True, adaptive=True)._contract_execution_metadata[
+        "onsager_update_route"
+    ] == "corrected_adaptive_onsager"
+
+
+def test_corrected_onsager_internal_alpha_batches_split_large_spreading_step():
+    from matrix_factorization.core.experiment.config import (
+        AlgorithmParams,
+        ExperimentConfig,
+        MatrixParams,
+        ScanConfig,
+        SpreadingConfig,
+        TrainingParams,
+    )
+    from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+
+    alpha_values = [round(i * 0.1, 1) for i in range(41)]
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=200, N2=200, M=50),
+        training=TrainingParams(samples_per_alpha=20, max_steps=1, max_epochs=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=alpha_values),
+        spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=True, chunk_size=0),
+        algorithm_params=AlgorithmParams(
+            damping=0.05,
+            adaptive_damping=False,
+            use_compile=False,
+            use_bf16=False,
+            precision_profile="safe",
+            seed_partition_policy="partition_invariant",
+        ),
+    )
+    algorithm = BiGAMPSpreading(config, torch.device("cpu"))
+
+    batches = algorithm._compute_internal_spreading_alpha_batches(alpha_values, sample_count=20)
+
+    assert len(batches) > 1
+    assert batches[0][0] == 0
+    assert batches[-1][1] == len(alpha_values)
+    for start, end, alpha_max in batches:
+        assert end > start
+        assert alpha_max == max(alpha_values[start:end])
+        assert (
+            algorithm._estimate_flat_step_elements(
+                alpha_count=end - start,
+                alpha_max=alpha_max,
+                sample_count=20,
+            )
+            <= 160_000_000
+            or end == start + 1
+        )
+
+
+def test_legacy_no_onsager_keeps_single_internal_alpha_batch():
+    from matrix_factorization.core.experiment.config import (
+        AlgorithmParams,
+        ExperimentConfig,
+        MatrixParams,
+        ScanConfig,
+        SpreadingConfig,
+        TrainingParams,
+    )
+    from matrix_factorization.modules.algorithms.bigamp.spreading import BiGAMPSpreading
+
+    alpha_values = [round(i * 0.1, 1) for i in range(41)]
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=200, N2=200, M=50),
+        training=TrainingParams(samples_per_alpha=20, max_steps=1, max_epochs=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=alpha_values),
+        spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=False, chunk_size=0),
+        algorithm_params=AlgorithmParams(
+            damping=0.5,
+            adaptive_damping=False,
+            use_compile=False,
+            use_bf16=False,
+            precision_profile="safe",
+            seed_partition_policy="partition_invariant",
+        ),
+    )
+    algorithm = BiGAMPSpreading(config, torch.device("cpu"))
+
+    batches = algorithm._compute_internal_spreading_alpha_batches(alpha_values, sample_count=20)
+
+    assert batches == [(0, len(alpha_values), max(alpha_values))]
+
+
 def test_tensor_variance_includes_cross_variance_at_cold_start():
     from matrix_factorization.modules.algorithms.bigamp.tensor_step import compute_variance_tensor
 

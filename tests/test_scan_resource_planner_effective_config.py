@@ -160,3 +160,41 @@ def test_spreading_resource_estimation_keeps_requested_compile_path():
     assert resource_plan.preflight_errors == []
     assert resource_plan.num_batches > 1
     assert resource_plan.groups[0].estimation_params["use_compile"] is True
+
+
+def test_scan_execution_can_disable_alpha_folding():
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=4, N2=4, M=1),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0, 0.1]),
+        algorithm_params=AlgorithmParams(use_compile=False, use_bf16=False),
+        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=0),
+        scan_spec={
+            "execution": {"allowed_fold_axes": []},
+            "axes": {
+                "onsager_policy": {
+                    "kind": "composite",
+                    "values": {
+                        "adaptive": {
+                            "spreading.onsager_correction": True,
+                            "algorithm_params.adaptive_damping": True,
+                        }
+                    },
+                },
+                "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+            },
+        },
+    )
+
+    resource_plan = build_scan_resource_execution_plan(
+        scan_plan=build_scan_plan(config),
+        base_config=config,
+        coordinator=ParallelCoordinator(estimator=MemoryEstimator(apply_calibration=False)),
+        batching_spec=get_batching_specs()[config.algorithm_key],
+    )
+
+    assert resource_plan.preflight_errors == []
+    assert resource_plan.num_batches == 2
+    assert all(batch.batch_axes == ["point"] for batch in resource_plan.batches)
+    assert [[item.alpha for item in batch.work_items] for batch in resource_plan.batches] == [[0.0], [0.1]]

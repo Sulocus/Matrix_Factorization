@@ -1090,3 +1090,408 @@ PY
    - graph degree exact/average distinction
 6. 更新 `mf explain-config` 显示 normalization convention、paper alpha/gamma mapping。
 7. 通过 quick trials 后再跑正式 spreading experiment。
+
+## 11. 2026-04-28 05:00 scan / plotting / gauge / adaptive 状态
+
+本节记录 2026-04-28 凌晨正式 `onsager_policy × alpha` run 暴露出来的问题。这里的内容比 OCR 查找更重要，下一轮 agent 应优先阅读。
+
+### 11.1 当前正式 run 状态
+
+正式 run 根目录：
+
+```text
+/home/sucia/Matrix_Factorization/runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e
+```
+
+配置意图：
+
+- `algorithm = bigamp_spreading`
+- `N1=N2=200, M=50`
+- `samples_per_alpha = 100`
+- `max_steps = 2000`
+- `F = rademacher`
+- `teacher = gaussian`
+- `precision_profile = aggressive`
+- `scan axes = onsager_policy × alpha`
+- `onsager_policy` 三组：
+  - `no_onsager`
+  - `onsager_fixed_beta005`
+  - `onsager_adaptive_beta005`
+
+完成情况：
+
+- `groups/000_onsager_policy-no_onsager` 已完成。
+- `groups/001_onsager_policy-onsager_fixed_beta005` 已完成。
+- 第三组 `onsager_adaptive_beta005` 在第一个 batch 失败。
+
+失败位置：
+
+```text
+src/matrix_factorization/modules/algorithms/bigamp/spreading.py
+  _train_full_parallel_adaptive()
+    -> bigamp_step_disjoint_union_flat_adaptive_legacy_fast()
+      -> bigamp_step_disjoint_union_flat_legacy_fast()
+
+src/matrix_factorization/modules/algorithms/bigamp/step.py
+  line around tau_X_contrib / X variance update
+```
+
+报错：
+
+```text
+RuntimeError: CUDA driver error: unknown error
+canonical scan failed at group 3/3 |
+onsager_policy=onsager_adaptive_beta005 |
+batch 9/13 | alpha 0.00-1.40 | points 82/123
+```
+
+重新只跑 adaptive 组后，同样在第一批 `alpha 0.00-1.40` 失败。说明这不是主 run 聚合状态造成的单次偶发。
+
+### 11.2 已做但尚未 commit 的代码修改
+
+当前工作树包含未提交修改。不要直接回滚；需要下一轮 agent 审核后继续。
+
+相关文件：
+
+```text
+src/matrix_factorization/modules/algorithms/bigamp/spreading.py
+src/matrix_factorization/core/experiment/runner.py
+src/matrix_factorization/core/experiment/result.py
+src/matrix_factorization/config.yaml
+```
+
+修改意图：
+
+1. 恢复 spreading 的 legacy fast no-Onsager / fixed-Onsager 快路径。
+2. `adaptive_damping=true` 时禁用 torch.compile，避免 inductor/CUDA graph driver error。
+3. canonical group 中间结果保存时，允许把 fixed `series_by` 轴剥离后生成组内 PlotQuery 图。
+4. heatmap 支持 `Q_W_SIGN_ALIGNED`，使 heatmap 至少可以画 sign-aligned W，而不是只能画旧 Gram/raw fallback。
+5. 默认配置里 `output.heatmap_metric` 改成 `Q_W_SIGN_ALIGNED`。
+
+已通过的 targeted tests：
+
+```bash
+python -m pytest -q tests/test_result_cube.py tests/test_plot_query.py tests/test_scan_runner.py
+python -m pytest -q tests/test_bigamp_onsager_convention.py tests/test_spreading_batch_metrics.py tests/test_config_contract.py
+```
+
+未完成验证：
+
+- 这些修改尚未跑完整 `python -m pytest -q`。
+- `Q_W_SIGN_ALIGNED` heatmap runtime 还需要用小 group result 验证。
+- adaptive full-size 仍失败，因此不能把 adaptive 写成完成。
+
+### 11.3 Adaptive Onsager 的实际状态
+
+不要把 adaptive compile 问题理解成“随便开关 compile”。当前事实是：
+
+1. `no_onsager` 和 `onsager_fixed_beta005` 的 compiled fast path 可以跑，并且 GPU 利用率正常。
+2. `onsager_adaptive_beta005` 的 compiled path 在正式尺寸触发 CUDA driver error。
+3. 禁用 compile 后，极小尺寸 debug 通过：
+
+```text
+S=2, steps=2, alpha=0.0..0.1
+precision=safe      -> pass
+precision=aggressive -> pass
+```
+
+4. 禁用 compile 后，正式尺寸 `S=100, steps=2000, alpha batch 0.00..1.40` 仍失败。
+
+因此 adaptive 的问题不是单纯 compile 开关；更可能与以下因素之一有关：
+
+- adaptive path 在大 batch 下的 `scatter_add_` / variance update / BF16 workspace；
+- alpha batch 太宽，导致某个 CUDA kernel 参数或临时张量布局触发 driver bug；
+- adaptive 的 safe-state / acceptance logic 持有额外大张量，和 legacy fast step 的临时张量叠加；
+- `max_steps` UI 显示为 `1000` 但 config 是 `2000`，说明 step display 或 effective max_steps 还有显示/传递不一致，需要审计。
+
+下一步建议：
+
+1. 不要直接跑 41 点 adaptive 大 scan。
+2. 先用 `CUDA_LAUNCH_BLOCKING=1` 跑单 alpha / 小 alpha batch：
+
+```yaml
+scan:
+  axes:
+    onsager_policy:
+      kind: composite
+      values:
+        onsager_adaptive_beta005: ...
+    alpha:
+      path: alpha
+      values: [0.0]
+```
+
+3. 分别测试：
+
+```text
+S=100, steps=2
+S=100, steps=50
+S=100, steps=2000
+precision=safe / fast / aggressive
+alpha batch size = 1 / 2 / 4 / 8
+```
+
+4. 只有确认 adaptive 大尺寸稳定后，才恢复第三组正式 scan。
+
+### 11.4 Group-level plotting 问题
+
+用户要求：多组 scan 时，每一组如果可以独立解释，就在该组完成后立即生成完整普通图，而不是只生成 heatmap，最终跨组对比图仍在总 run 完成后生成。
+
+当前问题：
+
+- group-level 中间保存已写：
+  - `metrics.json`
+  - `metadata.json`
+  - `manifest.json`
+  - heatmap/GIF
+  - `artifacts/points/*/results.pt`
+- 但普通 PlotQuery 曲线没有生成。
+
+原因：
+
+```text
+src/matrix_factorization/core/experiment/runner.py
+  _group_independent_plot_configs()
+```
+
+原逻辑看到 `series_by: [onsager_policy]`，而 group 本身已经固定了 `onsager_policy`，于是把这些 plot 全部跳过。
+
+已做修改：
+
+- 如果 `series_by` 的轴已经被 group 固定，则从 `series_by` 中剥离该轴，而不是跳过该 plot。
+- 文件名自动加 suffix，例如：
+
+```text
+qy_by_onsager_policy_onsager_policy-no_onsager.png
+```
+
+这部分需要下一轮 agent 用小 canonical scan 验证 runtime。
+
+### 11.5 普通图不够科研风格的问题
+
+用户指出应急补图“不像科研绘图”。这个判断是对的。
+
+应急补图路径：
+
+```text
+groups/000_onsager_policy-no_onsager/plots/curves_QY_projection.png
+groups/000_onsager_policy-no_onsager/plots/curves_WX_projection.png
+groups/000_onsager_policy-no_onsager/plots/curves_WX_diagnostics.png
+```
+
+这些图是临时脚本直接画的，只用于即时查看，不应作为正式输出风格。
+
+正式图应该走：
+
+```text
+src/matrix_factorization/core/experiment/result.py
+  _plot_result_cube_queries()
+
+src/matrix_factorization/modules/outputs/publication_style.py
+```
+
+下一步应该：
+
+- 删除或不再依赖手工补图逻辑。
+- 确保 group-level save 调用 `ExperimentResult.save(... output_options=group_output_options)` 时真正触发 `_plot_result_cube_queries()`。
+- PlotQuery 图必须带 errorbar，使用 `*_std`。
+- legend 来自 scan coordinate，不靠目录名猜。
+
+### 11.6 Sign 与 scale-gauge 图
+
+当前已有 formal sign-aligned metric：
+
+```text
+Q_W_SIGN_ALIGNED_mean/std
+Q_X_SIGN_ALIGNED_mean/std
+```
+
+简写：
+
+```text
+D.w = Q_W_SIGN_ALIGNED
+D.x = Q_X_SIGN_ALIGNED
+```
+
+相关文件：
+
+```text
+src/matrix_factorization/modules/metrics/overlap.py
+src/matrix_factorization/modules/metrics/spreading.py
+src/matrix_factorization/modules/outputs/plot_registry.py
+src/matrix_factorization/core/contracts.py
+```
+
+用户提到的 `Q_w gauged` 更准确地说是 posthoc scale-gauge aligned diagnostic，不是当前 formal MetricSpec。
+
+现有脚本：
+
+```text
+scripts/analysis/posthoc_scale_gauge.py
+```
+
+它计算：
+
+```text
+Q_W_SCALE_GAUGE_mean/std
+Q_X_SCALE_GAUGE_mean/std
+Q_WX_SCALE_GAUGE_mean
+median_abs_log_g_mean
+```
+
+当前问题：
+
+- 该脚本默认按 ResultCube `point_id` 找：
+
+```text
+artifacts/points/<point_id>/results.pt
+```
+
+- group result 实际保存路径是：
+
+```text
+artifacts/points/<alpha>/results.pt
+```
+
+因此脚本对 group 目录会写出 0 rows。需要修脚本，让它支持：
+
+1. `point_id` 路径；
+2. alpha 路径；
+3. 或从 `result_cube.points[point_id].coordinates.alpha` 反查路径。
+
+是否要把 scale-gauge 升级为 formal metric：
+
+- 短期：建议保留为 posthoc diagnostic，因为它需要保存 W/X tensor，计算成本高，不适合默认每步/每 batch 都算。
+- 中期：可以新增 `GaugeMetricSpec` 或 `AnalyzerSpec`，把它纳入 result post-analysis，而不是训练主 metric。
+- 如果用户希望默认绘图包含它，可以在 `output.plots` 支持 posthoc plot source，但这需要 OutputSpec 声明依赖 `matrix_factors`。
+
+### 11.7 Heatmap 应该画 sign 或 gauge
+
+当前 heatmap 旧逻辑：
+
+- 如果 metrics 里有 `overlap_matrix`，用它；
+- 否则用 `W_students` 和 `W_teacher` 生成 `Q_W` Gram heatmap。
+
+用户希望至少切成 sign heatmap，或者 gauge heatmap。
+
+已做修改：
+
+```text
+src/matrix_factorization/core/experiment/result.py
+```
+
+支持：
+
+```yaml
+output:
+  heatmap_metric: Q_W_SIGN_ALIGNED
+```
+
+它会用 `sign_aligned_projection_abs(... latent_axis=-1)` 生成 W sign-aligned replica/teacher heatmap，并保存成：
+
+```text
+heatmap_W_sign_*_alpha_*.png
+animation_D.gif 或类似 suffix
+```
+
+注意：
+
+- gauge heatmap 尚未实现。
+- scale-gauge heatmap 需要同时用 W 和 X，并求每对 replica 的最佳 diagonal scale；这比 sign heatmap 更贵，建议作为 posthoc analyzer，不建议默认每个 alpha 都开。
+
+### 11.8 第一组 / 第二组当前趋势提示
+
+第一组 `no_onsager` 已读出：
+
+- `Q_Y`、`Q_W_GRAM_ROOT`、`Q_X_GRAM_ROOT`、`Q_W_SIGN_ALIGNED`、`Q_X_SIGN_ALIGNED` 在 `alpha ≈ 3.5` 附近跳升。
+- `alpha ≈ 3.6` 后很多指标超过 `0.8`。
+- `alpha = 4.0` 时 `Q_Y` 和 Gram/sign 指标接近 `1`。
+- 原始 `Q_W/Q_X` 仍只有约 `0.12`，说明 coordinate projection 被 sign/scale/gauge 敏感性压低。
+
+第二组 `onsager_fixed_beta005` 完成，但快速检查看到：
+
+```text
+Q_Y_mean(alpha=4.0) ≈ 1.36e6
+```
+
+这不是合理 overlap 数值；说明 fixed Onsager 在当前 aggressive / normalization / damping 组合下可能数值爆炸，或者 metric 输入尺度爆了。不要把第二组当成成功物理结果。
+
+### 11.9 新 agent 不应做的事
+
+- 不要把第三组 adaptive 写成“已完成”。
+- 不要继续盲跑 `onsager_adaptive_beta005` 大 scan。
+- 不要把手工补图当成正式 plotting 修复。
+- 不要把 scale-gauge 直接塞进每步训练 metric，除非先声明依赖和计算成本。
+- 不要把 heatmap 默认为 raw `Q_W`，用户希望至少是 sign-aligned。
+- 不要提交 `runs/` 或 `.pt`。
+- 不要直接 revert 当前未提交代码；先审查这些 patch 是否合理。
+
+### 11.10 2026-04-28 05:30 后续执行结果
+
+已完成的正式 run 仍是：
+
+```text
+runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e
+```
+
+该 run 的 `no_onsager` 组是当前可用 baseline：
+
+- `alpha=4.0`：`Q_Y_mean≈0.9964`
+- `Q_W_SIGN_ALIGNED_mean≈1.0049`
+- `Q_X_SIGN_ALIGNED_mean≈0.9907`
+- `Q_W_GRAM_ROOT_mean≈0.9956`
+- raw coordinate `Q_W/Q_X≈0.118`，仍然是 gauge-sensitive 读数。
+
+`onsager_fixed_beta005` 组已确认发散：
+
+- `Q_Y_mean` 多个 alpha 在 `10^5-10^7` 量级；
+- posthoc scale-gauge 对 alpha=1/2 出现 non-finite，对 alpha=3/4 仍是
+  `10^2-10^3` 量级；
+- 这不是绘图或 gauge 对齐问题，而是 factor/output scale 已经爆掉。
+
+已补的输出：
+
+```text
+runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e/groups/000_onsager_policy-no_onsager/plots/*_onsager_policy-no_onsager.png
+runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e/groups/001_onsager_policy-onsager_fixed_beta005/plots/*_onsager_policy-onsager_fixed_beta005.png
+runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e/plots/posthoc_no_vs_fixed/
+```
+
+posthoc gauge 脚本已修：
+
+- 支持 group result 的 `artifacts/points/<alpha>/results.pt` 路径；
+- 遇到 non-finite factor 时输出 `NaN` diagnostic，不再崩溃；
+- 新增测试 `tests/test_posthoc_scale_gauge.py`。
+
+新增/修正的 runtime 行为：
+
+- adaptive Onsager 不再被构造期硬关 compile；现在尝试 compiled adaptive
+  default-mode step，失败才 fallback。
+- canonical scan 会在 group 切换时清理算法 compile cache，并保留 child
+  `execution_metadata`，方便确认 effective compile/dtype。
+- `scan.execution.allowed_fold_axes: []` 现在真正能关闭 alpha folding，按单
+  alpha batch 执行；这用于后续隔离 adaptive CUDA 问题。
+
+追加 trial 结论：
+
+```text
+runs/trials/adaptive_route_probe/20260428_052543_bgs_N200_M50_ons1-a41_S100_steps100_eebe31
+runs/trials/adaptive_route_probe/20260428_053508_adaptive_cap005_probe_bgs_N200_M50_ons1-a6_S100_steps500_57f6fe
+runs/trials/onsager_damping_probe/20260428_052930_onsager_damping_probe_bgs_N200_M50_ons5-a6_S100_steps500_f770ef
+```
+
+- adaptive standalone 可以进入 compiled route，metadata 显示
+  `compile_status=effective_for_adaptive_spreading_step`、`storage_dtype=bfloat16`。
+- 但 adaptive 指标不物理：低 alpha 出现 `Q_Y>1` 和 sign-aligned latent
+  projection `>1`，说明 over-scale/overfit。
+- fixed beta 从 `0.05` 降到 `0.0005` 仍不能避免 500-step 爆炸。
+- mixed scan 中 fixed 组发散后再进入 adaptive 组仍可能触发 CUDA driver error；
+  不要把这个解释为单纯显存不够，也不要靠永久关闭 compile 掩盖。
+
+当前建议：
+
+- 继续使用 `no_onsager` 作为正式 baseline。
+- Onsager 线先停止大跑，回到 reference BiGAMP 的 `pvar/zvar/svar/shat`、
+  value/cost 和 damping state machine 做逐项修正。
+- 若必须跑 adaptive，只能先用单独 trial/单独进程隔离；不要接在已知发散的
+  fixed Onsager group 后面。

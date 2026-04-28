@@ -147,3 +147,68 @@ def test_canonical_heatmap_uses_alpha_coordinate_for_point_ids(tmp_path, monkeyp
 
     assert captured["alpha"] == 0.2
     assert captured["prefix"].startswith("heatmap_W_mean_scale_0.4_p0000")
+
+
+def test_heatmap_metric_can_use_w_sign_aligned(tmp_path, monkeypatch):
+    import numpy as np
+    from matrix_factorization.modules.outputs import plotting
+
+    config = _config({"axes": {"alpha": {"path": "alpha", "values": [0.0]}}})
+    result = ExperimentResult("sign_heatmap", config, scan_dimension="alpha", scan_values=[0.0])
+    single = SingleRunResult(
+        scan_value=0.0,
+        metrics={"Q_Y_mean": 1.0, "Q_W_SIGN_ALIGNED_mean": 1.0},
+        W_students=torch.tensor([
+            [[1.0, -2.0], [3.0, -4.0]],
+            [[-1.0, 2.0], [-3.0, 4.0]],
+        ]),
+    )
+    result.W_teacher = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    result.add_result(0.0, single)
+
+    captured = {}
+
+    def fake_heatmap(matrix, alpha, output_dir, metric_name="Q_W", filename_prefix="heatmap", **kwargs):
+        captured["matrix"] = np.asarray(matrix)
+        captured["metric_name"] = metric_name
+        captured["prefix"] = filename_prefix
+        path = output_dir / f"{filename_prefix}_alpha_{alpha:.6f}.png"
+        path.write_text("fake", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(plotting, "plot_replica_heatmap", fake_heatmap)
+    monkeypatch.setattr(plotting, "create_gif", lambda paths, output_path, duration=0.2: output_path)
+
+    result.save(
+        tmp_path,
+        save_tensors=False,
+        output_options={"enable_heatmap": True, "heatmap_metric": "Q_W_SIGN_ALIGNED"},
+    )
+
+    assert captured["prefix"].startswith("heatmap_W_sign")
+    assert "Sign-Aligned" in captured["metric_name"]
+    assert captured["matrix"].shape == (3, 3)
+
+
+def test_heatmap_rsb_ordering_accepts_projection_values_above_one(tmp_path):
+    import numpy as np
+    from matrix_factorization.modules.outputs.plotting import plot_replica_heatmap
+
+    matrix = np.array([
+        [1.0, 1.2, 0.4, 0.2],
+        [1.2, 1.0, 1.1, 0.3],
+        [0.4, 1.1, 1.0, 1.4],
+        [0.2, 0.3, 1.4, 1.0],
+    ])
+
+    path = plot_replica_heatmap(
+        matrix,
+        alpha=3.4,
+        output_dir=tmp_path,
+        metric_name="W Sign-Aligned Projection",
+        filename_prefix="heatmap_W_sign",
+        rsb_ordering=True,
+        enhance_high_values=False,
+    )
+
+    assert path.exists()

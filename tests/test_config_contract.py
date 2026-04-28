@@ -211,7 +211,7 @@ def test_spreading_respects_use_bf16_false(monkeypatch, tmp_path):
     assert algorithm._contract_execution_metadata["dtype_status"] == "bf16_disabled_by_config"
 
 
-def test_spreading_compile_uses_legacy_fast_policy_for_medium_problem(monkeypatch):
+def test_spreading_corrected_fixed_compile_falls_back_to_eager_guard(monkeypatch):
     config = ExperimentConfig(
         matrix=MatrixParams(N1=4, N2=4, M=2),
         training=TrainingParams(samples_per_alpha=1, max_steps=1),
@@ -224,18 +224,29 @@ def test_spreading_compile_uses_legacy_fast_policy_for_medium_problem(monkeypatc
     calls = []
 
     def fake_compile(fn, *args, **kwargs):
-        calls.append(kwargs)
+        calls.append((fn.__name__, kwargs))
         return fn
 
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_corrected", None)
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
     monkeypatch.setattr(torch, "compile", fake_compile)
 
     algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
 
-    assert calls
-    assert calls[0].get("mode") == "reduce-overhead"
-    assert algorithm._contract_execution_metadata["compile_cuda_graphs_enabled"] is True
+    assert calls == []
+    assert algorithm.requested_use_compile is True
+    assert algorithm.use_compile is False
+    assert algorithm._contract_execution_metadata["onsager_update_route"] == "corrected_fixed_onsager"
+    assert (
+        algorithm._contract_execution_metadata["compile_status"]
+        == "fallback_to_eager_corrected_spreading_step"
+    )
+    assert (
+        algorithm._contract_execution_metadata["compile_disabled_reason"]
+        == "corrected_onsager_compile_disabled_cuda_allocator_guard"
+    )
+    assert algorithm._contract_execution_metadata["compile_cuda_graphs_enabled"] is False
 
 
 def test_spreading_cuda_compile_keeps_user_requested_compile(monkeypatch):
@@ -255,6 +266,7 @@ def test_spreading_cuda_compile_keeps_user_requested_compile(monkeypatch):
         return fn
 
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_corrected", None)
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
     monkeypatch.setattr(torch, "compile", fake_compile)
 
@@ -263,8 +275,52 @@ def test_spreading_cuda_compile_keeps_user_requested_compile(monkeypatch):
     assert algorithm.requested_use_compile is True
     assert algorithm.use_compile is True
     assert calls
-    assert calls[0].get("mode") == "reduce-overhead"
+    assert calls[0].get("mode") == "default"
+    assert algorithm._contract_execution_metadata["onsager_update_route"] == "legacy_no_onsager"
+    assert algorithm._contract_execution_metadata["compile_cuda_graphs_enabled"] is False
     assert algorithm._contract_execution_metadata["compile_disabled_reason"] == ""
+
+
+def test_spreading_adaptive_compile_falls_back_to_eager_guard(monkeypatch):
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=4, N2=4, M=2),
+        training=TrainingParams(samples_per_alpha=1, max_steps=1),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=[0.0]),
+        algorithm_params=AlgorithmParams(
+            use_compile=True,
+            use_bf16=False,
+            adaptive_damping=True,
+        ),
+        spreading=SpreadingConfig(tensor_order=2, onsager_correction=True),
+        teacher_key="standard",
+    )
+    calls = []
+
+    def fake_compile(fn, *args, **kwargs):
+        calls.append((fn.__name__, kwargs))
+        return fn
+
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_corrected", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    algorithm = BiGAMPSpreading(config, device=torch.device("cpu"))
+
+    assert calls == []
+    assert algorithm.requested_use_compile is True
+    assert algorithm.use_compile is False
+    assert algorithm._contract_execution_metadata["onsager_update_route"] == "corrected_adaptive_onsager"
+    assert (
+        algorithm._contract_execution_metadata["compile_status"]
+        == "fallback_to_eager_corrected_adaptive_spreading_step"
+    )
+    assert (
+        algorithm._contract_execution_metadata["compile_disabled_reason"]
+        == "corrected_onsager_compile_disabled_cuda_allocator_guard"
+    )
+    assert algorithm._contract_execution_metadata["compile_cuda_graphs_enabled"] is False
 
 
 def test_agd_respects_use_bf16_false_on_cuda_device():
@@ -683,6 +739,7 @@ def test_tensor_parallel_compile_fallback_policy_allow_preserves_legacy_fallback
 
 def test_spreading_compile_fallback_policy_error_raises(monkeypatch):
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_corrected", None)
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
 
     def fail_compile(*args, **kwargs):
@@ -709,6 +766,7 @@ def test_spreading_compile_fallback_policy_error_raises(monkeypatch):
 
 def test_spreading_compile_fallback_policy_allow_preserves_legacy_fallback(monkeypatch):
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step", None)
+    monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_corrected", None)
     monkeypatch.setattr(BiGAMPSpreading, "_compiled_step_adaptive", None)
 
     def fail_compile(*args, **kwargs):
@@ -733,7 +791,7 @@ def test_spreading_compile_fallback_policy_allow_preserves_legacy_fallback(monke
     assert algorithm.use_compile is False
     assert algorithm.compile_attempts[0]["target"] == "bigamp_step_disjoint_union_flat"
     assert algorithm.compile_attempts[0]["success"] is False
-    assert algorithm._contract_execution_metadata["compile_status"] == "fallback_to_eager_spreading_step"
+    assert algorithm._contract_execution_metadata["compile_status"] == "fallback_to_eager_legacy_no_onsager_spreading_step"
 
 
 def test_bigamp_compile_fallback_policy_error_raises(monkeypatch):

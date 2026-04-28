@@ -28,6 +28,7 @@ from .contracts import (
     get_algorithm_metric_keys,
     get_analyzer_specs,
     get_batching_specs,
+    get_continuation_specs,
     get_effective_seed_policy_summary,
     get_intervention_specs,
     get_memory_model_specs,
@@ -609,6 +610,7 @@ def build_experiment_plan(
     plan.seed_policy_spec = seed_policy_specs.get(algorithm_key)
     plan.normalization_spec = normalization_specs.get(algorithm_key)
     plan.precision_policy_spec = precision_policy_specs.get(algorithm_key)
+    _validate_scan_continuation_options(plan)
     _build_resource_plan(plan)
 
     teacher_key = getattr(config, "teacher_key", None)
@@ -791,6 +793,13 @@ def _parameter_effective_trace(plan: ExperimentPlan, path: str) -> Tuple[Any, Op
         "teacher": ("teacher_key", getattr(config, "teacher_key", None)),
         "scan.axes": ("scan_spec.axes", _get_raw_path(raw_config, "scan.axes")),
         "scan.execution": ("scan_spec.execution", _get_raw_path(raw_config, "scan.execution")),
+        "scan.continuation.enabled": ("scan_spec.continuation.enabled", _get_raw_path(raw_config, "scan.continuation.enabled")),
+        "scan.continuation.axis": ("scan_spec.continuation.axis", _get_raw_path(raw_config, "scan.continuation.axis")),
+        "scan.continuation.order": ("scan_spec.continuation.order", _get_raw_path(raw_config, "scan.continuation.order")),
+        "scan.continuation.state_transfer": ("scan_spec.continuation.state_transfer", _get_raw_path(raw_config, "scan.continuation.state_transfer")),
+        "scan.continuation.observation_policy": ("scan_spec.continuation.observation_policy", _get_raw_path(raw_config, "scan.continuation.observation_policy")),
+        "scan.continuation.strict_state": ("scan_spec.continuation.strict_state", _get_raw_path(raw_config, "scan.continuation.strict_state")),
+        "scan.continuation.adaptive_controller_state": ("scan_spec.continuation.adaptive_controller_state", _get_raw_path(raw_config, "scan.continuation.adaptive_controller_state")),
         "tensor_order": ("spreading.tensor_order", getattr(getattr(config, "spreading", None), "tensor_order", None)),
         "training.seed": ("seeds.base_seed", getattr(getattr(config, "seeds", None), "base_seed", None)),
         "seeds.model": ("seeds.base_seed", getattr(getattr(config, "seeds", None), "base_seed", None)),
@@ -905,6 +914,9 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
         return True
     if path == "scan.execution":
         return _get_raw_path(plan.raw_config if isinstance(plan.raw_config, dict) else {}, path) is not None
+    if path.startswith("scan.continuation."):
+        raw_enabled = _get_raw_path(plan.raw_config if isinstance(plan.raw_config, dict) else {}, "scan.continuation.enabled")
+        return bool(raw_enabled)
     algorithm_key = getattr(plan.config, "algorithm_key", None)
     if path.startswith("spreading."):
         return algorithm_key in {"bigamp_spreading", "bigamp_tensor", "bigamp_tensor_parallel", "agd_spreading"}
@@ -1062,6 +1074,53 @@ def _validate_scan_execution_options(plan: ExperimentPlan) -> None:
         plan.errors.append("scan.execution.allowed_fold_axes 类型无效: expected list")
 
 
+def _validate_scan_continuation_options(plan: ExperimentPlan) -> None:
+    raw_scan = plan.raw_config.get("scan", {}) if isinstance(plan.raw_config, dict) else {}
+    if not raw_scan and isinstance(getattr(plan.config, "scan_spec", None), dict):
+        raw_scan = getattr(plan.config, "scan_spec")
+    raw_continuation = raw_scan.get("continuation", {}) if isinstance(raw_scan, dict) else {}
+    if raw_continuation in ({}, None):
+        return
+    if not isinstance(raw_continuation, dict):
+        plan.errors.append("scan.continuation 必须是 mapping")
+        return
+    allowed_keys = {
+        "enabled",
+        "axis",
+        "order",
+        "state_transfer",
+        "observation_policy",
+        "strict_state",
+        "adaptive_controller_state",
+    }
+    for key in raw_continuation:
+        if key not in allowed_keys:
+            plan.errors.append(f"未注册 scan.continuation 字段: scan.continuation.{key}")
+    if bool(raw_continuation.get("enabled", False)):
+        axes = raw_scan.get("axes", {}) if isinstance(raw_scan, dict) else {}
+        if "alpha" not in axes:
+            plan.errors.append("scan.continuation.enabled=true 需要 scan.axes.alpha")
+        algorithm_key = getattr(plan.config, "algorithm_key", "")
+        continuation_spec = get_continuation_specs().get("alpha_descending_full_state")
+        if continuation_spec is not None and algorithm_key not in continuation_spec.compatible_algorithms:
+            plan.errors.append(
+                "scan.continuation.enabled=true 目前不支持 algorithm="
+                f"{algorithm_key!r}；支持: {continuation_spec.compatible_algorithms}"
+            )
+        capabilities = set(plan.algorithm_spec.capabilities) if plan.algorithm_spec is not None else set()
+        if not ({"continuation_student_state", "continuation_tensor_state"} & capabilities):
+            plan.errors.append(
+                "scan.continuation.enabled=true 需要算法声明 continuation_student_state "
+                "或 continuation_tensor_state capability"
+            )
+        spreading = getattr(plan.config, "spreading", None)
+        if algorithm_key == "bigamp_spreading" and bool(getattr(spreading, "allow_intra_connection", False)):
+            plan.errors.append(
+                "scan.continuation.enabled=true 尚不支持 bigamp_spreading general graph "
+                "(spreading.allow_intra_connection=true)：正式 spreading metrics 尚未接入 SuperGraphDataGeneral"
+            )
+
+
 def _validate_parameter_values(plan: ExperimentPlan, parameter_specs: Dict[str, ParameterSpec]) -> None:
     """Validate raw YAML values against ParameterSpec.type before runtime."""
     for path, value in _flatten_config_paths(plan.raw_config):
@@ -1126,6 +1185,13 @@ def _effective_parameter_summary(
         "training.num_workers": getattr(training, "num_workers", None),
         "scan.dimension": getattr(scan, "dimension", None),
         "scan.num_points": len(getattr(scan, "values", []) or []),
+        "scan.continuation.enabled": _get_raw_path(raw_config, "scan.continuation.enabled"),
+        "scan.continuation.axis": _get_raw_path(raw_config, "scan.continuation.axis"),
+        "scan.continuation.order": _get_raw_path(raw_config, "scan.continuation.order"),
+        "scan.continuation.state_transfer": _get_raw_path(raw_config, "scan.continuation.state_transfer"),
+        "scan.continuation.observation_policy": _get_raw_path(raw_config, "scan.continuation.observation_policy"),
+        "scan.continuation.strict_state": _get_raw_path(raw_config, "scan.continuation.strict_state"),
+        "scan.continuation.adaptive_controller_state": _get_raw_path(raw_config, "scan.continuation.adaptive_controller_state"),
         "algorithm_params.damping": getattr(algorithm_params, "damping", None),
         "algorithm_params.noise_var": getattr(algorithm_params, "noise_var", None),
         "algorithm_params.use_compile": getattr(algorithm_params, "use_compile", None),

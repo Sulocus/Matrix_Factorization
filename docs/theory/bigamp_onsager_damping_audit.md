@@ -789,3 +789,48 @@ scale-gauge aligned `Q_WX` 与 sign-aligned 指标接近，median `|log |g||`
    hard-interface formal metric。
 4. 当前 trial 仍是 average-degree graph、150-step sparse alpha diagnostic；
    不能当作论文 exact-degree `c=alpha M` 相图复现。
+
+## 2026-04-28 05:30 追加核验：formal-size scan / compile / damping
+
+本轮目标是用户指定的 Gaussian teacher-student、Rademacher `F`、
+`N1=N2=200, M=50, S=100`、cold start。核心结论：
+
+- `no_onsager` 正式 2000-step baseline 可用；在
+  `runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e`
+  中，`alpha=4.0` 时 `Q_Y_mean≈0.996`，sign-aligned 和 Gram-root
+  latent diagnostics 也接近 `1`。
+- `onsager_fixed_beta005` 正式组不是可用物理结果；`Q_Y_mean` 到
+  `10^6-10^7` 量级，posthoc scale-gauge 也出现 non-finite 或巨大值。
+- 更小 fixed beta 不是充分修复。在
+  `runs/trials/onsager_damping_probe/20260428_052930_onsager_damping_probe_bgs_N200_M50_ons5-a6_S100_steps500_f770ef`
+  中，`beta=0.01` 和 `beta=0.005` 仍在 500 steps 内爆炸；
+  `beta=0.0005` 也仍给出 `Q_Y_mean≈10^5` 量级。
+- adaptive Onsager 不能写成已解决。`onsager_adaptive_beta005` standalone
+  full-alpha 100-step route 可以用 compiled adaptive step 跑完，但低 alpha
+  出现 `Q_Y>1` 和 sign-aligned latent projection `>1` 的 over-scale/overfit
+  现象；`onsager_adaptive_cap005` standalone 500-step 也不物理。
+- mixed multi-policy scan 中，fixed 组已经发散后再进入 adaptive 组，会在
+  candidate forward variance 处触发 CUDA driver error。清理跨 group
+  compile cache 不足以修复这个现象；adaptive 目前应单独 trial 隔离诊断，
+  不应和已知发散的 fixed Onsager 组放在同一长进程里解释。
+
+本轮代码修正：
+
+- `src/matrix_factorization/modules/algorithms/bigamp/spreading.py`
+  不再无条件关闭 adaptive 的 `torch.compile`。现在 adaptive 使用
+  `bigamp_step_disjoint_union_flat_adaptive_legacy_fast` 的 compiled default-mode
+  路径；只有 compile/runtime 抛错时才 fallback，并把状态写入
+  `execution_metadata.compile_status`。
+- `src/matrix_factorization/modules/algorithms/bigamp/step.py`
+  新增 `forward_disjoint_union_flat_legacy_fast`。adaptive acceptance 现在评估
+  beta 混合后的候选状态，而不是旧状态或 beta=1 raw state。这修正了一个
+  明确的 damping/acceptance 语义 bug，但并没有让当前 Onsager 物理上成功。
+- `src/matrix_factorization/core/experiment/runner.py`
+  在 canonical scan 的 group 切换处清理算法 compile cache，并把 child
+  algorithm result 的 `execution_metadata` 汇总到 aggregate metadata。
+
+因此，当前工程判断是：`no_onsager` baseline 可继续用于论文 convention /
+normalization / metric 对比；fixed/adaptive Onsager 都仍属于未验证施工线。
+下一步不应继续盲跑 2000-step adaptive，而应回到 BiGAMP reference 的
+`pvar/zvar/svar/shat`、value/cost、damping state machine 和 Gaussian denoiser
+逐项对齐。

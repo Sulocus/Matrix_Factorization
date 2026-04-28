@@ -12,6 +12,7 @@ import torch
 from ...registry import register_algorithm
 from ..base import AlgorithmBase
 from ....core.config import Config
+from ....core.contracts import AlgorithmStateView
 from ....core.experiment.config import resolve_normalization_profile
 from .conventions import blend_new_old, gaussian_posterior_update
 
@@ -489,6 +490,9 @@ class BiGAMPAlgorithm(AlgorithmBase):
         seed: int,
         max_steps: Optional[int] = None,  # Allow override for step scanning
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        initial_state: Optional[AlgorithmStateView] = None,
+        return_continuation_state: bool = False,
+        continuation_context: Optional[dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train BiG-AMP for multiple alphas in parallel."""
         N1, M = W_teacher.shape
@@ -564,6 +568,25 @@ class BiGAMPAlgorithm(AlgorithmBase):
         w_var = torch.ones_like(w_hat) * prior_variance
         x_var = torch.ones_like(x_hat) * prior_variance
 
+        if initial_state is not None:
+            factors = initial_state.student_factors or {}
+            variances = initial_state.factor_variances or {}
+            if "W" in factors and "X" in factors:
+                w_hat = self._coerce_continuation_factor(
+                    factors["W"], (num_alphas, S, N1, M), device, self.storage_dtype
+                )
+                x_hat = self._coerce_continuation_factor(
+                    factors["X"], (num_alphas, S, M, N2), device, self.storage_dtype
+                )
+                if "W_var" in variances:
+                    w_var = self._coerce_continuation_factor(
+                        variances["W_var"], (num_alphas, S, N1, M), device, self.storage_dtype
+                    )
+                if "X_var" in variances:
+                    x_var = self._coerce_continuation_factor(
+                        variances["X_var"], (num_alphas, S, M, N2), device, self.storage_dtype
+                    )
+
         Y_exp = Y_teacher.unsqueeze(0).unsqueeze(0)  # (1, 1, N1, N2)
 
         # Get step function (compiled or eager)
@@ -593,7 +616,32 @@ class BiGAMPAlgorithm(AlgorithmBase):
             if progress_callback:
                 progress_callback(step + 1, steps)
 
-        return w_hat.to(torch.float32), x_hat.to(torch.float32)
+        W_out = w_hat.to(torch.float32)
+        X_out = x_hat.to(torch.float32)
+        if return_continuation_state:
+            W_var_out = w_var.to(torch.float32)
+            X_var_out = x_var.to(torch.float32)
+            self._last_continuation_state = AlgorithmStateView(
+                student_factors={
+                    "W": W_out[0].detach().clone() if W_out.dim() == 4 and W_out.shape[0] == 1 else W_out.detach().clone(),
+                    "X": X_out[0].detach().clone() if X_out.dim() == 4 and X_out.shape[0] == 1 else X_out.detach().clone(),
+                },
+                factor_variances={
+                    "W_var": W_var_out[0].detach().clone() if W_var_out.dim() == 4 and W_var_out.shape[0] == 1 else W_var_out.detach().clone(),
+                    "X_var": X_var_out[0].detach().clone() if X_var_out.dim() == 4 and X_var_out.shape[0] == 1 else X_var_out.detach().clone(),
+                },
+                teacher_factors={"W": W_teacher.detach(), "X": X_teacher.detach()},
+                step_index=steps,
+                alpha=float(alpha_values[0]) if len(alpha_values) == 1 else None,
+                metadata={
+                    "algorithm_key": "bigamp",
+                    "continuation_state": "student_factors+factor_variances",
+                    "state_transfer": (continuation_context or {}).get("state_transfer", "full_algorithm_state"),
+                },
+            )
+        else:
+            self._last_continuation_state = None
+        return W_out, X_out
 
     def train_batch_result(
         self,
@@ -622,11 +670,30 @@ class BiGAMPAlgorithm(AlgorithmBase):
             **kwargs,
         })
         W_students, X_students = self.train_batch_alphas(**call_kwargs)
-        return self.coerce_native_matrix_result(
+        result = self.coerce_native_matrix_result(
             algorithm_key=algorithm_key,
             W_students=W_students,
             X_students=X_students,
             result_source="native_bigamp_algorithm_result",
+        )
+        if kwargs.get("return_continuation_state", False):
+            result.continuation_state = getattr(self, "_last_continuation_state", None)
+        return result
+
+    @staticmethod
+    def _coerce_continuation_factor(
+        value: torch.Tensor,
+        target_shape: Tuple[int, ...],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        tensor = value.detach().to(device=device, dtype=dtype)
+        if tuple(tensor.shape) == target_shape:
+            return tensor.clone()
+        if len(target_shape) == 4 and tensor.dim() == 3 and target_shape[0] == 1 and tuple(tensor.shape) == target_shape[1:]:
+            return tensor.unsqueeze(0).clone()
+        raise ValueError(
+            f"Continuation factor shape {tuple(tensor.shape)} cannot initialize target {target_shape}"
         )
 
     def supports_batch_training(self) -> bool:

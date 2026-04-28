@@ -88,6 +88,56 @@ def test_canonical_child_runner_uses_forced_resource_batch(monkeypatch):
     assert set(result.results) == set(result.result_cube.points)
 
 
+def test_canonical_scan_preserves_child_algorithm_execution_metadata():
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+
+    result = ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+        },
+    )
+
+    batches = result.metadata.contract.get("algorithm_result_batches", [])
+    assert batches
+    assert batches[0]["canonical_group_id"] == "damping=0.5"
+    assert "execution_metadata" in batches[0]
+
+
+def test_canonical_scan_clears_compile_cache_between_groups(monkeypatch):
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5, 0.6]},
+            "alpha": {"path": "alpha", "values": [0.0]},
+        }
+    })
+    cleared = []
+
+    monkeypatch.setattr(
+        ExperimentRunner,
+        "_clear_algorithm_compile_cache",
+        staticmethod(lambda algorithm_key: cleared.append(algorithm_key)),
+    )
+
+    ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+        },
+    )
+
+    assert cleared == ["bigamp"]
+
+
 def test_canonical_scan_progress_wraps_child_events_without_nested_lifecycle():
     config = _base_config({
         "axes": {
@@ -207,6 +257,38 @@ def test_canonical_scan_writes_partial_snapshot_after_batch(tmp_path):
     assert len(group_dirs) == 1
     assert (group_dirs[0] / "GROUP.md").exists()
     assert (group_dirs[0] / "metrics.json").exists()
+
+
+def test_canonical_group_plot_strips_fixed_series_axis(tmp_path):
+    config = _base_config({
+        "axes": {
+            "damping": {"path": "algorithm_params.damping", "values": [0.5]},
+            "alpha": {"path": "alpha", "values": [0.0, 0.1]},
+        }
+    })
+    run_dir = tmp_path / "run"
+
+    ExperimentRunner(device=None, verbose=False).run(
+        config,
+        output_options={
+            "save_tensors": False,
+            "storage_mode": "lightweight",
+            "enable_heatmap": False,
+            "checkpoint_path": str(run_dir / "checkpoints" / "latest.pt"),
+            "plots": [
+                {
+                    "x": "alpha",
+                    "y": "Q_Y_mean",
+                    "series_by": ["damping"],
+                    "filename": "qy_by_damping.png",
+                }
+            ],
+        },
+    )
+
+    group_dirs = sorted((run_dir / "groups").glob("*"))
+    assert len(group_dirs) == 1
+    assert (group_dirs[0] / "plots" / "qy_by_damping_damping-0.5.png").exists()
 
 
 def test_size_axis_runs_as_isolated_groups():

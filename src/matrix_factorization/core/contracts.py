@@ -156,6 +156,21 @@ class BatchingSpec:
 
 
 @dataclass(frozen=True)
+class ContinuationSpec:
+    key: str
+    axis: str = "alpha"
+    order: str = "descending"
+    state_transfer: str = "full_algorithm_state"
+    observation_policy: str = "nested_prefix"
+    adaptive_controller_state: str = "reset"
+    compatible_algorithms: List[str] = field(default_factory=list)
+    requires_capabilities: List[str] = field(default_factory=list)
+    physical_sensitive: bool = True
+    status: str = "active"
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class MemoryModelSpec:
     algorithm_key: str
     estimator_entrypoint: str = "none"
@@ -227,6 +242,7 @@ class AlgorithmResult:
     metrics_by_alpha: Dict[float, Dict[str, Any]] = field(default_factory=dict)
     matrix_factors: Optional[Dict[str, Any]] = None
     tensor_factors: Optional[Dict[str, Any]] = None
+    continuation_state: Optional[AlgorithmStateView] = None
     artifacts: Dict[str, Any] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -271,6 +287,8 @@ class AlgorithmResult:
             outputs.append("matrix_factors")
         if self.tensor_factors and any(value is not None for value in self.tensor_factors.values()):
             outputs.append("tensor_factors")
+        if self.continuation_state is not None:
+            outputs.append("continuation_state")
         outputs.extend(sorted(self.artifacts))
         outputs.extend(f"diagnostic:{key}" for key in sorted(self.diagnostics))
         return outputs
@@ -405,6 +423,13 @@ def get_parameter_specs() -> Dict[str, ParameterSpec]:
         ParameterSpec("matrix.M", "int", 50, "model", ["MatrixParams"], True),
         ParameterSpec("scan.axes", "dict", None, "scan", ["ScanPlan"], True),
         ParameterSpec("scan.execution", "dict", None, "scan", ["ResourceExecutionPlan"], False, "parsed_only"),
+        ParameterSpec("scan.continuation.enabled", "bool", False, "scan", ["ContinuationSpec", "ExperimentRunner"], True),
+        ParameterSpec("scan.continuation.axis", "enum[alpha]", "alpha", "scan", ["ContinuationSpec", "ExperimentRunner"], True),
+        ParameterSpec("scan.continuation.order", "enum[descending]", "descending", "scan", ["ContinuationSpec", "ExperimentRunner"], True),
+        ParameterSpec("scan.continuation.state_transfer", "enum[full_algorithm_state]", "full_algorithm_state", "scan", ["ContinuationSpec", "ExperimentRunner"], True),
+        ParameterSpec("scan.continuation.observation_policy", "enum[nested_prefix,independent_resample]", "nested_prefix", "scan", ["ContinuationSpec", "DataFactory"], True),
+        ParameterSpec("scan.continuation.strict_state", "bool", True, "scan", ["ContinuationSpec", "ExperimentRunner"], True),
+        ParameterSpec("scan.continuation.adaptive_controller_state", "enum[reset]", "reset", "scan", ["ContinuationSpec", "algorithms"], True),
         ParameterSpec("training.samples_per_alpha", "int", 20, "training", ["TrainingParams"], True),
         ParameterSpec("training.samples", "int", None, "training", ["TrainingParams.samples_per_alpha"], True, "legacy"),
         ParameterSpec("training.max_steps", "int", 5000, "training", ["TrainingParams"], True),
@@ -477,7 +502,7 @@ def get_algorithm_specs() -> Dict[str, AlgorithmSpec]:
             status="active",
             required_config_paths=["matrix.N1", "matrix.N2", "matrix.M", "algorithm_params.learning_rate"],
             data_requirements=["matrix_teacher", "dense_mask"],
-            capabilities=["batch_alpha", "gpu_optional", "matrix_factors"],
+            capabilities=["batch_alpha", "gpu_optional", "matrix_factors", "continuation_student_state"],
             state_capabilities=["student_factors", "teacher_factors", "step_index", "loss"],
             produced_metrics=[
                 "matrix.full.Q_Y",
@@ -496,7 +521,7 @@ def get_algorithm_specs() -> Dict[str, AlgorithmSpec]:
             status="active",
             required_config_paths=["matrix.N1", "matrix.N2", "matrix.M", "algorithm_params.damping", "algorithm_params.noise_var"],
             data_requirements=["matrix_teacher", "dense_mask"],
-            capabilities=["batch_alpha", "gpu_optional", "matrix_factors"],
+            capabilities=["batch_alpha", "gpu_optional", "matrix_factors", "continuation_student_state", "continuation_factor_variance"],
             state_capabilities=["student_factors", "teacher_factors", "factor_variances", "step_index"],
             produced_metrics=[
                 "matrix.full.Q_Y",
@@ -515,7 +540,15 @@ def get_algorithm_specs() -> Dict[str, AlgorithmSpec]:
             status="active",
             required_config_paths=["spreading.f_distribution", "algorithm_params.damping", "algorithm_params.noise_var"],
             data_requirements=["matrix_teacher", "spreading_graph", "F_super"],
-            capabilities=["batch_alpha", "gpu_optional", "matrix_factors", "spreading_metrics"],
+            capabilities=[
+                "batch_alpha",
+                "gpu_optional",
+                "matrix_factors",
+                "spreading_metrics",
+                "continuation_student_state",
+                "continuation_factor_variance",
+                "continuation_onsager_residual",
+            ],
             state_capabilities=["student_factors", "teacher_factors", "factor_variances", "onsager_residual", "spreading_graph", "step_index"],
             produced_metrics=[
                 "spreading.full.Q_Y",
@@ -523,6 +556,7 @@ def get_algorithm_specs() -> Dict[str, AlgorithmSpec]:
                 "spreading.unobserved.Q_Y",
                 "matrix.factor.Q_W",
                 "matrix.factor.Q_X",
+                "matrix.factor.scale_gauge",
                 "replica.factor",
             ],
             produced_artifacts=["matrix_factors"],
@@ -547,7 +581,15 @@ def get_algorithm_specs() -> Dict[str, AlgorithmSpec]:
             status="active",
             required_config_paths=["spreading.tensor_order", "spreading.f_distribution", "algorithm_params.damping", "algorithm_params.noise_var"],
             data_requirements=["tensor_teacher_factors", "tensor_supergraph", "F_tensor"],
-            capabilities=["batch_alpha", "gpu_optional", "tensor_metrics", "overlap_matrix"],
+            capabilities=[
+                "batch_alpha",
+                "gpu_optional",
+                "tensor_metrics",
+                "overlap_matrix",
+                "continuation_tensor_state",
+                "continuation_factor_variance",
+                "continuation_onsager_residual",
+            ],
             state_capabilities=["tensor_factors", "teacher_factors", "tensor_factor_variances", "tensor_supergraph", "onsager_residual", "step_index"],
             produced_metrics=["tensor.full.Q_Y", "tensor.observed.Q_Y", "tensor.unobserved.Q_Y", "tensor.factor.Q_N"],
             produced_artifacts=["overlap_matrix"],
@@ -1012,6 +1054,7 @@ def get_metric_specs() -> Dict[str, MetricSpec]:
         MetricSpec("tensor.unobserved.Q_Y", ["tensor_heldout_observations"], ["Q_Y_unobserved_mean", "Q_Y_unobserved_std"], "measurement", "unobserved", "teacher-student", "absolute_projection_teacher_norm_squared", "Deterministic heldout tensor-hyperedge projection.", ["bigamp_tensor_parallel"]),
         MetricSpec("matrix.factor.Q_W", ["W_students", "W_teacher"], ["Q_W_mean", "Q_W_std", "Q_W_SIGN_ALIGNED_mean", "Q_W_SIGN_ALIGNED_std", "Q_W_GRAM_ROOT_mean", "Q_W_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_sign_aligned_and_gram_root", "W coordinate projection plus sign-aligned and Gram-root diagnostics.", ["agd", "bigamp", "bigamp_spreading", "agd_spreading"]),
         MetricSpec("matrix.factor.Q_X", ["X_students", "X_teacher"], ["Q_X_mean", "Q_X_std", "Q_X_SIGN_ALIGNED_mean", "Q_X_SIGN_ALIGNED_std", "Q_X_GRAM_ROOT_mean", "Q_X_GRAM_ROOT_std"], "latent_factor", "full", "teacher-student", "absolute_projection_sign_aligned_and_gram_root", "X coordinate projection plus sign-aligned and Gram-root diagnostics.", ["agd", "bigamp", "bigamp_spreading"]),
+        MetricSpec("matrix.factor.scale_gauge", ["W_students", "X_students", "W_teacher", "X_teacher"], ["Q_W_SCALE_GAUGE_mean", "Q_W_SCALE_GAUGE_std", "Q_X_SCALE_GAUGE_mean", "Q_X_SCALE_GAUGE_std", "Q_WX_SCALE_GAUGE_mean", "Q_WX_SCALE_GAUGE_std", "median_abs_log_g_mean", "median_abs_log_g_std"], "latent_factor", "full", "teacher-student", "joint_diagonal_scale_gauge_projection", "Posthoc-style diagonal scale-gauge aligned W/X diagnostic; does not alter training.", ["bigamp_spreading"]),
         MetricSpec("tensor.factor.Q_N", ["tensor_student_factors", "tensor_teacher_factors"], ["Q_N_mean", "Q_N_std", "Q_N_mode0_mean", "Q_N_mode0_std", "Q_N_mode1_mean", "Q_N_mode1_std", "Q_N_mode2_mean", "Q_N_mode2_std", "Q_N_mode3_mean", "Q_N_mode3_std"], "latent_factor", "full", "teacher-student", "absolute_projection_teacher_norm_squared", "Tensor latent node/spin/factor projection per mode and aggregate.", ["bigamp_tensor", "bigamp_tensor_parallel"]),
         MetricSpec("replica.factor", ["student_replicas"], ["Q_W_replica_mean", "Q_X_replica_mean", "Q_W_prime_replica_mean", "Q_X_prime_replica_mean"], "latent_factor", "replica", "student-student", "Gram cosine", "Replica overlap diagnostic.", ["agd", "bigamp", "bigamp_spreading"]),
     ]
@@ -1161,6 +1204,66 @@ def get_metric_semantic_classes() -> Dict[str, MetricSemanticClass]:
             "medium",
             "approved",
             description="X latent factor projection after quotienting per-channel sign gauge; rotation/permutation sensitive.",
+        ),
+        MetricSemanticClass(
+            "latent.W.teacher_student.Q_W_SCALE_GAUGE",
+            "latent_factor_scale_gauge_projection",
+            "Q_W scale-gauge diagnostic",
+            ["Q_W_SCALE_GAUGE_mean", "Q_W_SCALE_GAUGE_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "joint_diagonal_scale_gauge_projection;clipped=false",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="W projection after jointly aligning each W/X latent channel under diagonal scale gauge.",
+        ),
+        MetricSemanticClass(
+            "latent.X.teacher_student.Q_X_SCALE_GAUGE",
+            "latent_factor_scale_gauge_projection",
+            "Q_X scale-gauge diagnostic",
+            ["Q_X_SCALE_GAUGE_mean", "Q_X_SCALE_GAUGE_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "joint_diagonal_scale_gauge_projection;clipped=false",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="X projection after jointly aligning each W/X latent channel under diagonal scale gauge.",
+        ),
+        MetricSemanticClass(
+            "latent.WX.teacher_student.Q_WX_SCALE_GAUGE",
+            "latent_factor_scale_gauge_projection",
+            "Q_WX scale-gauge diagnostic",
+            ["Q_WX_SCALE_GAUGE_mean", "Q_WX_SCALE_GAUGE_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "mean_joint_diagonal_scale_gauge_projection;clipped=false",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="Mean of Q_W and Q_X after joint diagonal scale-gauge alignment.",
+        ),
+        MetricSemanticClass(
+            "latent.WX.teacher_student.scale_gauge_magnitude",
+            "latent_factor_scale_gauge_magnitude",
+            "scale-gauge magnitude",
+            ["median_abs_log_g_mean", "median_abs_log_g_std"],
+            "latent_factor",
+            "full",
+            "teacher-student",
+            "median_abs_log_channel_scale",
+            "diagnostic",
+            "diagnostic",
+            "medium",
+            "approved",
+            description="Median channel magnitude |log |g_k|| of the fitted diagonal scale gauge.",
         ),
         MetricSemanticClass(
             "latent.N.teacher_student.Q_N_projection",
@@ -1503,6 +1606,7 @@ def _attach_metric_semantic_metadata(specs: List[MetricSpec]) -> List[MetricSpec
         "tensor.unobserved.Q_Y": "measurement.unobserved.teacher_student.Q_Y_projection",
         "matrix.factor.Q_W": "latent.W.teacher_student.Q_W_projection",
         "matrix.factor.Q_X": "latent.X.teacher_student.Q_X_projection",
+        "matrix.factor.scale_gauge": "latent.WX.teacher_student.Q_WX_SCALE_GAUGE",
         "tensor.factor.Q_N": "latent.N.teacher_student.Q_N_projection",
         "replica.factor": "factor.W.replica.student_student.gram_cosine",
     }
@@ -1537,6 +1641,14 @@ def _metric_flat_key_canonical_key(metric_spec_key: str, flat_key: str, default:
         ("matrix.factor.Q_X", "Q_X_GRAM_ROOT_std"): "latent.X.teacher_student.Q_X_GRAM_ROOT",
         ("matrix.factor.Q_X", "Q_X_SIGN_ALIGNED_mean"): "latent.X.teacher_student.Q_X_SIGN_ALIGNED",
         ("matrix.factor.Q_X", "Q_X_SIGN_ALIGNED_std"): "latent.X.teacher_student.Q_X_SIGN_ALIGNED",
+        ("matrix.factor.scale_gauge", "Q_W_SCALE_GAUGE_mean"): "latent.W.teacher_student.Q_W_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "Q_W_SCALE_GAUGE_std"): "latent.W.teacher_student.Q_W_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "Q_X_SCALE_GAUGE_mean"): "latent.X.teacher_student.Q_X_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "Q_X_SCALE_GAUGE_std"): "latent.X.teacher_student.Q_X_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "Q_WX_SCALE_GAUGE_mean"): "latent.WX.teacher_student.Q_WX_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "Q_WX_SCALE_GAUGE_std"): "latent.WX.teacher_student.Q_WX_SCALE_GAUGE",
+        ("matrix.factor.scale_gauge", "median_abs_log_g_mean"): "latent.WX.teacher_student.scale_gauge_magnitude",
+        ("matrix.factor.scale_gauge", "median_abs_log_g_std"): "latent.WX.teacher_student.scale_gauge_magnitude",
         ("replica.factor", "Q_W_replica_mean"): "factor.W.replica.student_student.gram_cosine",
         ("replica.factor", "Q_X_replica_mean"): "factor.X.replica.student_student.gram_cosine",
         ("replica.factor", "Q_W_prime_replica_mean"): "factor.W.replica.student_student.baseline_corrected_gram_cosine",
@@ -1813,6 +1925,32 @@ def get_tensor_parity_report() -> Dict[str, Any]:
     }
 
 
+def get_continuation_specs() -> Dict[str, ContinuationSpec]:
+    specs = [
+        ContinuationSpec(
+            key="alpha_descending_full_state",
+            axis="alpha",
+            order="descending",
+            state_transfer="full_algorithm_state",
+            observation_policy="nested_prefix",
+            adaptive_controller_state="reset",
+            compatible_algorithms=[
+                "agd",
+                "bigamp",
+                "bigamp_spreading",
+                "bigamp_tensor_parallel",
+            ],
+            requires_capabilities=["continuation_student_state|continuation_tensor_state"],
+            physical_sensitive=True,
+            description=(
+                "Stateful alpha continuation from high to low connectivity. "
+                "The previous alpha fixed point initializes the next alpha."
+            ),
+        )
+    ]
+    return {spec.key: spec for spec in specs}
+
+
 def get_output_specs() -> Dict[str, OutputSpec]:
     specs = [
         OutputSpec("scalar_curves", ["metrics_by_alpha"], ["Q_Y_mean", "Q_W_mean"], ["plots/qy_evolution.png", "plots/overlap_evolution.png"], "Scalar metric curves."),
@@ -1972,6 +2110,7 @@ def get_auxiliary_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("src/matrix_factorization/export/__main__.py", "export_support", status="support_module"),
         SourceInventorySpec("src/matrix_factorization/export/bundler.py", "export_support", status="support_module"),
         SourceInventorySpec("src/matrix_factorization/core/memory_calibration.py", "local_gpu_calibration_cli", status="active_path"),
+        SourceInventorySpec("src/matrix_factorization/core/experiment/continuation.py", "continuation_scan_executor", status="active_path"),
         SourceInventorySpec("src/matrix_factorization/core/scan_planning.py", "scan_plan_contract", status="active_path"),
         SourceInventorySpec("src/matrix_factorization/core/parallel/resource_execution.py", "resource_execution_plan_contract", status="active_path"),
         SourceInventorySpec("tests/debug/analyze_qy_drop.py", "debug_only", status="debug_only"),

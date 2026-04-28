@@ -229,6 +229,17 @@ class ExperimentRunner:
             print(f"  Algorithm: {config.algorithm_key}")
             print(f"  Matrix: {config.matrix.N1}x{config.matrix.N2}, M={config.matrix.M}")
 
+        if self._should_use_continuation_scan_executor(config):
+            from .continuation import run_alpha_descending_continuation
+
+            return run_alpha_descending_continuation(
+                runner=self,
+                config=config,
+                observer=observer,
+                output_options=output_options,
+                raw_yaml=raw_yaml,
+            )
+
         if self._should_use_canonical_scan_executor(config):
             return self._run_canonical_scan(
                 config=config,
@@ -327,6 +338,14 @@ class ExperimentRunner:
             return False
         axes = scan_spec.get("axes") or {}
         return set(axes.keys()) != {"alpha"}
+
+    @staticmethod
+    def _should_use_continuation_scan_executor(config: ExperimentConfig) -> bool:
+        scan_spec = getattr(config, "scan_spec", None)
+        if not isinstance(scan_spec, dict):
+            return False
+        continuation = scan_spec.get("continuation") or {}
+        return isinstance(continuation, dict) and bool(continuation.get("enabled", False))
 
     @staticmethod
     def _scan_label_for_progress(config: ExperimentConfig) -> str:
@@ -443,7 +462,12 @@ class ExperimentRunner:
                 output_options=output_options,
             )
 
+        previous_group_id: Optional[str] = None
         for resource_batch in resource_plan.batches:
+            current_group_id = str(getattr(resource_batch, "group_id", "") or "")
+            if previous_group_id is not None and current_group_id != previous_group_id:
+                self._clear_algorithm_compile_cache(config.algorithm_key)
+            previous_group_id = current_group_id
             batch_points = [points_by_id[item.scan_point_id] for item in resource_batch.work_items]
             effective_config = effective_config_for_scan_points(config, batch_points)
             setattr(effective_config, "_disable_canonical_scan_executor", True)
@@ -485,6 +509,16 @@ class ExperimentRunner:
                     "scan_context": scan_context,
                 })
                 raise RuntimeError(message) from exc
+            child_algorithm_batches = (
+                getattr(child_result.metadata, "contract", {}) or {}
+            ).get("algorithm_result_batches", [])
+            if child_algorithm_batches:
+                destination = aggregate.metadata.contract.setdefault("algorithm_result_batches", [])
+                for child_batch in child_algorithm_batches:
+                    payload = copy.deepcopy(child_batch)
+                    payload["canonical_batch_index"] = int(getattr(resource_batch, "batch_index", 0))
+                    payload["canonical_group_id"] = str(getattr(resource_batch, "group_id", ""))
+                    destination.append(payload)
             child_teacher = getattr(child_result, "W_teacher", None)
             if child_teacher is not None:
                 child_shape = tuple(child_teacher.shape)
@@ -576,6 +610,18 @@ class ExperimentRunner:
 
         self._emit(observer, ProgressEventType.EXPERIMENT_END, {"result": aggregate})
         return aggregate
+
+    @staticmethod
+    def _clear_algorithm_compile_cache(algorithm_key: str) -> None:
+        try:
+            from ...modules.registry import get_algorithm
+
+            algorithm_info = get_algorithm(algorithm_key)
+            clear_compile_cache = getattr(algorithm_info.cls, "clear_compile_cache", None)
+            if callable(clear_compile_cache):
+                clear_compile_cache()
+        except Exception:
+            logger.debug("Algorithm compile cache clear skipped", exc_info=True)
 
     def _canonical_progress_context(
         self,
@@ -1405,8 +1451,25 @@ class ExperimentRunner:
             if any(group_coordinates.get(axis) != value for axis, value in where.items() if axis != "alpha"):
                 continue
             series_by = list(plot.get("series_by") or [])
-            if any(axis != "alpha" and axis in group_coordinates for axis in series_by):
-                continue
+            fixed_series_axes = [
+                axis for axis in series_by
+                if axis != "alpha" and axis in group_coordinates
+            ]
+            if fixed_series_axes:
+                plot = dict(plot)
+                plot["series_by"] = [
+                    axis for axis in series_by
+                    if axis not in fixed_series_axes
+                ]
+                suffix = "_".join(
+                    f"{axis}-{group_coordinates.get(axis)}"
+                    for axis in fixed_series_axes
+                )
+                if plot.get("filename"):
+                    stem, dot, ext = str(plot["filename"]).rpartition(".")
+                    plot["filename"] = (
+                        f"{stem}_{suffix}.{ext}" if dot else f"{plot['filename']}_{suffix}"
+                    )
             compare = plot.get("compare") or []
             if compare:
                 keep = True
@@ -1833,6 +1896,9 @@ class ExperimentRunner:
         config: ExperimentConfig,
         data: ExperimentData,
         step_callback: Optional[Callable],
+        initial_state: Optional[Any] = None,
+        return_continuation_state: bool = False,
+        continuation_context: Optional[Dict[str, Any]] = None,
     ) -> AlgorithmResult:
         """Run algorithm through the formal AlgorithmResult interface."""
         is_spreading_family = 'spreading' in config.algorithm_key or 'tensor' in config.algorithm_key
@@ -1852,6 +1918,9 @@ class ExperimentRunner:
                     "progress_callback": None if is_spreading_family else step_callback,
                     "step_callback": step_callback if is_spreading_family else None,
                     "runtime_step_callback": self._build_runtime_step_callback(config),
+                    "initial_state": initial_state,
+                    "return_continuation_state": return_continuation_state,
+                    "continuation_context": continuation_context,
                 },
             )
             return algorithm.train_batch_result(**call_kwargs)

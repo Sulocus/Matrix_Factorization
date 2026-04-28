@@ -690,12 +690,25 @@ def plot_replica_heatmap(
         from scipy.cluster.hierarchy import linkage, leaves_list
         from scipy.spatial.distance import squareform
         
-        # Extract replica-replica submatrix (exclude Teacher row/column 0)
-        replica_matrix = matrix[1:, 1:]
+        # Extract replica-replica submatrix (exclude Teacher row/column 0).
+        # Projection-style diagnostics such as Q_W_SIGN_ALIGNED intentionally
+        # preserve scale and can exceed 1.0.  RSB ordering only needs a valid
+        # bounded similarity, so sanitize the ordering copy without clipping the
+        # heatmap values that are displayed.
+        replica_matrix = np.asarray(matrix[1:, 1:], dtype=float)
+        ordering_similarity = np.nan_to_num(
+            replica_matrix,
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+        )
+        ordering_similarity = 0.5 * (ordering_similarity + ordering_similarity.T)
+        ordering_similarity = np.clip(ordering_similarity, 0.0, 1.0)
         
         # Convert similarity to distance (1 - overlap)
-        distance_matrix = 1 - replica_matrix
-        np.fill_diagonal(distance_matrix, 0)  # Ensure diagonal is 0
+        distance_matrix = np.clip(1.0 - ordering_similarity, 0.0, None)
+        distance_matrix = 0.5 * (distance_matrix + distance_matrix.T)
+        np.fill_diagonal(distance_matrix, 0.0)  # Ensure diagonal is 0
         
         # Use condensed form for linkage
         condensed = squareform(distance_matrix, checks=False)

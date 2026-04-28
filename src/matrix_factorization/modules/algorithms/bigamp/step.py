@@ -248,6 +248,85 @@ def compute_log_likelihood(Y_flat, Z_hat, V, noise_var):
     return (log_term + exp_term).sum(dim=1)
 
 
+def forward_disjoint_union_flat_legacy_fast(
+    W_flat: torch.Tensor,
+    X_flat: torch.Tensor,
+    W_var_flat: torch.Tensor,
+    X_var_flat: torch.Tensor,
+    F_flat: torch.Tensor,
+    i_offset: torch.Tensor,
+    j_offset: torch.Tensor,
+    alpha_mask_exp: torch.Tensor,
+    is_rademacher: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Forward mean/variance for a legacy spreading flat state."""
+    M = W_flat.shape[2]
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    mask_typed = alpha_mask_exp.to(W_flat.dtype)
+
+    W_sel = W_flat[:, i_offset, :]
+    X_sel = X_flat[:, j_offset, :]
+    W_var_sel = W_var_flat[:, i_offset, :]
+    X_var_sel = X_var_flat[:, j_offset, :]
+
+    F_compute = F_flat.to(W_flat.dtype)
+    F_exp = F_compute.unsqueeze(0)
+    Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)
+    Z_hat = Z_hat * mask_typed
+
+    if is_rademacher:
+        V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
+    else:
+        F_sq_exp = F_exp.pow(2)
+        V = alpha_scale_sq * (
+            F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)
+        ).sum(dim=2)
+    V = V * mask_typed + 1e-10
+    return Z_hat, V
+
+
+def forward_disjoint_union_flat_corrected(
+    W_flat: torch.Tensor,
+    X_flat: torch.Tensor,
+    W_var_flat: torch.Tensor,
+    X_var_flat: torch.Tensor,
+    F_flat: torch.Tensor,
+    i_offset: torch.Tensor,
+    j_offset: torch.Tensor,
+    alpha_mask_exp: torch.Tensor,
+    is_rademacher: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Forward mean and BiG-AMP pvar for a corrected spreading flat state."""
+    M = W_flat.shape[2]
+    alpha_scale = 1.0 / math.sqrt(M)
+    alpha_scale_sq = 1.0 / M
+    mask_typed = alpha_mask_exp.to(W_flat.dtype)
+
+    W_sel = W_flat[:, i_offset, :]
+    X_sel = X_flat[:, j_offset, :]
+    W_var_sel = W_var_flat[:, i_offset, :]
+    X_var_sel = X_var_flat[:, j_offset, :]
+
+    F_compute = F_flat.to(W_flat.dtype)
+    F_exp = F_compute.unsqueeze(0)
+    Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)
+    Z_hat = Z_hat * mask_typed
+
+    if is_rademacher:
+        zvar = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
+        cross_var = alpha_scale_sq * (W_var_sel * X_var_sel).sum(dim=2)
+    else:
+        F_sq_exp = F_exp.pow(2)
+        zvar = alpha_scale_sq * (
+            F_sq_exp * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel)
+        ).sum(dim=2)
+        cross_var = alpha_scale_sq * (F_sq_exp * W_var_sel * X_var_sel).sum(dim=2)
+    zvar = zvar * mask_typed + 1e-10
+    pvar = (zvar + cross_var * mask_typed).clamp(min=1e-10)
+    return Z_hat, pvar
+
+
 def bigamp_step_disjoint_union_flat_legacy_fast(
     W_flat: torch.Tensor,
     X_flat: torch.Tensor,

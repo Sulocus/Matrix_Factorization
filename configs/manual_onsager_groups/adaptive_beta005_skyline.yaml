@@ -1,0 +1,119 @@
+tensor_order: 2
+algorithm: 2
+teacher: 2
+
+teacher_config:
+  init_distribution: 1
+  mean_scale: 0.0
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  axes:
+    onsager_policy:
+      kind: composite
+      values:
+        onsager_adaptive_beta005:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: true
+          algorithm_params.damping: 0.05
+          algorithm_params.step_min: 0.05
+          algorithm_params.step_max: 0.5
+          algorithm_params.step_incr: 1.1
+          algorithm_params.step_decr: 0.5
+          algorithm_params.step_window: 1
+          algorithm_params.acceptance_tolerance: 0.0
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 4.0
+        step: 0.1
+
+training:
+  samples_per_alpha: 20
+  max_steps: 2000
+
+seeds:
+  model: 42
+  data: 42
+
+algorithm_params:
+  damping: 0.5
+  noise_var: 1.0e-5
+  learning_rate: 0.01
+  use_compile: true
+  normalization_profile: paper_sparse_sampling
+  precision_profile: aggressive
+  precision_fallback_policy: allow
+  use_bf16: true
+  seed_partition_policy: partition_invariant
+  use_early_stop: false
+  target_loss_threshold: 1.0e-08
+  default_alpha: 1.0
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
+  adaptive_restart: false
+  restart_patience: 50
+  restart_noise: 0.1
+  acceptance_tolerance: 0.0
+  init_mode: random
+  init_overlap: 0.0
+  debug_verbose: false
+
+spreading:
+  f_distribution: 1
+  seed: 12345
+  onsager_correction: false
+  chunk_size: 8192
+
+output:
+  name: manual_adaptive_beta005_skyline
+  storage_mode: full
+  save_tensors: true
+  enable_heatmap: true
+  rsb_ordering: true
+  heatmap_metric: Q_W_SIGN_ALIGNED
+  uniform_colormap: true
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      series_by: [onsager_policy]
+      filename: qy_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_mean
+      series_by: [onsager_policy]
+      filename: qw_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_mean
+      series_by: [onsager_policy]
+      filename: qx_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qw_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_GRAM_ROOT_mean
+      series_by: [onsager_policy]
+      filename: qx_gram_root_by_onsager_policy.png
+    - x: alpha
+      y: Q_W_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qw_sign_aligned_by_onsager_policy.png
+    - x: alpha
+      y: Q_X_SIGN_ALIGNED_mean
+      series_by: [onsager_policy]
+      filename: qx_sign_aligned_by_onsager_policy.png
+  group_results:
+    enabled: auto
+    save_tensors: true
+    enable_heatmap: true
+    write_plots: true

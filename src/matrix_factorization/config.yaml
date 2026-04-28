@@ -90,12 +90,20 @@ scan:
         start: 0.0
         stop: 4.0
         step: 0.1
+  continuation:
+    enabled: false
+    axis: alpha
+    order: descending
+    state_transfer: full_algorithm_state
+    observation_policy: nested_prefix
+    strict_state: true
+    adaptive_controller_state: reset
 
 # =============================================================================
 # 训练参数
 # =============================================================================
 training:
-  samples_per_alpha: 100  # 每个 alpha 值的样本数
+  samples_per_alpha: 20   # 每个 alpha 值的样本数
   max_steps: 2000          # BiG-AMP 最大迭代步数
 
 # =============================================================================
@@ -112,7 +120,7 @@ algorithm_params:
   damping: 0.5           # BiG-AMP beta：1=完全采用新状态，0=冻结旧状态
   noise_var: 1.0e-5       # 观测噪声方差
   learning_rate: 0.01     # AGD 学习率
-  use_compile: true       # 启用 torch.compile 加速
+  use_compile: true       # 启用 torch.compile；no_onsager 走 compiled legacy fast，corrected Onsager route 在算法内禁用 compile
   normalization_profile: paper_sparse_sampling # paper_sparse_sampling=论文 Var(x)=1；internal_normalized_legacy=旧 1/M convention
   precision_profile: aggressive # safe / fast / aggressive
   precision_fallback_policy: allow  # allow=BF16 不可用时回退 FP32；error=严格报错
@@ -176,7 +184,7 @@ output:
   # Heatmap 设置
   enable_heatmap: true     # 生成最终完整 heatmap/GIF
   rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
-  heatmap_metric: "Q_Y"     # 绘制指标: "Q_Y" (projection overlap) 或 "Q_W" (Factor Gram diagnostic)
+  heatmap_metric: "Q_W_SIGN_ALIGNED" # Q_W_SIGN_ALIGNED=逐 channel sign-aligned heatmap；Q_W=Gram diagnostic
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
   
   # =============================================================================

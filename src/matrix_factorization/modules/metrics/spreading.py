@@ -9,6 +9,7 @@ Key difference from standard metrics:
 
 from dataclasses import dataclass
 from typing import Dict, TYPE_CHECKING
+import numpy as np
 import torch
 
 from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
@@ -254,6 +255,101 @@ def _gram_root_and_replica_by_alpha(
         pair_cos[upper[0], upper[1]].mean().float(),
         pair_corrected[upper[0], upper[1]].mean().float(),
     )
+
+
+def _best_scale_gauge_scalar_from_sums(a: float, b: float, c: float, d: float) -> float:
+    """Solve the per-channel W/X scale-gauge alignment problem.
+
+    The minimized objective is
+    ||g W_s[:,k] - W_t[:,k]||^2 + ||g^-1 X_s[k,:] - X_t[k,:]||^2.
+    This mirrors scripts/analysis/posthoc_scale_gauge.py so runtime metrics
+    and legacy posthoc diagnostics use the same convention.
+    """
+    if not np.all(np.isfinite([a, b, c, d])):
+        return float("nan")
+    if a <= 1e-18 or c <= 1e-18:
+        return 1.0
+
+    candidates: list[float] = []
+    try:
+        roots = np.roots([a, -b, 0.0, d, -c])
+    except (FloatingPointError, ValueError):
+        roots = []
+    for root in roots:
+        if abs(root.imag) < 1e-8 and abs(root.real) > 1e-12:
+            candidates.append(float(root.real))
+    scale = float(np.sqrt(c / a))
+    candidates.extend([scale, -scale, 1.0, -1.0])
+
+    def objective(g: float) -> float:
+        return float(a * g * g - 2.0 * b * g + c / (g * g) - 2.0 * d / g)
+
+    return min(candidates, key=objective)
+
+
+@torch.no_grad()
+def _scale_gauge_projection_batch(
+    W_students: torch.Tensor,
+    X_students: torch.Tensor,
+    W_teacher: torch.Tensor,
+    X_teacher: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute joint per-channel scale-gauge aligned factor diagnostics.
+
+    Inputs are W: (S, A, N1, M), X: (S, A, M, N2).  The scalar gauge g_k is
+    chosen jointly for W channel k and X channel k, so this is a diagnostic
+    for the diagonal scale gauge W_:k -> g_k W_:k, X_k: -> g_k^-1 X_k:.
+    """
+    device = W_students.device
+    W_s = W_students.detach().float().cpu().numpy()
+    X_s = X_students.detach().float().cpu().numpy()
+    W_t = W_teacher.detach().float().cpu().numpy()
+    X_t = X_teacher.detach().float().cpu().numpy()
+
+    S, A, _, M = W_s.shape
+    a_vals = np.sum(W_s.astype(np.float64) * W_s.astype(np.float64), axis=2)
+    b_vals = np.sum(W_s.astype(np.float64) * W_t.astype(np.float64)[None, None, :, :], axis=2)
+    c_vals = np.sum(X_s.astype(np.float64) * X_s.astype(np.float64), axis=3)
+    d_vals = np.sum(X_s.astype(np.float64) * X_t.astype(np.float64)[None, None, :, :], axis=3)
+
+    w_teacher_norm = float(np.sum(W_t.astype(np.float64) * W_t.astype(np.float64))) + PROJECTION_NORM_EPS
+    x_teacher_norm = float(np.sum(X_t.astype(np.float64) * X_t.astype(np.float64))) + PROJECTION_NORM_EPS
+    q_w = np.full((S, A), np.nan, dtype=np.float64)
+    q_x = np.full((S, A), np.nan, dtype=np.float64)
+    gauge_mag = np.full((S, A), np.nan, dtype=np.float64)
+
+    for sample_idx in range(S):
+        for alpha_idx in range(A):
+            w_dot = 0.0
+            x_dot = 0.0
+            gauges = np.empty(M, dtype=np.float64)
+            valid = True
+            for channel_idx in range(M):
+                g = _best_scale_gauge_scalar_from_sums(
+                    float(a_vals[sample_idx, alpha_idx, channel_idx]),
+                    float(b_vals[sample_idx, alpha_idx, channel_idx]),
+                    float(c_vals[sample_idx, alpha_idx, channel_idx]),
+                    float(d_vals[sample_idx, alpha_idx, channel_idx]),
+                )
+                if not np.isfinite(g) or abs(g) <= 1e-12:
+                    valid = False
+                    break
+                gauges[channel_idx] = g
+                w_dot += g * float(b_vals[sample_idx, alpha_idx, channel_idx])
+                x_dot += (1.0 / g) * float(d_vals[sample_idx, alpha_idx, channel_idx])
+            if not valid:
+                continue
+            q_w[sample_idx, alpha_idx] = w_dot / w_teacher_norm
+            q_x[sample_idx, alpha_idx] = x_dot / x_teacher_norm
+            gauge_mag[sample_idx, alpha_idx] = float(
+                np.median(np.abs(np.log(np.maximum(np.abs(gauges), 1e-12))))
+            )
+
+    q_w_tensor = torch.as_tensor(q_w, dtype=torch.float32, device=device)
+    q_x_tensor = torch.as_tensor(q_x, dtype=torch.float32, device=device)
+    q_wx_tensor = 0.5 * (q_w_tensor + q_x_tensor)
+    gauge_tensor = torch.as_tensor(gauge_mag, dtype=torch.float32, device=device)
+    return q_w_tensor, q_x_tensor, q_wx_tensor, gauge_tensor
 
 
 @torch.no_grad()
@@ -692,6 +788,16 @@ def compute_all_metrics_spreading_parallel(
     qx_sign_aligned_mean, qx_sign_aligned_std = _mean_std(Q_X_sign_aligned_all, dim=0)
     qw_gram_root_mean, qw_gram_root_std = _mean_std(Q_W_gram_root_all, dim=0)
     qx_gram_root_mean, qx_gram_root_std = _mean_std(Q_X_gram_root_all, dim=0)
+    q_w_scale_gauge_all, q_x_scale_gauge_all, q_wx_scale_gauge_all, gauge_mag_all = _scale_gauge_projection_batch(
+        W_local,
+        X_local,
+        W_teacher,
+        X_teacher,
+    )
+    qw_scale_gauge_mean, qw_scale_gauge_std = _mean_std(q_w_scale_gauge_all, dim=0)
+    qx_scale_gauge_mean, qx_scale_gauge_std = _mean_std(q_x_scale_gauge_all, dim=0)
+    qwx_scale_gauge_mean, qwx_scale_gauge_std = _mean_std(q_wx_scale_gauge_all, dim=0)
+    gauge_mag_mean, gauge_mag_std = _mean_std(gauge_mag_all, dim=0)
 
     return {
         'Q_Y_mean': qy_mean,
@@ -712,6 +818,14 @@ def compute_all_metrics_spreading_parallel(
         'Q_W_GRAM_ROOT_std': qw_gram_root_std,
         'Q_X_GRAM_ROOT_mean': qx_gram_root_mean,
         'Q_X_GRAM_ROOT_std': qx_gram_root_std,
+        'Q_W_SCALE_GAUGE_mean': qw_scale_gauge_mean,
+        'Q_W_SCALE_GAUGE_std': qw_scale_gauge_std,
+        'Q_X_SCALE_GAUGE_mean': qx_scale_gauge_mean,
+        'Q_X_SCALE_GAUGE_std': qx_scale_gauge_std,
+        'Q_WX_SCALE_GAUGE_mean': qwx_scale_gauge_mean,
+        'Q_WX_SCALE_GAUGE_std': qwx_scale_gauge_std,
+        'median_abs_log_g_mean': gauge_mag_mean,
+        'median_abs_log_g_std': gauge_mag_std,
         'Q_W_replica_mean': Q_W_replica_all,
         'Q_X_replica_mean': Q_X_replica_all,
         'Q_W_prime_replica_mean': Q_W_prime_replica_all,

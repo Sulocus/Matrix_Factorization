@@ -93,4 +93,8 @@
 | `latent.X.teacher_student.Q_X_GRAM_ROOT` | `Q_X_GRAM_ROOT_mean`, `Q_X_GRAM_ROOT_std` | Q_X Gram root | approved | sqrt baseline-corrected Gram diagnostic。 |
 | `latent.W.teacher_student.Q_W_SIGN_ALIGNED` | `Q_W_SIGN_ALIGNED_mean`, `Q_W_SIGN_ALIGNED_std` | Q_W sign-aligned | approved | 逐 channel 取绝对值的 sign-gauge diagnostic；不处理 permutation/rotation。 |
 | `latent.X.teacher_student.Q_X_SIGN_ALIGNED` | `Q_X_SIGN_ALIGNED_mean`, `Q_X_SIGN_ALIGNED_std` | Q_X sign-aligned | approved | 逐 channel 取绝对值的 sign-gauge diagnostic；不处理 permutation/rotation。 |
+| `latent.W.teacher_student.Q_W_SCALE_GAUGE` | `Q_W_SCALE_GAUGE_mean`, `Q_W_SCALE_GAUGE_std` | Q_W scale-gauge | approved | 联合 W/X diagonal scale-gauge 对齐后的 W diagnostic；不改变训练轨迹。 |
+| `latent.X.teacher_student.Q_X_SCALE_GAUGE` | `Q_X_SCALE_GAUGE_mean`, `Q_X_SCALE_GAUGE_std` | Q_X scale-gauge | approved | 联合 W/X diagonal scale-gauge 对齐后的 X diagnostic；不改变训练轨迹。 |
+| `latent.WX.teacher_student.Q_WX_SCALE_GAUGE` | `Q_WX_SCALE_GAUGE_mean`, `Q_WX_SCALE_GAUGE_std` | Q_WX scale-gauge | approved | `Q_W_SCALE_GAUGE` 与 `Q_X_SCALE_GAUGE` 的平均 diagnostic。 |
+| `latent.WX.teacher_student.scale_gauge_magnitude` | `median_abs_log_g_mean`, `median_abs_log_g_std` | scale-gauge magnitude | approved | 拟合出的 channel scale gauge 大小，公式是 median `|log |g_k||`。 |
 | `latent.N.teacher_student.Q_N_projection` | `Q_N_mean`, `Q_N_std`, `Q_N_mode*_mean`, `Q_N_mode*_std` | Q_N | approved | tensor latent node/spin/factor projection。 |

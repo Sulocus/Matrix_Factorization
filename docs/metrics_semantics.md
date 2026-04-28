@@ -165,6 +165,40 @@ tensor.full.teacher_student.projection_overlap
 
 factor-level projection overlap is sign/gauge sensitive. `physical_overlap_Y_mean` is a better physical-order-parameter candidate only when output-space scale convention is explicit.
 
+### latent_factor_scale_gauge_projection
+
+```text
+latent.W.teacher_student.Q_W_SCALE_GAUGE
+  legacy aliases: Q_W_SCALE_GAUGE_mean, Q_W_SCALE_GAUGE_std
+  appears in: bigamp_spreading
+  meaning: W projection after jointly aligning each W/X latent channel under diagonal scale gauge
+  status: diagnostic
+  risk: medium
+
+latent.X.teacher_student.Q_X_SCALE_GAUGE
+  legacy aliases: Q_X_SCALE_GAUGE_mean, Q_X_SCALE_GAUGE_std
+  appears in: bigamp_spreading
+  meaning: X projection after jointly aligning each W/X latent channel under diagonal scale gauge
+  status: diagnostic
+  risk: medium
+
+latent.WX.teacher_student.Q_WX_SCALE_GAUGE
+  legacy aliases: Q_WX_SCALE_GAUGE_mean, Q_WX_SCALE_GAUGE_std
+  appears in: bigamp_spreading
+  meaning: mean of Q_W and Q_X after joint diagonal scale-gauge alignment
+  status: diagnostic
+  risk: medium
+
+latent.WX.teacher_student.scale_gauge_magnitude
+  legacy aliases: median_abs_log_g_mean, median_abs_log_g_std
+  appears in: bigamp_spreading
+  meaning: median channel magnitude |log |g_k|| of the fitted diagonal scale gauge
+  status: diagnostic
+  risk: medium
+```
+
+这些量是 diagnostic，不改变训练轨迹。它们用于判断 raw `Q_W/Q_X` 低是否主要来自 diagonal scale gauge 未对齐。
+
 ### reconstruction_error
 
 ```text

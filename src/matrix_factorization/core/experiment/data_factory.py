@@ -73,6 +73,7 @@ class DataFactory:
         self,
         config: 'ExperimentConfig',
         alpha_values: Optional[List[float]] = None,
+        observation_policy: Optional[str] = None,
     ) -> ExperimentData:
         """
         Create all data needed for an experiment.
@@ -85,6 +86,15 @@ class DataFactory:
             ExperimentData with all required tensors
         """
         alpha_values = alpha_values or config.alpha_values
+        if observation_policy is None:
+            continuation = {}
+            scan_spec = getattr(config, "scan_spec", None)
+            if isinstance(scan_spec, dict):
+                continuation = scan_spec.get("continuation") or {}
+            if isinstance(continuation, dict) and bool(continuation.get("enabled", False)):
+                observation_policy = str(continuation.get("observation_policy", "nested_prefix"))
+            else:
+                observation_policy = "independent_resample"
         
         # Get teacher initialization distribution
         init_distribution = "gaussian"  # default
@@ -128,6 +138,7 @@ class DataFactory:
                 M=config.matrix.M,
                 alpha_values=alpha_values,
                 seed=config.seeds.base_seed,
+                nested_prefix=(observation_policy == "nested_prefix"),
             )
             return ExperimentData(
                 W_teacher=W_teacher,
@@ -207,6 +218,7 @@ class DataFactory:
         M: int,
         alpha_values: List[float],
         seed: int = 42,
+        nested_prefix: bool = False,
     ) -> torch.Tensor:
         """
         Create observation masks for dense algorithms.
@@ -226,18 +238,28 @@ class DataFactory:
         num_alphas = len(alpha_values)
         masks = torch.zeros(num_alphas, N1, N2, dtype=torch.bool, device=self.device)
         
+        base_perm = None
+        if nested_prefix:
+            generator = torch.Generator(device=self.device).manual_seed(int(seed))
+            base_perm = torch.randperm(N1 * N2, generator=generator, device=self.device)
+
         for a, alpha in enumerate(alpha_values):
             # Use alpha-specific seed (consistent with reference implementation)
-            alpha_seed = seed + int(alpha * 1000)
-            torch.manual_seed(alpha_seed)
+            if not nested_prefix:
+                alpha_seed = seed + int(alpha * 1000)
+                torch.manual_seed(alpha_seed)
             
             # Number of observed entries: alpha * M * N1
             # This gives average degree per row = alpha * M
             num_observed = int(alpha * M * N1)
             num_observed = min(num_observed, N1 * N2)  # Cap at total elements
             
-            # Random permutation for observation positions
-            perm = torch.randperm(N1 * N2, device=self.device)[:num_observed]
+            # Random permutation for observation positions. Continuation uses one
+            # shared order so masks are nested prefixes across alpha.
+            if base_perm is not None:
+                perm = base_perm[:num_observed]
+            else:
+                perm = torch.randperm(N1 * N2, device=self.device)[:num_observed]
             mask_flat = torch.zeros(N1 * N2, dtype=torch.bool, device=self.device)
             mask_flat[perm] = True
             masks[a] = mask_flat.reshape(N1, N2)
@@ -268,9 +290,12 @@ class DataFactory:
         """
         # Import here to avoid circular imports
         from ...modules.graphs.supergraph import create_supergraph
+        from ...modules.graphs.supergraph_general import create_supergraph_general
         from ...modules.algorithms.bigamp.spreading import (
             generate_F_super,
+            generate_F_super_general,
             compute_Y_super,
+            compute_Y_super_general,
             SpreadingDataParallel,
         )
         
@@ -278,35 +303,60 @@ class DataFactory:
         _, N2 = X_teacher.shape
         S = config.training.samples_per_alpha
         
-        # Create SuperGraph (graph structure)
-        supergraph = create_supergraph(
-            N1=N1,
-            N2=N2,
-            M=M,
-            alpha_values=alpha_values,
-            S=S,
-            base_seed=config.seeds.base_seed,
-            device=self.device,
-            num_workers=config.training.num_workers,
-        )
-        
-        # Generate F (spreading coefficients)
         f_distribution = config.spreading.f_distribution if config.spreading else "rademacher"
-        F_super = generate_F_super(
-            supergraph=supergraph,
-            M=M,
-            base_seed=config.seeds.spreading_seed,
-            device=self.device,
-            f_distribution=f_distribution,
-        )
-        
-        # Compute Y (observations)
-        Y_super = compute_Y_super(
-            W_teacher=W_teacher,
-            X_teacher=X_teacher,
-            supergraph=supergraph,
-            F_super=F_super,
-        )
+        allow_intra = bool(getattr(config.spreading, "allow_intra_connection", False)) if config.spreading else False
+        if allow_intra:
+            supergraph = create_supergraph_general(
+                N1=N1,
+                N2=N2,
+                M=M,
+                alpha_values=alpha_values,
+                S=S,
+                base_seed=config.seeds.base_seed,
+                device=self.device,
+            )
+            F_super = generate_F_super_general(
+                supergraph=supergraph,
+                M=M,
+                base_seed=config.seeds.spreading_seed,
+                device=self.device,
+                f_distribution=f_distribution,
+            )
+            Y_super = compute_Y_super_general(
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                supergraph=supergraph,
+                F_super=F_super,
+            )
+        else:
+            # Create SuperGraph (graph structure)
+            supergraph = create_supergraph(
+                N1=N1,
+                N2=N2,
+                M=M,
+                alpha_values=alpha_values,
+                S=S,
+                base_seed=config.seeds.base_seed,
+                device=self.device,
+                num_workers=config.training.num_workers,
+            )
+
+            # Generate F (spreading coefficients)
+            F_super = generate_F_super(
+                supergraph=supergraph,
+                M=M,
+                base_seed=config.seeds.spreading_seed,
+                device=self.device,
+                f_distribution=f_distribution,
+            )
+
+            # Compute Y (observations)
+            Y_super = compute_Y_super(
+                W_teacher=W_teacher,
+                X_teacher=X_teacher,
+                supergraph=supergraph,
+                F_super=F_super,
+            )
         
         return SpreadingDataParallel(
             supergraph=supergraph,

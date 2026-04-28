@@ -42,6 +42,7 @@ from .tensor_step_super import tensor_step_super, forward_pass_tensor_super
 
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
+from matrix_factorization.core.contracts import AlgorithmStateView
 from matrix_factorization.core.experiment.config import resolve_normalization_profile
 from matrix_factorization.modules.metrics.tensor_metrics import (
     compute_factor_gram_overlap,
@@ -408,6 +409,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         teacher_factors = self._create_teacher_factors(W_teacher, X_teacher)
 
         self._batch_metrics = {}
+        self._last_continuation_state = None
 
         # Smart alpha batching
         alpha_batches = self._compute_alpha_batches(alpha_values)
@@ -436,8 +438,17 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             try:
                 batch_seed = self._seed_for_internal_alpha_batch(seed, batch_idx, batch_alphas)
                 result = self._train_full_parallel(
-                    teacher_factors, batch_alphas, batch_seed, self.device, current_callback
+                    teacher_factors,
+                    batch_alphas,
+                    batch_seed,
+                    self.device,
+                    current_callback,
+                    initial_state=kwargs.get("initial_state") if len(batch_alphas) == 1 else None,
+                    return_continuation_state=bool(kwargs.get("return_continuation_state", False)) and len(batch_alphas) == 1,
+                    continuation_context=kwargs.get("continuation_context"),
                 )
+                if result.get("_continuation_state") is not None:
+                    self._last_continuation_state = result["_continuation_state"]
 
                 # Store metrics for each alpha in this batch
                 for local_idx, alpha in enumerate(batch_alphas):
@@ -480,7 +491,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             **kwargs,
         })
         self._run_batch_metrics_only(**call_kwargs)
-        return self._metrics_only_algorithm_result(algorithm_key)
+        result = self._metrics_only_algorithm_result(algorithm_key)
+        if kwargs.get("return_continuation_state", False):
+            result.continuation_state = getattr(self, "_last_continuation_state", None)
+        return result
 
     def _metrics_only_algorithm_result(self, algorithm_key: str):
         from matrix_factorization.core.contracts import AlgorithmResult
@@ -714,6 +728,9 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
         seed: int,
         device: torch.device,
         step_callback: Optional[Callable] = None,
+        initial_state: Optional[AlgorithmStateView] = None,
+        return_continuation_state: bool = False,
+        continuation_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, any]:
         """
         Train all alphas AND all samples in parallel using TensorSuperGraph.
@@ -882,8 +899,19 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             for N_d in self.dims
         ]
 
-        prev_s = None
-        prev_svar = None
+        if initial_state is not None:
+            factors, factor_vars, prev_s, prev_svar = self._coerce_tensor_continuation_state(
+                initial_state=initial_state,
+                A=A,
+                S=S,
+                M=M,
+                factor_vars=factor_vars,
+                alpha_mask_exp=superdata.alpha_mask_exp,
+            )
+        else:
+            prev_s = None
+            prev_svar = None
+
         is_rademacher = (self.f_distribution == 'rademacher')
 
         # Use compiled step function if available (Phase 3 optimization)
@@ -1086,7 +1114,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                     q_matrix[j + 1, i + 1] = val
             overlap_matrices.append(q_matrix)
 
-        return {
+        result = {
             'Q_Y': Q_Y_full_per_alpha,
             'Q_Y_std': Q_Y_full_std_per_alpha,
             'Q_Y_observed': Q_Y_observed_per_alpha,
@@ -1115,6 +1143,131 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             'S': S,
             'C_max': C_max,
         }
+        if return_continuation_state:
+            result["_continuation_state"] = self._build_tensor_continuation_state(
+                factors=factors,
+                factor_vars=factor_vars,
+                prev_s=prev_s,
+                prev_svar=prev_svar,
+                S=S,
+                A=A,
+                M=M,
+                steps=self.max_steps,
+                alpha_values=alpha_values,
+                teacher_factors=teacher_factors,
+            )
+        return result
+
+    def _coerce_tensor_continuation_state(
+        self,
+        *,
+        initial_state: AlgorithmStateView,
+        A: int,
+        S: int,
+        M: int,
+        factor_vars: List[torch.Tensor],
+        alpha_mask_exp: torch.Tensor,
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        raw_factors = (initial_state.tensor_factors or {}).get("factors")
+        if raw_factors is None:
+            raw_factors = (initial_state.student_factors or {}).get("factors")
+        if raw_factors is None:
+            raise ValueError("tensor continuation requires tensor_factors['factors']")
+        factors = [
+            self._coerce_tensor_factor(raw_factors[d], (A, S, self.dims[d], M))
+            .reshape(A, S * self.dims[d], M)
+            for d in range(self.order)
+        ]
+
+        raw_vars = (initial_state.factor_variances or {}).get("factor_vars")
+        if raw_vars is not None:
+            factor_vars = [
+                self._coerce_tensor_factor(raw_vars[d], (A, S, self.dims[d], M))
+                .reshape(A, S * self.dims[d], M)
+                for d in range(self.order)
+            ]
+
+        prev_s = None
+        prev_svar = None
+        residual = initial_state.onsager_residual or {}
+        if self.onsager_correction and isinstance(residual, dict):
+            if residual.get("prev_s") is not None:
+                prev_s = self._coerce_tensor_residual(residual["prev_s"], alpha_mask_exp.shape)
+                prev_s = prev_s * alpha_mask_exp.to(prev_s.dtype)
+            if residual.get("prev_svar") is not None:
+                prev_svar = self._coerce_tensor_residual(residual["prev_svar"], alpha_mask_exp.shape)
+                prev_svar = prev_svar * alpha_mask_exp.to(prev_svar.dtype)
+        return factors, factor_vars, prev_s, prev_svar
+
+    def _build_tensor_continuation_state(
+        self,
+        *,
+        factors: List[torch.Tensor],
+        factor_vars: List[torch.Tensor],
+        prev_s: Optional[torch.Tensor],
+        prev_svar: Optional[torch.Tensor],
+        S: int,
+        A: int,
+        M: int,
+        steps: int,
+        alpha_values: List[float],
+        teacher_factors: List[torch.Tensor],
+    ) -> AlgorithmStateView:
+        factors_shaped = [
+            factors[d].reshape(A, S, self.dims[d], M)
+            for d in range(self.order)
+        ]
+        vars_shaped = [
+            factor_vars[d].reshape(A, S, self.dims[d], M)
+            for d in range(self.order)
+        ]
+        state_factors = [
+            item[0].detach().clone() if A == 1 else item.detach().clone()
+            for item in factors_shaped
+        ]
+        state_vars = [
+            item[0].detach().clone() if A == 1 else item.detach().clone()
+            for item in vars_shaped
+        ]
+        residual = None
+        if self.onsager_correction and prev_s is not None:
+            residual = {
+                "prev_s": prev_s.detach().clone(),
+                "prev_svar": prev_svar.detach().clone() if prev_svar is not None else None,
+            }
+        return AlgorithmStateView(
+            tensor_factors={"factors": state_factors},
+            factor_variances={"factor_vars": state_vars},
+            onsager_residual=residual,
+            teacher_factors={f"mode{idx}": value.detach() for idx, value in enumerate(teacher_factors)},
+            step_index=steps,
+            alpha=float(alpha_values[0]) if len(alpha_values) == 1 else None,
+            metadata={
+                "algorithm_key": "bigamp_tensor_parallel",
+                "continuation_state": "tensor_factors+factor_variances"
+                + ("+onsager_residual" if residual is not None else ""),
+            },
+        )
+
+    def _coerce_tensor_factor(self, value: torch.Tensor, target_shape: Tuple[int, int, int, int]) -> torch.Tensor:
+        tensor = value.detach().to(device=self.device, dtype=self.storage_dtype)
+        if tuple(tensor.shape) == target_shape:
+            return tensor.clone()
+        if tensor.dim() == 3 and target_shape[0] == 1 and tuple(tensor.shape) == target_shape[1:]:
+            return tensor.unsqueeze(0).clone()
+        raise ValueError(
+            f"Continuation tensor factor shape {tuple(tensor.shape)} cannot initialize target {target_shape}"
+        )
+
+    def _coerce_tensor_residual(self, value: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
+        tensor = value.detach().to(device=self.device, dtype=self.storage_dtype)
+        if tuple(tensor.shape) == tuple(target_shape):
+            return tensor.clone()
+        if tensor.dim() == 1 and len(target_shape) == 2 and int(target_shape[0]) == 1 and int(tensor.shape[0]) == int(target_shape[1]):
+            return tensor.unsqueeze(0).clone()
+        raise ValueError(
+            f"Continuation tensor residual shape {tuple(tensor.shape)} cannot initialize target {tuple(target_shape)}"
+        )
 
 
 

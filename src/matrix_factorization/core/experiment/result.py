@@ -968,21 +968,40 @@ class ExperimentResult:
                         while W_s.dim() > 3:
                             W_s = W_s.squeeze(0)  # Remove leading dims until (S, N1, M)
 
-                        # Build interaction matrix
-                        matrix_W = build_interaction_matrix(
-                            W_s, W_teacher, gram_overlap_normalized, use_left=True
-                        )
+                        heatmap_metric = str(
+                            output_options.get('heatmap_metric', 'Q_W') if output_options else 'Q_W'
+                        ).upper()
+                        if heatmap_metric in {"Q_W_SIGN", "Q_W_SIGN_ALIGNED", "D.W"}:
+                            from matrix_factorization.modules.metrics.overlap import sign_aligned_projection_abs
+
+                            def _w_sign_aligned(a, b):
+                                return sign_aligned_projection_abs(a, b, latent_axis=-1)
+
+                            matrix_W = build_interaction_matrix(
+                                W_s, W_teacher, _w_sign_aligned, use_left=True
+                            )
+                            metric_name = "W Sign-Aligned Projection ($Q_{W,sign}$)"
+                            filename_prefix = self._heatmap_filename_prefix("heatmap_W_sign", v)
+                            heatmap_code = "Q_W_SIGN_ALIGNED"
+                        else:
+                            # Build interaction matrix
+                            matrix_W = build_interaction_matrix(
+                                W_s, W_teacher, gram_overlap_normalized, use_left=True
+                            )
+                            metric_name = "Q_W"
+                            filename_prefix = self._heatmap_filename_prefix("heatmap_W", v)
+                            heatmap_code = "Q_W"
 
                         # Save heatmap
                         heatmap_path = plot_replica_heatmap(
                             matrix_W, heatmap_alpha, plots_dir,
-                            metric_name="Q_W", filename_prefix=self._heatmap_filename_prefix("heatmap_W", v),
+                            metric_name=metric_name, filename_prefix=filename_prefix,
                             rsb_ordering=rsb_ordering,
                             enhance_high_values=not uniform_colormap,  # uniform = no enhancement
                         )
                         if heatmap_path:
                             heatmap_paths.append(heatmap_path)
-                            heatmap_metric_codes.append("Q_W")
+                            heatmap_metric_codes.append(heatmap_code)
 
                 # Create GIF from heatmaps
                 if heatmap_paths:

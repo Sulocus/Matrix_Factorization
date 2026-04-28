@@ -11,6 +11,7 @@ import torch
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ...core.config import Config
+from ...core.contracts import AlgorithmStateView
 from ...core.experiment.config import resolve_normalization_profile
 
 
@@ -257,6 +258,9 @@ class AGDAlgorithm(AlgorithmBase):
         step_callback: Optional[Callable[[int, int], None]] = None,
         sample_callback: Optional[Callable] = None,
         runtime_step_callback: Optional[Callable] = None,
+        initial_state: Optional[AlgorithmStateView] = None,
+        return_continuation_state: bool = False,
+        continuation_context: Optional[dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train AGD for multiple alphas in parallel."""
         N1, M = W_teacher.shape
@@ -302,6 +306,16 @@ class AGDAlgorithm(AlgorithmBase):
             W = torch.randn((num_alphas, S, N1, M), device=device, dtype=torch.float32) * scale
             X = torch.randn((num_alphas, S, M, N2), device=device, dtype=torch.float32) * scale
 
+        if initial_state is not None:
+            factors = initial_state.student_factors or {}
+            if "W" in factors and "X" in factors:
+                W = self._coerce_continuation_factor(
+                    factors["W"], (num_alphas, S, N1, M), device, torch.float32
+                )
+                X = self._coerce_continuation_factor(
+                    factors["X"], (num_alphas, S, M, N2), device, torch.float32
+                )
+
         for step in range(steps):
             with torch.autocast(device_type=device.type, dtype=self.compute_dtype,
                                 enabled=self.use_bf16):
@@ -326,8 +340,6 @@ class AGDAlgorithm(AlgorithmBase):
             if callback:
                 callback(step + 1, steps)
             if runtime_step_callback:
-                from ...core.contracts import AlgorithmStateView
-
                 runtime_step_callback(
                     AlgorithmStateView(
                         student_factors={
@@ -349,7 +361,26 @@ class AGDAlgorithm(AlgorithmBase):
                     )
                 )
 
-        return W.float(), X.float()
+        W_out = W.float()
+        X_out = X.float()
+        if return_continuation_state:
+            self._last_continuation_state = AlgorithmStateView(
+                student_factors={
+                    "W": W_out[0].detach().clone() if W_out.dim() == 4 and W_out.shape[0] == 1 else W_out.detach().clone(),
+                    "X": X_out[0].detach().clone() if X_out.dim() == 4 and X_out.shape[0] == 1 else X_out.detach().clone(),
+                },
+                teacher_factors={"W": W_teacher.detach(), "X": X_teacher.detach()},
+                step_index=steps,
+                alpha=float(alpha_values[0]) if len(alpha_values) == 1 else None,
+                metadata={
+                    "algorithm_key": "agd",
+                    "continuation_state": "student_factors",
+                    "state_transfer": (continuation_context or {}).get("state_transfer", "full_algorithm_state"),
+                },
+            )
+        else:
+            self._last_continuation_state = None
+        return W_out, X_out
 
     def train_batch_result(
         self,
@@ -382,11 +413,30 @@ class AGDAlgorithm(AlgorithmBase):
             **kwargs,
         })
         W_students, X_students = self.train_batch_alphas(**call_kwargs)
-        return self.coerce_native_matrix_result(
+        result = self.coerce_native_matrix_result(
             algorithm_key=algorithm_key,
             W_students=W_students,
             X_students=X_students,
             result_source="native_agd_algorithm_result",
+        )
+        if kwargs.get("return_continuation_state", False):
+            result.continuation_state = getattr(self, "_last_continuation_state", None)
+        return result
+
+    @staticmethod
+    def _coerce_continuation_factor(
+        value: torch.Tensor,
+        target_shape: Tuple[int, ...],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        tensor = value.detach().to(device=device, dtype=dtype)
+        if tuple(tensor.shape) == target_shape:
+            return tensor.clone()
+        if len(target_shape) == 4 and tensor.dim() == 3 and target_shape[0] == 1 and tuple(tensor.shape) == target_shape[1:]:
+            return tensor.unsqueeze(0).clone()
+        raise ValueError(
+            f"Continuation factor shape {tuple(tensor.shape)} cannot initialize target {target_shape}"
         )
 
     def supports_batch_training(self) -> bool:
