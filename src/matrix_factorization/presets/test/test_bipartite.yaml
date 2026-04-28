@@ -35,7 +35,7 @@ algorithm_params:
   use_bf16: true
 
 spreading:
-  f_distribution: rademacher
+  f_distribution: ising
   onsager_correction: false
   chunk_size: 262144
 

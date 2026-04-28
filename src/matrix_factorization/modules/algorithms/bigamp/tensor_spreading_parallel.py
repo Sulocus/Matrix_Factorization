@@ -16,6 +16,8 @@ import logging
 from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
+from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING, normalize_f_distribution
+
 logger = logging.getLogger(__name__)
 
 # Set to True for verbose debug output during development
@@ -112,7 +114,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.S = kwargs.get('S', 1)
             self.damping = kwargs.get('damping', 0.5)
             self.noise_var = kwargs.get('noise_var', 1e-6)
-            self.f_distribution = kwargs.get('f_distribution', 'rademacher')
+            self.f_distribution = normalize_f_distribution(kwargs.get('f_distribution', F_DISTRIBUTION_ISING))
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
             self.precision_profile = kwargs.get(
@@ -152,10 +154,10 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.noise_var = config.algorithm_params.noise_var
 
             if hasattr(config, 'spreading') and config.spreading:
-                self.f_distribution = config.spreading.f_distribution
+                self.f_distribution = normalize_f_distribution(config.spreading.f_distribution)
                 self.onsager_correction = config.spreading.onsager_correction
             else:
-                self.f_distribution = 'rademacher'
+                self.f_distribution = F_DISTRIBUTION_ISING
                 self.onsager_correction = config.spreading.onsager_correction
 
             # Warm Start / Init Mode
@@ -198,7 +200,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             self.S = 1
             self.damping = 0.5
             self.noise_var = 1e-6
-            self.f_distribution = 'rademacher'
+            self.f_distribution = F_DISTRIBUTION_ISING
             self.onsager_correction = False
             self.debug_verbose = False
             self.precision_profile = 'fast'
@@ -316,7 +318,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
     def _apply_observation_precision(self, superdata: TensorSuperData) -> TensorSuperData:
         """Apply storage dtype policy to large observation tensors.
 
-        Rademacher F remains int8.  Gaussian F and Y are allowed to use BF16
+        Ising F remains int8.  Gaussian F and Y are allowed to use BF16
         storage only under the aggressive profile; all reductions still cast to
         FP32 inside metric/update code where needed.
         """
@@ -912,7 +914,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
             prev_s = None
             prev_svar = None
 
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
 
         # Use compiled step function if available (Phase 3 optimization)
         step_fn = (BiGAMPTensorSpreadingParallel._compiled_step_super
@@ -952,7 +954,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 superdata.alpha_mask_exp,
                 damping=self.damping,
                 noise_var=current_noise_var,
-                is_rademacher=is_rademacher,
+                is_ising=is_ising,
                 prev_s=prev_s if self.onsager_correction else None,
                 prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,
@@ -1318,7 +1320,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
 
         prev_s = None
         prev_svar = None
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
 
         # Select step function: compiled if available, else original
         step_fn = (BiGAMPTensorSpreadingParallel._compiled_step
@@ -1346,7 +1348,7 @@ class BiGAMPTensorSpreadingParallel(AlgorithmBase):
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
                 noise_var=current_noise_var,
-                is_rademacher=is_rademacher,
+                is_ising=is_ising,
                 prev_s=prev_s if self.onsager_correction else None,
                 prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,

@@ -89,9 +89,9 @@ deterministic: F_{square,mu} = 1
 random:        F_{square,mu} iid, E[F] = 0, E[F^2] = 1
 ```
 
-Rademacher `F in {-1, +1}` 满足 random spreading 的零均值、单位方差条件。
+Ising `F in {-1, +1}` 满足 random spreading 的零均值、单位方差条件。
 当前项目偏好是：除非 run 明确请求 Gaussian `F`，否则 random spreading
-默认保留 Rademacher。
+默认保留 Ising。
 
 ## Output Models
 
@@ -121,7 +121,7 @@ Q_W, Q_X = coordinate latent projections
 Q_N = tensor latent node/spin/factor projection
 ```
 
-项目还保留 Gram-root 和 sign-aligned diagnostics。旧 cosine `Q_Y`、`MSE`
+项目还保留 Cos-root 和 sign-aligned diagnostics。旧 cosine `Q_Y`、`MSE`
 和 `Gen_Error` 不再作为新结果的 formal metrics。
 
 ## Dense Limit

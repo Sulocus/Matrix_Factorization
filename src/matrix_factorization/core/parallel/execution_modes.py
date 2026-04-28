@@ -8,6 +8,12 @@ from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import Any, List, Tuple, Optional, Dict
 
+from matrix_factorization.core.distributions import (
+    F_DISTRIBUTION_ISING,
+    f_distribution_bytes_per_element,
+    normalize_f_distribution,
+)
+
 
 class ParallelMode(Enum):
     """Parallel execution modes for algorithms."""
@@ -31,8 +37,8 @@ class EstimationParams:
         algorithm_key: Algorithm identifier (e.g., 'bigamp_spreading_parallel')
         use_compile: Whether torch.compile is enabled
         use_bf16: Whether using BF16 precision
-        f_distribution: For spreading algorithms, 'gaussian' or 'rademacher'
-                       Gaussian uses float32 (4 bytes), Rademacher uses int8 (1 byte)
+        f_distribution: For spreading algorithms, 'gaussian' or 'ising'
+                       Gaussian uses float32 (4 bytes), Ising uses int8 (1 byte)
     """
     N1: int
     N2: int
@@ -44,13 +50,16 @@ class EstimationParams:
     use_bf16: bool = False
     precision_profile: str = "safe"
     role_dtype_map: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    f_distribution: str = 'rademacher'  # 'gaussian' or 'rademacher'
+    f_distribution: str = F_DISTRIBUTION_ISING  # 'gaussian' or 'ising'
     adaptive_damping: bool = False  # Whether using adaptive damping (doubles memory for backtracking)
     allow_intra_connection: bool = False  # General Graph mode (W-W, X-X connections)
     tensor_order: int = 2
     tensor_dims: Optional[Tuple[int, ...]] = None
     seed_partition_policy: str = "legacy"
     chunk_size: Optional[int] = None
+
+    def __post_init__(self):
+        self.f_distribution = normalize_f_distribution(self.f_distribution)
     
     @property
     def alpha_max(self) -> float:
@@ -65,7 +74,7 @@ class EstimationParams:
     @property
     def f_bytes_per_element(self) -> int:
         """Bytes per F element based on distribution type."""
-        return 1 if self.f_distribution == 'rademacher' else 4
+        return f_distribution_bytes_per_element(self.f_distribution)
     
     @property
     def is_spreading_algorithm(self) -> bool:
@@ -109,7 +118,7 @@ class EstimationParams:
             use_bf16=bool(payload.get("use_bf16", False)),
             precision_profile=str(payload.get("precision_profile", "fast" if payload.get("use_bf16", False) else "safe")),
             role_dtype_map=dict(payload.get("role_dtype_map") or {}),
-            f_distribution=str(payload.get("f_distribution", "rademacher")),
+            f_distribution=normalize_f_distribution(payload.get("f_distribution", F_DISTRIBUTION_ISING)),
             adaptive_damping=bool(payload.get("adaptive_damping", False)),
             allow_intra_connection=bool(payload.get("allow_intra_connection", False)),
             tensor_order=int(payload.get("tensor_order", 2)),

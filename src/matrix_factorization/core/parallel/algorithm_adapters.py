@@ -128,7 +128,7 @@ class DenseAlgorithmAdapter(BaseAlgorithmAdapter):
             algorithm_key=self.algorithm_key,
             use_compile=kwargs.get('use_compile', True),
             use_bf16=kwargs.get('use_bf16', True),
-            f_distribution='rademacher',  # Not used for dense algorithms
+            f_distribution='ising',  # Not used for dense algorithms
         )
     
     def run_with_plan(
@@ -169,14 +169,14 @@ class SpreadingAlgorithmAdapter(BaseAlgorithmAdapter):
     Adapter for spreading algorithms (bigamp_spreading, bigamp_spreading_parallel).
     
     These algorithms use sparse edge-based operations and support
-    different F distributions (gaussian, rademacher).
+    different F distributions (gaussian, ising).
     """
     
     def __init__(
         self,
         algorithm: Any,
         algorithm_key: str = "bigamp_spreading_parallel",
-        f_distribution: str = "rademacher",
+        f_distribution: str = "ising",
         allow_intra_connection: bool = False,
     ):
         super().__init__(algorithm)
@@ -334,7 +334,7 @@ def get_adapter(algorithm: Any) -> BaseAlgorithmAdapter:
 def create_adapter(
     algorithm: Any,
     algorithm_key: Optional[str] = None,
-    f_distribution: str = 'rademacher',
+    f_distribution: str = 'ising',
     allow_intra_connection: bool = False,
 ) -> BaseAlgorithmAdapter:
     """
@@ -371,7 +371,7 @@ def get_memory_estimate(
     S: int,
     alpha_values: List[float],
     algorithm_key: str = "bigamp_spreading_parallel",
-    f_distribution: str = "rademacher",
+    f_distribution: str = "ising",
     use_compile: bool = True,
     use_bf16: bool = True,
 ) -> float:
@@ -384,7 +384,7 @@ def get_memory_estimate(
         S: Number of samples
         alpha_values: Alpha values
         algorithm_key: Algorithm name
-        f_distribution: 'gaussian' or 'rademacher'
+        f_distribution: 'gaussian' or 'ising'
         use_compile: Whether torch.compile is used
         use_bf16: Whether BF16 is used
         
@@ -422,13 +422,13 @@ def compare_f_distributions(
         Parameters as above
         
     Returns:
-        Dict with 'gaussian' and 'rademacher' memory estimates
+        Dict with 'gaussian' and 'ising' memory estimates
     """
     return {
         'gaussian': get_memory_estimate(
             N1, N2, M, S, alpha_values, algorithm_key, 'gaussian'
         ),
-        'rademacher': get_memory_estimate(
-            N1, N2, M, S, alpha_values, algorithm_key, 'rademacher'
+        'ising': get_memory_estimate(
+            N1, N2, M, S, alpha_values, algorithm_key, 'ising'
         ),
     }

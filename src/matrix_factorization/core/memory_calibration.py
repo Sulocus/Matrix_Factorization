@@ -46,7 +46,7 @@ class MemoryCalibrationProfile:
     max_steps: int = 2
     max_epochs: int = 2
     tensor_order: int = 2
-    f_distribution: str = "rademacher"
+    f_distribution: str = "ising"
     use_compile: bool = False
     precision_profile: str = "safe"
     precision_fallback_policy: str = "allow"
@@ -823,7 +823,7 @@ def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
         use_bf16=precision_profile in {"fast", "aggressive"},
         precision_profile=precision_profile,
         role_dtype_map=role_dtype_map,
-        f_distribution=getattr(spreading, "f_distribution", "rademacher") if spreading else "rademacher",
+        f_distribution=getattr(spreading, "f_distribution", "ising") if spreading else "ising",
         adaptive_damping=config.algorithm_params.adaptive_damping,
         allow_intra_connection=getattr(spreading, "allow_intra_connection", False) if spreading else False,
         tensor_order=tensor_order,

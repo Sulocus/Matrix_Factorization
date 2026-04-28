@@ -76,7 +76,7 @@ def compute_variance_tensor_super(
     offset_indices: List[torch.Tensor], # n tensors of (S*C_max,) - PRECOMPUTED
     S: int,
     N_dims: List[int],
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     alpha_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
@@ -91,7 +91,7 @@ def compute_variance_tensor_super(
         offset_indices: n tensors of (S*C_max,) - PRECOMPUTED
         S: Number of samples
         N_dims: Dimension sizes
-        is_rademacher: If True, skip F² (F²=1 for Rademacher)
+        is_ising: If True, skip F² (F²=1 for Ising)
 
     Returns:
         V: (A, S*C_max) variance estimates
@@ -114,7 +114,7 @@ def compute_variance_tensor_super(
     gathered_var = torch.stack(gathered_var_list)  # (n, A, S*C_max, M)
 
     # F²
-    F_sq = torch.ones_like(F_flat) if is_rademacher else F_flat.pow(2)
+    F_sq = torch.ones_like(F_flat) if is_ising else F_flat.pow(2)
 
     mean_sq_product = gathered.pow(2).prod(dim=0)
     second_product = (gathered.pow(2) + gathered_var).prod(dim=0)
@@ -139,7 +139,7 @@ def tensor_step_super(
     alpha_mask: torch.Tensor,          # (A, S*C_max) bool
     damping: float,
     noise_var: float,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
     onsager_correction: bool = False,
@@ -164,7 +164,7 @@ def tensor_step_super(
         alpha_mask: (A, S*C_max) - valid edges per alpha
         damping: Damping coefficient
         noise_var: Observation noise variance
-        is_rademacher: Whether F is Rademacher
+        is_ising: Whether F is Ising
         prev_s: Previous s_values for Onsager correction
         onsager_correction: Whether to apply Onsager correction
 
@@ -195,7 +195,7 @@ def tensor_step_super(
     gathered = torch.stack(gathered_list)  # (n, A, S*C_max, M)
     gathered_var = torch.stack(gathered_var_list)
 
-    F_sq = torch.ones_like(F_flat) if is_rademacher else F_flat.pow(2)
+    F_sq = torch.ones_like(F_flat) if is_ising else F_flat.pow(2)
     mean_sq = gathered.pow(2)
     mean_sq_product = mean_sq.prod(dim=0)
     second_product = (mean_sq + gathered_var).prod(dim=0)

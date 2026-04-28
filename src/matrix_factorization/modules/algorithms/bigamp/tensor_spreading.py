@@ -9,7 +9,7 @@ Key features:
 - Supports arbitrary tensor order n (n=2 reduces to matrix factorization)
 - Simplified architecture: single-alpha, single-sample training
 - Onsager correction optional (default OFF)
-- Rademacher or Gaussian spreading coefficients
+- Ising or Gaussian spreading coefficients
 - Fully integrated with runner via AlgorithmBase interface
 """
 
@@ -18,6 +18,7 @@ import torch
 from typing import Any, List, Dict, Tuple, Optional, Callable
 from dataclasses import dataclass
 
+from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING, normalize_f_distribution
 from .tensor_data import TensorHypergraph, TensorSpreadingData
 from .tensor_contract import (
     build_tensor_execution_metadata,
@@ -42,7 +43,7 @@ class TensorSpreadingConfig:
     max_steps: int = 200
     damping: float = 0.5
     noise_var: float = 1e-6
-    f_distribution: str = 'rademacher'
+    f_distribution: str = 'ising'
     onsager_correction: bool = False  # Disabled by default for stability
 
 
@@ -83,7 +84,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             self.S = kwargs.get('S', 1)
             self.damping = kwargs.get('damping', 0.5)
             self.noise_var = kwargs.get('noise_var', 1e-6)
-            self.f_distribution = kwargs.get('f_distribution', 'rademacher')
+            self.f_distribution = normalize_f_distribution(kwargs.get('f_distribution', F_DISTRIBUTION_ISING))
             self.onsager_correction = kwargs.get('onsager_correction', False)
             self.device = kwargs.get('device', device) or torch.device('cpu')
             self.precision_profile = kwargs.get(
@@ -131,11 +132,11 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             
             # Spreading params
             if hasattr(config, 'spreading') and config.spreading:
-                self.f_distribution = config.spreading.f_distribution
+                self.f_distribution = normalize_f_distribution(config.spreading.f_distribution)
                 # Respect user configuration for Onsager correction
                 self.onsager_correction = config.spreading.onsager_correction
             else:
-                self.f_distribution = 'rademacher'
+                self.f_distribution = F_DISTRIBUTION_ISING
                 self.onsager_correction = False  # Default: OFF for consistency with SpreadingConfig
             algorithm_params = getattr(config, "algorithm_params", None)
             self.precision_profile = getattr(
@@ -164,7 +165,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
             self.S = 1
             self.damping = 0.5
             self.noise_var = 1e-6
-            self.f_distribution = 'rademacher'
+            self.f_distribution = F_DISTRIBUTION_ISING
             self.onsager_correction = False
             self.precision_profile = 'safe'
             self.precision_fallback_policy = 'allow'
@@ -510,7 +511,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
         
         prev_s = None
         prev_svar = None
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
         
         # Precompute y_var for final metrics (fallback logic)
         y_var_scalar = 1.0 # default
@@ -533,7 +534,7 @@ class BiGAMPTensorSpreading(AlgorithmBase):
                 factors, factor_vars, Y, F, hg.indices,
                 damping=self.damping,
                 noise_var=current_noise_var,
-                is_rademacher=is_rademacher,
+                is_ising=is_ising,
                 prev_s=prev_s if self.onsager_correction else None,
                 prev_svar=prev_svar if self.onsager_correction else None,
                 onsager_correction=self.onsager_correction,

@@ -68,19 +68,19 @@ class TestVarianceTensor:
         assert V.shape == (1,)
         assert (V > 0).all()
 
-    def test_variance_rademacher_optimization(self):
-        """Test Rademacher optimization (F²=1)."""
+    def test_variance_ising_optimization(self):
+        """Test Ising optimization (F²=1)."""
         from matrix_factorization.modules.algorithms.bigamp.tensor_step import compute_variance_tensor
         
         factors = [torch.randn(5, 4), torch.randn(5, 4)]
         factor_vars = [torch.ones(5, 4) * 0.2] * 2
-        F = torch.tensor([[1, -1, 1, -1], [-1, 1, -1, 1]]).float()  # Rademacher
+        F = torch.tensor([[1, -1, 1, -1], [-1, 1, -1, 1]]).float()  # Ising
         indices = [torch.tensor([0, 1]), torch.tensor([2, 3])]
         
-        V_normal = compute_variance_tensor(factors, factor_vars, F, indices, is_rademacher=False)
-        V_opt = compute_variance_tensor(factors, factor_vars, F, indices, is_rademacher=True)
+        V_normal = compute_variance_tensor(factors, factor_vars, F, indices, is_ising=False)
+        V_opt = compute_variance_tensor(factors, factor_vars, F, indices, is_ising=True)
         
-        # For true Rademacher F, both should give same result
+        # For true Ising F, both should give same result
         assert torch.allclose(V_normal, V_opt, atol=1e-5)
 
 

@@ -3,7 +3,7 @@ Evaluation metrics module.
 
 Available metrics:
 - overlap: Q_Y, Q_W, Q_X overlap metrics
-- gram: Gram-root diagnostics (Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
+- gram: Cos-root diagnostics (Q_W_COS_ROOT, Q_X_COS_ROOT)
 - qy_unobserved: Q_Y computed only on unobserved positions
 - spreading: Metrics for random spreading model
 - combined: Flexible metric selection
@@ -17,7 +17,7 @@ from .overlap import (
     projection_abs_diagnostics,
     sign_aligned_projection_abs,
     gram_overlap_normalized,
-    gram_overlap_root,
+    cos_overlap_root,
     compute_qy,
     compute_all_metrics,
     compute_generalization_error,
@@ -65,7 +65,7 @@ __all__ = [
     'projection_abs_diagnostics',
     'sign_aligned_projection_abs',
     'gram_overlap_normalized',
-    'gram_overlap_root',
+    'cos_overlap_root',
     'compute_qy',
     'compute_all_metrics',
     'compute_generalization_error',

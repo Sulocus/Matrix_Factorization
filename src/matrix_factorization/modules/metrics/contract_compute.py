@@ -90,7 +90,7 @@ def compute_matrix_metric_payload(
     from .overlap import (
         compute_cosine_similarity,
         gram_overlap_normalized,
-        gram_overlap_root,
+        cos_overlap_root,
         projection_abs,
         sign_aligned_projection_abs,
         _compute_qy_masked,
@@ -114,8 +114,8 @@ def compute_matrix_metric_payload(
     Q_W_sign_aligned_list = []
     Q_X_sign_aligned_list = []
     # Gauge/rotation-insensitive diagnostics
-    Q_W_gram_root_list = []
-    Q_X_gram_root_list = []
+    Q_W_cos_root_list = []
+    Q_X_cos_root_list = []
     # Y metrics
     Q_Y_list = []
     Q_Y_observed_list = []
@@ -136,8 +136,8 @@ def compute_matrix_metric_payload(
         Q_X_sign_aligned_list.append(
             sign_aligned_projection_abs(X_for_metrics[s], data.X_teacher, latent_axis=0)
         )
-        Q_W_gram_root_list.append(gram_overlap_root(W_for_metrics[s], data.W_teacher, use_left=True))
-        Q_X_gram_root_list.append(gram_overlap_root(X_for_metrics[s], data.X_teacher, use_left=False))
+        Q_W_cos_root_list.append(cos_overlap_root(W_for_metrics[s], data.W_teacher, use_left=True))
+        Q_X_cos_root_list.append(cos_overlap_root(X_for_metrics[s], data.X_teacher, use_left=False))
         Q_Y_list.append(projection_abs(Y_students[s], Y_teacher))
 
         if data.masks is not None:
@@ -174,10 +174,10 @@ def compute_matrix_metric_payload(
         "Q_X_SIGN_ALIGNED_std": float(np.std(Q_X_sign_aligned_list, ddof=1)) if len(Q_X_sign_aligned_list) > 1 else 0.0,
         "Q_Y_mean": float(np.mean(Q_Y_list)),
         "Q_Y_std": float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
-        "Q_W_GRAM_ROOT_mean": float(np.mean(Q_W_gram_root_list)),
-        "Q_W_GRAM_ROOT_std": float(np.std(Q_W_gram_root_list, ddof=1)) if len(Q_W_gram_root_list) > 1 else 0.0,
-        "Q_X_GRAM_ROOT_mean": float(np.mean(Q_X_gram_root_list)),
-        "Q_X_GRAM_ROOT_std": float(np.std(Q_X_gram_root_list, ddof=1)) if len(Q_X_gram_root_list) > 1 else 0.0,
+        "Q_W_COS_ROOT_mean": float(np.mean(Q_W_cos_root_list)),
+        "Q_W_COS_ROOT_std": float(np.std(Q_W_cos_root_list, ddof=1)) if len(Q_W_cos_root_list) > 1 else 0.0,
+        "Q_X_COS_ROOT_mean": float(np.mean(Q_X_cos_root_list)),
+        "Q_X_COS_ROOT_std": float(np.std(Q_X_cos_root_list, ddof=1)) if len(Q_X_cos_root_list) > 1 else 0.0,
         # Replica
         "Q_W_replica_mean": float(np.mean(Q_W_replica_list)) if Q_W_replica_list else 0.0,
         "Q_X_replica_mean": float(np.mean(Q_X_replica_list)) if Q_X_replica_list else 0.0,

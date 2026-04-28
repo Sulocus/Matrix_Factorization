@@ -39,7 +39,7 @@ algorithm_params:
   use_bf16: true
 
 spreading:
-  f_distribution: 1      # rademacher
+  f_distribution: 1      # ising
   onsager_correction: false
 
 teacher_config:

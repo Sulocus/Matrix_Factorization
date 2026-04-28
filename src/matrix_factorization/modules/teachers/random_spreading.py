@@ -101,7 +101,7 @@ class SpreadingDataParallel:
     alpha_values: torch.Tensor  # (A,)
     W_teacher: torch.Tensor     # (N1, M)
     X_teacher: torch.Tensor     # (M, N2)
-    f_distribution: str = "rademacher"
+    f_distribution: str = "ising"
 
     @property
     def S(self) -> int:

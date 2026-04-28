@@ -14,7 +14,7 @@ from matrix_factorization.core.experiment.config import (
 from matrix_factorization.core.experiment.result import ExperimentMetadata, ExperimentResult
 from matrix_factorization.modules.metrics.contract_compute import compute_matrix_metric_payload
 from matrix_factorization.modules.metrics.overlap import (
-    gram_overlap_root,
+    cos_overlap_root,
     projection_abs,
     projection_abs_diagnostics,
     sign_aligned_projection_abs,
@@ -87,9 +87,9 @@ def test_matrix_projection_payload_matches_hand_calculation():
     assert metrics["Q_Y_mean"] == pytest.approx(2.0)
     assert metrics["Q_Y_observed_mean"] == pytest.approx(2.0)
     assert metrics["Q_Y_unobserved_mean"] == pytest.approx(2.0)
-    assert metrics["Q_W_GRAM_ROOT_mean"] == pytest.approx(1.0)
-    assert metrics["Q_X_GRAM_ROOT_mean"] == pytest.approx(1.0)
-    assert metrics["Q_W_mean"] != metrics["Q_W_GRAM_ROOT_mean"]
+    assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
+    assert metrics["Q_X_COS_ROOT_mean"] == pytest.approx(1.0)
+    assert metrics["Q_W_mean"] != metrics["Q_W_COS_ROOT_mean"]
 
 
 def test_qy_split_uses_projection_for_full_observed_and_unobserved():

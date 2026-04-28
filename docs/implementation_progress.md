@@ -46,11 +46,11 @@
   - `Q_Y`：absolute projection，teacher norm squared normalization，不 clip。
   - `Q_W/Q_X`：matrix latent coordinate projection。
   - `Q_N`：tensor latent node/spin/factor projection。
-  - `Q_W_GRAM_ROOT/Q_X_GRAM_ROOT`：Gram diagnostic，不是 coordinate projection。
+  - `Q_W_COS_ROOT/Q_X_COS_ROOT`：Gram diagnostic，不是 coordinate projection。
 - Formal schema 不再把 `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime` 当 active metric。
 - 旧 result schema `<3` 的 `Q_Y_mean` 会标记为 legacy cosine/proxy；schema `3` 的 `Q_Y_mean` 标记为 absolute projection。
 - `projection_policy` 记录 degenerate teacher norm 约定：teacher norm 过小时返回 0。
-- 手算 fixture 已覆盖 projection helper、matrix observed/unobserved/full、Gram-root 分离、spreading observed perfect teacher、tensor observed/Q_N。
+- 手算 fixture 已覆盖 projection helper、matrix observed/unobserved/full、Cos-root 分离、spreading observed perfect teacher、tensor observed/Q_N。
 
 ### AlgorithmResult active path
 

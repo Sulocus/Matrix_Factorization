@@ -168,15 +168,15 @@ deterministic F=1, or random F with E[F]=0 and E[F^2]=1
 当前代码：
 
 - `src/matrix_factorization/core/experiment/config.py:SpreadingConfig`
-  允许 `"rademacher"` 或 `"gaussian"`。
-- `src/matrix_factorization/modules/algorithms/bigamp/f_gen.py:generate_F_rademacher`
+  允许 `"ising"` 或 `"gaussian"`，旧 `"rademacher"` 作为兼容别名。
+- `src/matrix_factorization/modules/algorithms/bigamp/f_gen.py:generate_F_ising`
   生成 `{-1,+1}`，在 spreading 路径中以 `int8` 存储。
 - `src/matrix_factorization/modules/algorithms/bigamp/f_gen.py:generate_F_gaussian`
   生成 `N(0,1)`。
 - `src/matrix_factorization/config.yaml` 当前的 `spreading.f_distribution: 1`
-  映射到 Rademacher。
+  映射到 Ising。
 
-Rademacher 满足论文 random zero-mean unit-variance 条件，也符合当前项目偏好。
+Ising 满足论文 random zero-mean unit-variance 条件，也符合当前项目偏好。
 
 ## Noiseless Output 与 Noise
 
@@ -198,7 +198,7 @@ noise 注入 teacher observation tensor。
 - `Q_Y`：absolute projection，denominator 是 teacher norm squared。
 - `Q_W` 和 `Q_X`：coordinate latent projections。
 - `Q_N`：tensor latent node/spin/factor projection。
-- `Q_W_GRAM_ROOT`、`Q_X_GRAM_ROOT`：Gram-root diagnostics。
+- `Q_W_COS_ROOT`、`Q_X_COS_ROOT`：Cos-root diagnostics。
 - `Q_W_SIGN_ALIGNED`、`Q_X_SIGN_ALIGNED`：sign-gauge diagnostics。
 
 这些 metrics 可以用于诊断当前程序，但即使 normalization profile 已经对齐，

@@ -93,13 +93,13 @@ output:
       series_by: [onsager_policy]
       filename: qx_by_onsager_policy.png
     - x: alpha
-      y: Q_W_GRAM_ROOT_mean
+      y: Q_W_COS_ROOT_mean
       series_by: [onsager_policy]
-      filename: qw_gram_root_by_onsager_policy.png
+      filename: qw_cos_root_by_onsager_policy.png
     - x: alpha
-      y: Q_X_GRAM_ROOT_mean
+      y: Q_X_COS_ROOT_mean
       series_by: [onsager_policy]
-      filename: qx_gram_root_by_onsager_policy.png
+      filename: qx_cos_root_by_onsager_policy.png
     - x: alpha
       y: Q_W_SIGN_ALIGNED_mean
       series_by: [onsager_policy]

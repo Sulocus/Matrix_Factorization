@@ -44,7 +44,7 @@ def main():
         supergraph = create_supergraph(N, N, M, [alpha], S, seed, device)
         
         # Generate F
-        F_super = generate_F_super(supergraph, M, 12345, device, 'rademacher')
+        F_super = generate_F_super(supergraph, M, 12345, device, 'ising')
         
         # Compute Y
         Y_super = compute_Y_super(W_true, X_true, supergraph, F_super)

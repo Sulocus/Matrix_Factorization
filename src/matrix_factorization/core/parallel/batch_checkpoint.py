@@ -252,7 +252,7 @@ def config_to_dict(config) -> Dict[str, Any]:
             'use_compile': config.algorithm_params.use_compile,
         },
         'spreading': {
-            'f_distribution': config.spreading.f_distribution if config.spreading else 'rademacher',
+            'f_distribution': config.spreading.f_distribution if config.spreading else 'ising',
         } if config.spreading else None,
         'teacher': {
             'init_distribution': config.teacher.init_distribution,

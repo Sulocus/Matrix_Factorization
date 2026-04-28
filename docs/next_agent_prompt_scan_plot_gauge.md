@@ -61,8 +61,8 @@ mf validate src/matrix_factorization/config.yaml
   - Q_Y plot
   - Q_W raw projection plot
   - Q_X raw projection plot
-  - Q_W_GRAM_ROOT plot
-  - Q_X_GRAM_ROOT plot
+  - Q_W_COS_ROOT plot
+  - Q_X_COS_ROOT plot
   - Q_W_SIGN_ALIGNED plot
   - Q_X_SIGN_ALIGNED plot
 - 图要带 errorbar，使用 `*_std`。

@@ -7,7 +7,7 @@ Plot Registry - 绘图指标映射表
 
 类别:
   A: Projection metrics (Q_Y, Q_W, Q_X)
-  B: Gram-root diagnostics (Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
+  B: Cos-root diagnostics (Q_W_COS_ROOT, Q_X_COS_ROOT)
   C: Observed Split (Q_Y_observed, Q_Y_unobserved)
   D: Sign-aligned diagnostics (Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED)
 
@@ -31,9 +31,9 @@ METRIC_MAP: Dict[Tuple[str, str], str] = {
     ('A', 'w'): 'Q_W',
     ('A', 'x'): 'Q_X',
     
-    # B: Gram-root diagnostics
-    ('B', 'w'): 'Q_W_GRAM_ROOT',
-    ('B', 'x'): 'Q_X_GRAM_ROOT',
+    # B: Cos-root diagnostics
+    ('B', 'w'): 'Q_W_COS_ROOT',
+    ('B', 'x'): 'Q_X_COS_ROOT',
     
     # C: Observed Split
     ('C', 'o'): 'Q_Y_observed',
@@ -50,7 +50,7 @@ METRIC_MAP: Dict[Tuple[str, str], str] = {
 # 支持 replica 的指标
 REPLICA_SUPPORTED = {
     'Q_Y', 'Q_W', 'Q_X',
-    'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT',
+    'Q_W_COS_ROOT', 'Q_X_COS_ROOT',
     'Q_Y_observed', 'Q_Y_unobserved',
 }
 
@@ -166,7 +166,7 @@ def print_metric_table():
             current_category = cat
             cat_names = {
                 'A': 'Projection',
-                'B': 'Gram root',
+                'B': 'Cos root',
                 'C': 'Observed split',
                 'D': 'Sign aligned',
                 'N': 'Tensor',

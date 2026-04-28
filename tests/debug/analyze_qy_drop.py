@@ -37,7 +37,7 @@ def main():
     cfg.training.samples_per_alpha = 1
     cfg.training.device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.training.seed = 42
-    cfg.spreading.f_distribution = "rademacher"
+    cfg.spreading.f_distribution = "ising"
     cfg.spreading.seed = 12345
     
     device = torch.device(cfg.training.device)
@@ -60,7 +60,7 @@ def main():
     supergraph = create_supergraph(N1, N2, M, alpha_values, S, seed, device)
     
     # Generate F
-    F_super = generate_F_super(supergraph, M, cfg.spreading.seed, device, "rademacher")
+    F_super = generate_F_super(supergraph, M, cfg.spreading.seed, device, "ising")
     
     # Compute Y
     Y_super = compute_Y_super(W_true, X_true, supergraph, F_super)

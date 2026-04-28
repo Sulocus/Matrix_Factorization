@@ -14,6 +14,7 @@ from typing import Tuple, Optional, List, Any, TYPE_CHECKING
 import torch
 import math
 
+from ..distributions import F_DISTRIBUTION_ISING
 from .config import resolve_normalization_profile
 
 if TYPE_CHECKING:
@@ -303,7 +304,7 @@ class DataFactory:
         _, N2 = X_teacher.shape
         S = config.training.samples_per_alpha
         
-        f_distribution = config.spreading.f_distribution if config.spreading else "rademacher"
+        f_distribution = config.spreading.f_distribution if config.spreading else F_DISTRIBUTION_ISING
         allow_intra = bool(getattr(config.spreading, "allow_intra_connection", False)) if config.spreading else False
         if allow_intra:
             supergraph = create_supergraph_general(

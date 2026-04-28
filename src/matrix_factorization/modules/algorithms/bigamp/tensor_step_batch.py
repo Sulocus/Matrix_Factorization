@@ -58,7 +58,7 @@ def compute_variance_tensor_batch(
     factor_vars: List[torch.Tensor],  # n tensors of (S, N_d, M)
     F: torch.Tensor,                  # (S, C, M)
     indices: List[torch.Tensor],      # n tensors of (C,)
-    is_rademacher: bool = False,
+    is_ising: bool = False,
 ) -> torch.Tensor:
     """
     Batched variance computation.
@@ -70,7 +70,7 @@ def compute_variance_tensor_batch(
         factor_vars: List of n variance matrices, each (S, N_d, M)
         F: (S, C, M) spreading coefficients
         indices: List of n index tensors, each (C,)
-        is_rademacher: If True, skip F² computation (F²=1 for Rademacher)
+        is_ising: If True, skip F² computation (F²=1 for Ising)
         
     Returns:
         V: (S, C) variance at each hyperedge
@@ -87,8 +87,8 @@ def compute_variance_tensor_batch(
         factor_vars[d][:, indices[d].long()] for d in range(n)
     ])  # (n, S, C, M)
     
-    # F² or 1 for Rademacher
-    F_sq = torch.ones_like(F) if is_rademacher else F.pow(2)
+    # F² or 1 for Ising
+    F_sq = torch.ones_like(F) if is_ising else F.pow(2)
     
     mean_sq_product = gathered.pow(2).prod(dim=0)
     second_product = (gathered.pow(2) + gathered_var).prod(dim=0)
@@ -105,7 +105,7 @@ def tensor_step_batch(
     indices: List[torch.Tensor],      # n tensors of (C,)
     damping: float,
     noise_var: float,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
     onsager_correction: bool = False,
@@ -126,7 +126,7 @@ def tensor_step_batch(
         indices: List of n index tensors, each (C,) - SHARED across samples
         damping: BiG-AMP beta; 1 fully accepts the new state, 0 freezes
         noise_var: Observation noise variance
-        is_rademacher: If True, F is Rademacher (F²=1)
+        is_ising: If True, F is Ising (F²=1)
         prev_s: (S, C) Previous residual for Onsager correction
         onsager_correction: Whether to apply Onsager correction
         
@@ -150,7 +150,7 @@ def tensor_step_batch(
     gathered_var = torch.stack([
         factor_vars[d][:, indices[d].long()] for d in range(n)
     ])
-    F_sq = torch.ones_like(F) if is_rademacher else F.pow(2)
+    F_sq = torch.ones_like(F) if is_ising else F.pow(2)
     mean_sq = gathered.pow(2)
     mean_sq_product = mean_sq.prod(dim=0)
     second_product = (mean_sq + gathered_var).prod(dim=0)

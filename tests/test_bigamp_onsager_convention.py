@@ -62,7 +62,7 @@ def test_flat_step_damping_zero_preserves_old_state_and_onsager_state():
         noise_var=1e-5,
         prior_precision_base=1.0,
         prior_variance=1.0,
-        is_rademacher=True,
+        is_ising=True,
         prev_s=prev_s,
         prev_svar=prev_svar,
     )
@@ -99,7 +99,7 @@ def test_flat_adaptive_output_variance_includes_cross_variance_at_cold_start():
         noise_var=1e-5,
         prior_precision_base=1.0,
         prior_variance=1.0,
-        is_rademacher=True,
+        is_ising=True,
     )
 
     assert torch.allclose(pvar, torch.tensor([[1.0]]))
@@ -131,7 +131,7 @@ def test_corrected_pvar_controls_cold_start_residual_scale():
         idx,
         idx,
         mask,
-        is_rademacher=True,
+        is_ising=True,
     )
     _, pvar_corrected = forward_disjoint_union_flat_corrected(
         W,
@@ -142,7 +142,7 @@ def test_corrected_pvar_controls_cold_start_residual_scale():
         idx,
         idx,
         mask,
-        is_rademacher=True,
+        is_ising=True,
     )
 
     ratio = torch.median(pvar_corrected / zvar_legacy)
@@ -172,7 +172,7 @@ def test_spreading_onsager_update_route_metadata():
             training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
             algorithm_key="bigamp_spreading",
             scan=ScanConfig(dimension="alpha", values=[0.5]),
-            spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=onsager, chunk_size=0),
+            spreading=SpreadingConfig(f_distribution="ising", onsager_correction=onsager, chunk_size=0),
             algorithm_params=AlgorithmParams(
                 damping=0.05,
                 adaptive_damping=adaptive,
@@ -212,7 +212,7 @@ def test_corrected_onsager_internal_alpha_batches_split_large_spreading_step():
         training=TrainingParams(samples_per_alpha=20, max_steps=1, max_epochs=1),
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=alpha_values),
-        spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=True, chunk_size=0),
+        spreading=SpreadingConfig(f_distribution="ising", onsager_correction=True, chunk_size=0),
         algorithm_params=AlgorithmParams(
             damping=0.05,
             adaptive_damping=False,
@@ -260,7 +260,7 @@ def test_legacy_no_onsager_keeps_single_internal_alpha_batch():
         training=TrainingParams(samples_per_alpha=20, max_steps=1, max_epochs=1),
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=alpha_values),
-        spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=False, chunk_size=0),
+        spreading=SpreadingConfig(f_distribution="ising", onsager_correction=False, chunk_size=0),
         algorithm_params=AlgorithmParams(
             damping=0.5,
             adaptive_damping=False,
@@ -285,7 +285,7 @@ def test_tensor_variance_includes_cross_variance_at_cold_start():
     F = torch.tensor([[1.0, -1.0]])
     indices = [torch.tensor([0]), torch.tensor([0])]
 
-    pvar = compute_variance_tensor(factors, factor_vars, F, indices, is_rademacher=True)
+    pvar = compute_variance_tensor(factors, factor_vars, F, indices, is_ising=True)
 
     assert torch.allclose(pvar, torch.tensor([1.0]))
 
@@ -307,7 +307,7 @@ def test_adaptive_spreading_cold_start_initialization_runs():
         training=TrainingParams(samples_per_alpha=1, max_steps=1, max_epochs=1),
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=[0.5]),
-        spreading=SpreadingConfig(f_distribution="rademacher", onsager_correction=True, chunk_size=0),
+        spreading=SpreadingConfig(f_distribution="ising", onsager_correction=True, chunk_size=0),
         algorithm_params=AlgorithmParams(
             damping=0.05,
             adaptive_damping=True,

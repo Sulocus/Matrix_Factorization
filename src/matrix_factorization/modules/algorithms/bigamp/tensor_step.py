@@ -58,7 +58,7 @@ def compute_variance_tensor(
     factor_vars: List[torch.Tensor],  # n tensors of (N_d, M)
     F: torch.Tensor,                  # (C, M)
     indices: List[torch.Tensor],      # n tensors of (C,)
-    is_rademacher: bool = False,
+    is_ising: bool = False,
 ) -> torch.Tensor:
     """
     Compute output variance pvar for n-dimensional tensor.
@@ -71,7 +71,7 @@ def compute_variance_tensor(
         factor_vars: List of n variance matrices, each (N_d, M)
         F: (C, M) spreading coefficients
         indices: List of n index tensors, each (C,)
-        is_rademacher: If True, skip F² computation (F²=1 for Rademacher)
+        is_ising: If True, skip F² computation (F²=1 for Ising)
         
     Returns:
         V: (C,) variance at each hyperedge
@@ -88,8 +88,8 @@ def compute_variance_tensor(
         factor_vars[d][indices[d].long()] for d in range(n)
     ])  # (n, C, M)
     
-    # F² or 1 for Rademacher
-    F_sq = torch.ones_like(F) if is_rademacher else F.pow(2)
+    # F² or 1 for Ising
+    F_sq = torch.ones_like(F) if is_ising else F.pow(2)
     
     mean_sq_product = gathered.pow(2).prod(dim=0)
     second_product = (gathered.pow(2) + gathered_var).prod(dim=0)
@@ -106,7 +106,7 @@ def tensor_step(
     indices: List[torch.Tensor],
     damping: float,
     noise_var: float,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
     onsager_correction: bool = False,
@@ -127,7 +127,7 @@ def tensor_step(
         indices: List of n index tensors, each (C,)
         damping: BiG-AMP beta; 1 fully accepts the new state, 0 freezes
         noise_var: Observation noise variance
-        is_rademacher: If True, F is Rademacher (F²=1)
+        is_ising: If True, F is Ising (F²=1)
         prev_s: Previous residual for Onsager correction
         onsager_correction: Whether to apply Onsager correction (default: False)
         
@@ -151,7 +151,7 @@ def tensor_step(
     gathered_var = torch.stack([
         factor_vars[d][indices[d].long()] for d in range(n)
     ])
-    F_sq = torch.ones_like(F) if is_rademacher else F.pow(2)
+    F_sq = torch.ones_like(F) if is_ising else F.pow(2)
     mean_sq = gathered.pow(2)
     mean_sq_product = mean_sq.prod(dim=0)
     second_product = (mean_sq + gathered_var).prod(dim=0)

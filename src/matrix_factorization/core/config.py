@@ -44,7 +44,7 @@ class TrainingConfig:
 @dataclass
 class SpreadingConfig:
     """Random spreading specific configuration."""
-    f_distribution: str = "gaussian"  # gaussian | rademacher
+    f_distribution: str = "gaussian"  # gaussian | ising
     seed: int = 12345                 # Seed for F generation
     teacher_type: str = "standard"    # standard | orthogonal (for W/X generation)
     allow_intra_connection: bool = False  # Allow W-W and X-X connections (general graph)
@@ -84,8 +84,8 @@ class ExecutionConfig:
             'Q_X',
             'Q_W_SIGN_ALIGNED',
             'Q_X_SIGN_ALIGNED',
-            'Q_W_GRAM_ROOT',
-            'Q_X_GRAM_ROOT',
+            'Q_W_COS_ROOT',
+            'Q_X_COS_ROOT',
         ]
     )
 
@@ -149,7 +149,7 @@ class Config:
         exec_data = data.get('execution', {})
         execution = ExecutionConfig(
             metrics_to_compute=exec_data.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_ALIGNED', 'Q_X_SIGN_ALIGNED', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_SIGN_ALIGNED', 'Q_X_SIGN_ALIGNED', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
             plots=exec_data.get('plots', []),
             include_summary_plot=exec_data.get('include_summary_plot', True),
             include_qy_plot=exec_data.get('include_qy_plot', True),

@@ -178,9 +178,15 @@ def gram_overlap_normalized(A: torch.Tensor, B: torch.Tensor, use_left: bool = T
 
 
 @torch.no_grad()
-def gram_overlap_root(A: torch.Tensor, B: torch.Tensor, use_left: bool = True) -> float:
-    """Square root of the baseline-corrected Gram overlap diagnostic."""
+def cos_overlap_root(A: torch.Tensor, B: torch.Tensor, use_left: bool = True) -> float:
+    """Square root of the baseline-corrected Gram-cosine diagnostic."""
     return float(np.sqrt(max(0.0, gram_overlap_normalized(A, B, use_left=use_left))))
+
+
+@torch.no_grad()
+def gram_overlap_root(A: torch.Tensor, B: torch.Tensor, use_left: bool = True) -> float:
+    """Legacy alias for :func:`cos_overlap_root`."""
+    return cos_overlap_root(A, B, use_left=use_left)
 
 
 @torch.no_grad()
@@ -234,7 +240,7 @@ def compute_all_metrics(
         metrics_to_compute: List of metric names to compute.
             If None, computes all standard metrics.
             Valid names: Q_W, Q_X, Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED,
-                        Q_W_GRAM_ROOT, Q_X_GRAM_ROOT, Q_Y,
+                        Q_W_COS_ROOT, Q_X_COS_ROOT, Q_Y,
                         Q_Y_unobserved, Q_Y_observed
 
     Returns:
@@ -247,10 +253,16 @@ def compute_all_metrics(
             'Q_X',
             'Q_W_SIGN_ALIGNED',
             'Q_X_SIGN_ALIGNED',
-            'Q_W_GRAM_ROOT',
-            'Q_X_GRAM_ROOT',
+            'Q_W_COS_ROOT',
+            'Q_X_COS_ROOT',
             'Q_Y',
         ]
+    else:
+        legacy_metric_aliases = {
+            'Q_W_GRAM_ROOT': 'Q_W_COS_ROOT',
+            'Q_X_GRAM_ROOT': 'Q_X_COS_ROOT',
+        }
+        metrics_to_compute = [legacy_metric_aliases.get(metric, metric) for metric in metrics_to_compute]
 
     if Y_teacher is None:
         Y_teacher = W_teacher @ X_teacher
@@ -272,11 +284,11 @@ def compute_all_metrics(
     if 'Q_X_SIGN_ALIGNED' in metrics_to_compute:
         results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_student, X_teacher, latent_axis=0)
 
-    if 'Q_W_GRAM_ROOT' in metrics_to_compute:
-        results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_student, W_teacher, use_left=True)
+    if 'Q_W_COS_ROOT' in metrics_to_compute:
+        results['Q_W_COS_ROOT'] = cos_overlap_root(W_student, W_teacher, use_left=True)
 
-    if 'Q_X_GRAM_ROOT' in metrics_to_compute:
-        results['Q_X_GRAM_ROOT'] = gram_overlap_root(X_student, X_teacher, use_left=False)
+    if 'Q_X_COS_ROOT' in metrics_to_compute:
+        results['Q_X_COS_ROOT'] = cos_overlap_root(X_student, X_teacher, use_left=False)
 
     if 'Q_Y' in metrics_to_compute:
         results['Q_Y'] = projection_abs(Y_student, Y_teacher)

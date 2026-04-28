@@ -44,7 +44,7 @@ def main():
     cfg.training.device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.training.seed = 42
     cfg.algorithm.mode = "spreading_parallel"
-    cfg.spreading.f_distribution = "rademacher"
+    cfg.spreading.f_distribution = "ising"
     cfg.spreading.seed = 12345
     cfg.teacher.type = "standard"
     cfg.graph.type = "random"
@@ -130,13 +130,13 @@ def main():
     print(f"  F_super dtype: {F_super.dtype}")
     print(f"  F_super[0,0,:10]: {F_super[0, 0, :10].tolist()}")
     
-    # For Rademacher, values should be {-1, +1}
-    if cfg.spreading.f_distribution == "rademacher":
+    # For Ising, values should be {-1, +1}
+    if cfg.spreading.f_distribution == "ising":
         F_float = F_super[0].float()
         unique_vals = F_float.unique()
         print(f"  Unique values in F: {unique_vals.tolist()}")
         if set(unique_vals.tolist()) == {-1, 1}:
-            print("  ✅ F distribution correct (Rademacher {-1, +1})")
+            print("  ✅ F distribution correct (Ising {-1, +1})")
         else:
             print("  ❌ F distribution INCORRECT!")
     

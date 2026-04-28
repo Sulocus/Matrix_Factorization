@@ -122,7 +122,7 @@ def run_single_test(test: CalibrationTestCase) -> CalibrationResult:
             algorithm_key=test.algorithm_key,
             use_compile=True,
             use_bf16=True,
-            f_distribution='rademacher',
+            f_distribution='ising',
         )
         
         estimated_gb = estimator.estimate_raw(params)
@@ -208,7 +208,7 @@ def run_spreading_parallel(test: CalibrationTestCase, device) -> float:
     
     @dataclass
     class SpreadingConfig:
-        f_distribution: str = 'rademacher'
+        f_distribution: str = 'ising'
         seed: int = 42
     
     @dataclass
@@ -226,7 +226,7 @@ def run_spreading_parallel(test: CalibrationTestCase, device) -> float:
         ),
         training=TrainingConfig(max_steps=test.max_steps),
         matrix=MatrixConfig(N1=test.N, N2=test.N, M=test.M),
-        spreading=SpreadingConfig(f_distribution='rademacher', seed=42),
+        spreading=SpreadingConfig(f_distribution='ising', seed=42),
     )
     
     # Create Teacher

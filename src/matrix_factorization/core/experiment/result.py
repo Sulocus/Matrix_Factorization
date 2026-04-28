@@ -24,6 +24,27 @@ PROJECTION_METRIC_POLICY = {
     "clipped": False,
 }
 
+METRIC_KEY_ALIASES = {
+    "Q_W_GRAM_ROOT": "Q_W_COS_ROOT",
+    "Q_X_GRAM_ROOT": "Q_X_COS_ROOT",
+    "Q_W_GRAM_ROOT_mean": "Q_W_COS_ROOT_mean",
+    "Q_W_GRAM_ROOT_std": "Q_W_COS_ROOT_std",
+    "Q_X_GRAM_ROOT_mean": "Q_X_COS_ROOT_mean",
+    "Q_X_GRAM_ROOT_std": "Q_X_COS_ROOT_std",
+    "Q_W_COS_ROOT": "Q_W_GRAM_ROOT",
+    "Q_X_COS_ROOT": "Q_X_GRAM_ROOT",
+    "Q_W_COS_ROOT_mean": "Q_W_GRAM_ROOT_mean",
+    "Q_W_COS_ROOT_std": "Q_W_GRAM_ROOT_std",
+    "Q_X_COS_ROOT_mean": "Q_X_GRAM_ROOT_mean",
+    "Q_X_COS_ROOT_std": "Q_X_GRAM_ROOT_std",
+}
+
+
+def metric_key_candidates(metric_key: str) -> List[str]:
+    """Return canonical/legacy lookup candidates for a metric key."""
+    alias = METRIC_KEY_ALIASES.get(metric_key)
+    return [metric_key, alias] if alias and alias != metric_key else [metric_key]
+
 
 def _with_projection_policy(contract: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(contract or {})
@@ -223,6 +244,7 @@ class ResultCube:
         metric_key = query.get("y")
         if not x_axis or not metric_key:
             raise ValueError("PlotQuery requires x and y")
+        metric_candidates = metric_key_candidates(str(metric_key))
         if x_axis not in self.axes:
             raise ValueError(f"PlotQuery x axis '{x_axis}' is not in ResultCube axes")
 
@@ -260,12 +282,17 @@ class ResultCube:
             y_std_values = []
             point_ids = []
             seen_x = {}
-            std_key = metric_key[:-5] + "_std" if metric_key.endswith("_mean") else None
+            std_candidates = [
+                key[:-5] + "_std"
+                for key in metric_candidates
+                if key and key.endswith("_mean")
+            ]
             for point in points:
                 if x_axis not in point.coordinates:
                     raise ValueError(f"PlotQuery x axis '{x_axis}' not found in point {point.point_id}")
                 metrics = self.metrics.get(point.point_id, {})
-                if metric_key not in metrics:
+                actual_metric_key = next((key for key in metric_candidates if key in metrics), None)
+                if actual_metric_key is None:
                     raise ValueError(f"PlotQuery metric '{metric_key}' missing for point {point.point_id}")
                 x_value = point.coordinates[x_axis]
                 if x_value in seen_x:
@@ -277,8 +304,9 @@ class ResultCube:
                 seen_x[x_value] = point.point_id
                 point_ids.append(point.point_id)
                 x_values.append(float(x_value))
-                y_values.append(float(metrics[metric_key]))
-                y_std_values.append(float(metrics.get(std_key, 0.0)) if std_key else 0.0)
+                actual_std_key = next((key for key in std_candidates if key in metrics), None)
+                y_values.append(float(metrics[actual_metric_key]))
+                y_std_values.append(float(metrics.get(actual_std_key, 0.0)) if actual_std_key else 0.0)
 
             label = ", ".join(f"{key}={value}" for key, value in series_spec.items()) or str(metric_key)
             resolved.append({
@@ -420,8 +448,9 @@ class ExperimentResult:
 
     def get_metric_curve(self, metric_name: str) -> Dict[Any, float]:
         """Get a metric across all scan values."""
+        candidates = metric_key_candidates(metric_name)
         return {
-            v: r.metrics.get(metric_name, 0.0)
+            v: next((r.metrics.get(key) for key in candidates if key in (r.metrics or {})), 0.0)
             for v, r in sorted(self.results.items())
         }
 
@@ -841,7 +870,7 @@ class ExperimentResult:
                     "['Q_Y_mean', 'Q_Y_observed_mean', 'Q_Y_unobserved_mean']; "
                     f"available metrics: {sorted(metric_keys)}"
                 )
-            q_w_key = self._first_available_metric(metric_keys, ["Q_W_mean", "Q_W_GRAM_ROOT_mean", "Q_N_mean"])
+            q_w_key = self._first_available_metric(metric_keys, ["Q_W_mean", "Q_W_COS_ROOT_mean", "Q_N_mean"])
             q_y_means = self._metric_series(sorted_values, q_y_key)
             q_w_means = self._metric_series(sorted_values, q_w_key) if q_w_key else []
 
@@ -1277,8 +1306,9 @@ class ExperimentResult:
     @staticmethod
     def _first_available_metric(metric_keys: set[str], candidates: List[str]) -> Optional[str]:
         for key in candidates:
-            if key in metric_keys:
-                return key
+            for candidate in metric_key_candidates(key):
+                if candidate in metric_keys:
+                    return candidate
         return None
 
     def _heatmap_alpha_for_scan_value(self, scan_value: Any) -> float:
@@ -1307,16 +1337,22 @@ class ExperimentResult:
         return f"{base}_{group_id}_{point_id}"
 
     def _metric_series(self, sorted_values: List[Any], metric_key: str) -> List[float]:
+        candidates = metric_key_candidates(metric_key)
         missing_values = [
             value for value in sorted_values
-            if metric_key not in (self.results[value].metrics or {})
+            if not any(candidate in (self.results[value].metrics or {}) for candidate in candidates)
         ]
         if missing_values:
             raise ValueError(
                 f"scalar_curves output requires metric '{metric_key}' for all scan values; "
                 f"missing values: {missing_values}"
             )
-        return [float(self.results[value].metrics[metric_key]) for value in sorted_values]
+        values = []
+        for value in sorted_values:
+            metrics = self.results[value].metrics or {}
+            actual_key = next(candidate for candidate in candidates if candidate in metrics)
+            values.append(float(metrics[actual_key]))
+        return values
 
     def _allows_legacy_alpha_curve_plots(self) -> bool:
         """Allow legacy curve plots for alpha curves with constant outer axes."""
@@ -1358,9 +1394,11 @@ class ExperimentResult:
             "Q_Y_observed_mean": "Q_Y observed",
             "Q_Y_unobserved_mean": "Q_Y unobserved",
             "Q_W_mean": "Q_W",
-            "Q_W_GRAM_ROOT_mean": "Q_W Gram root",
+            "Q_W_COS_ROOT_mean": "Q_W Cos root",
+            "Q_W_GRAM_ROOT_mean": "Q_W Cos root",
             "Q_W_SIGN_ALIGNED_mean": "Q_W sign-aligned",
-            "Q_X_GRAM_ROOT_mean": "Q_X Gram root",
+            "Q_X_COS_ROOT_mean": "Q_X Cos root",
+            "Q_X_GRAM_ROOT_mean": "Q_X Cos root",
             "Q_X_SIGN_ALIGNED_mean": "Q_X sign-aligned",
             "Q_N_mean": "Q_N",
         }.get(metric_key, metric_key)

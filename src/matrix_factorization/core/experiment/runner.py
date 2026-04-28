@@ -28,6 +28,7 @@ from .config import ExperimentConfig, MatrixParams, ScanConfig, TeacherConfig
 from .result import ExperimentResult, SingleRunResult, ExperimentMetadata, Checkpoint
 from .data_factory import DataFactory, ExperimentData
 from ..contracts import AlgorithmResult
+from ..distributions import F_DISTRIBUTION_ISING
 
 # Parallel execution support
 from ..parallel import (
@@ -1502,8 +1503,8 @@ class ExperimentRunner:
             "Q_Y_mean",
             "Q_Y_observed_mean",
             "Q_Y_unobserved_mean",
-            "Q_W_GRAM_ROOT_mean",
-            "Q_X_GRAM_ROOT_mean",
+            "Q_W_COS_ROOT_mean",
+            "Q_X_COS_ROOT_mean",
             "Q_W_SIGN_ALIGNED_mean",
             "Q_X_SIGN_ALIGNED_mean",
         ]:
@@ -1750,7 +1751,7 @@ class ExperimentRunner:
         scan_values: List[Any],
     ) -> EstimationParams:
         """Build memory-estimation parameters from the effective config."""
-        f_dist = 'rademacher'
+        f_dist = F_DISTRIBUTION_ISING
         if config.spreading:
             f_dist = config.spreading.f_distribution
 
@@ -2530,7 +2531,7 @@ class ExperimentRunner:
         
         @dc
         class SpreadConfig:
-            f_distribution: str = config.spreading.f_distribution if config.spreading else "rademacher"
+            f_distribution: str = config.spreading.f_distribution if config.spreading else F_DISTRIBUTION_ISING
             onsager_correction: bool = config.spreading.onsager_correction if config.spreading else False
             allow_intra_connection: bool = config.spreading.allow_intra_connection if config.spreading else False
             seed: int = getattr(config.spreading, "seed", config.seeds.spreading_seed) if config.spreading else config.seeds.spreading_seed

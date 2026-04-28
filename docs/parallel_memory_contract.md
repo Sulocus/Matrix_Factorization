@@ -80,7 +80,7 @@ algorithm_params:
 
 - `safe`：active state、Y、variance、metric reductions 主要保持 FP32。
 - `fast`：student state / large workspace 使用 BF16 storage/compute，metric reductions、denominator、Onsager accumulation 仍保留 FP32。
-- `aggressive`：在 `fast` 基础上允许 Gaussian F / large Y storage 使用 BF16；Rademacher/Ising F 仍是 int8。
+- `aggressive`：在 `fast` 基础上允许 Gaussian F / large Y storage 使用 BF16；Ising F 仍是 int8。
 
 旧 `use_bf16` 和 `dtype_fallback_policy` 仍作为 compatibility alias，但新任务应优先写 `precision_profile` / `precision_fallback_policy`。
 
@@ -151,7 +151,7 @@ alpha batching: probe-based internal alpha batches
 sample batching: TensorSuperGraph sample parallel
 probe: A=1 tensor supergraph probe
 precision: safe/fast/aggressive
-dtype: role-aware storage; Rademacher F=int8, metric reductions=FP32, aggressive may store Gaussian F/Y as BF16
+dtype: role-aware storage; Ising F=int8, metric reductions=FP32, aggressive may store Gaussian F/Y as BF16
 tf32: controlled by algorithm_params.use_tf32
 compile: torch.compile default optional
 seed sensitive: true

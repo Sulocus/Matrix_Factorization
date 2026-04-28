@@ -282,7 +282,7 @@ class ExperimentPlan:
             profile = getattr(params, "precision_profile", self.precision_policy_spec.default_profile)
             lines.append(f"precision profile: {profile}")
             role_map = self.precision_policy_spec.role_dtype_map(profile)
-            for role in ["student_factors", "factor_variances", "observations_Y", "F_rademacher", "F_gaussian", "metric_reductions"]:
+            for role in ["student_factors", "factor_variances", "observations_Y", "F_ising", "F_gaussian", "metric_reductions"]:
                 if role in role_map:
                     dtypes = role_map[role]
                     lines.append(

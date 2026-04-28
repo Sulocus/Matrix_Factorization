@@ -92,7 +92,7 @@ YAML
 - `Q_Y` = absolute projection，normalization 是 teacher norm squared，不 clip。
 - `Q_W/Q_X` = matrix latent coordinate projection。
 - `Q_N` = tensor latent node/spin/factor projection。
-- `Q_W_GRAM_ROOT/Q_X_GRAM_ROOT` = Gram-root diagnostic。
+- `Q_W_COS_ROOT/Q_X_COS_ROOT` = Cos-root diagnostic。
 - `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime` 不再是 formal metric。
 - schema `<3` 的旧 `Q_Y_mean` 标记为 legacy cosine/proxy；schema `3` 的 `Q_Y_mean` 标记为 absolute projection。
 - degenerate teacher norm policy 写入 metric schema/contract。

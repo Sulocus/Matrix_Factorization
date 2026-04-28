@@ -33,7 +33,7 @@ def _small_spreading_fixture(device: torch.device) -> SpreadingDataParallel:
         M=m,
         base_seed=13,
         device=device,
-        f_distribution="rademacher",
+        f_distribution="ising",
     )
     y_super = compute_Y_super(
         W_teacher=w_teacher,
@@ -49,7 +49,7 @@ def _small_spreading_fixture(device: torch.device) -> SpreadingDataParallel:
         alpha_values=torch.tensor(alpha_values, device=device),
         W_teacher=w_teacher,
         X_teacher=x_teacher,
-        f_distribution="rademacher",
+        f_distribution="ising",
     )
 
 
@@ -71,8 +71,8 @@ def test_spreading_batch_metrics_perfect_teacher_recovery():
         "Q_X_mean",
         "Q_W_SIGN_ALIGNED_mean",
         "Q_X_SIGN_ALIGNED_mean",
-        "Q_W_GRAM_ROOT_mean",
-        "Q_X_GRAM_ROOT_mean",
+        "Q_W_COS_ROOT_mean",
+        "Q_X_COS_ROOT_mean",
         "Q_W_SCALE_GAUGE_mean",
         "Q_X_SCALE_GAUGE_mean",
         "Q_WX_SCALE_GAUGE_mean",

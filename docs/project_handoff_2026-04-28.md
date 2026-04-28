@@ -210,7 +210,7 @@ Q_N = tensor latent node/spin/factor projection
 正式 diagnostic：
 
 ```text
-Q_W_GRAM_ROOT / Q_X_GRAM_ROOT
+Q_W_COS_ROOT / Q_X_COS_ROOT
 Q_W_SIGN_ALIGNED / Q_X_SIGN_ALIGNED
 ```
 
@@ -305,7 +305,7 @@ runs/20260427_193005_bgs_N1000_M50_init5-a41_cbd228
 - `alpha = 0..4 step 0.1`
 - `bigamp_spreading`
 - Gaussian teacher
-- Rademacher F
+- Ising F
 - 轻量结果，没有保存 W/X tensor，因此不能事后计算新的 gauge metric。
 
 ```text
@@ -317,7 +317,7 @@ runs/20260427_214246_bgs_N1000_M50_init5-a41_f08cc9
 - `alpha = 0..4 step 0.1`
 - `bigamp_spreading`
 - Ising/Rademacher teacher
-- Rademacher F
+- Ising F
 - 保存了 per-point tensors，适合 posthoc factor diagnostic。
 
 Posthoc gauge plot 输出在：
@@ -917,8 +917,8 @@ teacher prior 可以在 Gaussian / Ising 之间切换，但 F 不要乱动。
 
 正式 diagnostics：
 
-- `Q_W_GRAM_ROOT`
-- `Q_X_GRAM_ROOT`
+- `Q_W_COS_ROOT`
+- `Q_X_COS_ROOT`
 - `Q_W_SIGN_ALIGNED`
 - `Q_X_SIGN_ALIGNED`
 
@@ -1109,7 +1109,7 @@ PY
 - `N1=N2=200, M=50`
 - `samples_per_alpha = 100`
 - `max_steps = 2000`
-- `F = rademacher`
+- `F = ising`
 - `teacher = gaussian`
 - `precision_profile = aggressive`
 - `scan axes = onsager_policy × alpha`
@@ -1403,7 +1403,7 @@ animation_D.gif 或类似 suffix
 
 第一组 `no_onsager` 已读出：
 
-- `Q_Y`、`Q_W_GRAM_ROOT`、`Q_X_GRAM_ROOT`、`Q_W_SIGN_ALIGNED`、`Q_X_SIGN_ALIGNED` 在 `alpha ≈ 3.5` 附近跳升。
+- `Q_Y`、`Q_W_COS_ROOT`、`Q_X_COS_ROOT`、`Q_W_SIGN_ALIGNED`、`Q_X_SIGN_ALIGNED` 在 `alpha ≈ 3.5` 附近跳升。
 - `alpha ≈ 3.6` 后很多指标超过 `0.8`。
 - `alpha = 4.0` 时 `Q_Y` 和 Gram/sign 指标接近 `1`。
 - 原始 `Q_W/Q_X` 仍只有约 `0.12`，说明 coordinate projection 被 sign/scale/gauge 敏感性压低。
@@ -1439,7 +1439,7 @@ runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e
 - `alpha=4.0`：`Q_Y_mean≈0.9964`
 - `Q_W_SIGN_ALIGNED_mean≈1.0049`
 - `Q_X_SIGN_ALIGNED_mean≈0.9907`
-- `Q_W_GRAM_ROOT_mean≈0.9956`
+- `Q_W_COS_ROOT_mean≈0.9956`
 - raw coordinate `Q_W/Q_X≈0.118`，仍然是 gauge-sensitive 读数。
 
 `onsager_fixed_beta005` 组已确认发散：

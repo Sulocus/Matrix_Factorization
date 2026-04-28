@@ -191,7 +191,7 @@ def compute_max_alpha_batch_general(
     num_alphas: int, alpha_max: float,
     available_gb: float,
     use_bf16: bool = True,
-    f_distribution: str = 'rademacher'
+    f_distribution: str = 'ising'
 ) -> int:
     """
     Compute maximum alpha batch size for General mode.
@@ -202,7 +202,7 @@ def compute_max_alpha_batch_general(
         alpha_max: Maximum alpha value (for edge count estimation)
         available_gb: Available GPU memory in GB
         use_bf16: Whether using BF16 storage
-        f_distribution: 'rademacher' or 'gaussian'
+        f_distribution: 'ising' or 'gaussian'
     
     Returns:
         Maximum batch size (number of alphas to process in parallel)

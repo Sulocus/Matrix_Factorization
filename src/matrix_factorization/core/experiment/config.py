@@ -14,6 +14,11 @@ import json
 from pathlib import Path
 import math
 
+from ..distributions import (
+    F_DISTRIBUTION_ISING,
+    f_distribution_bytes_per_element,
+    normalize_f_distribution,
+)
 
 NORMALIZATION_PROFILE_PAPER = "paper_sparse_sampling"
 NORMALIZATION_PROFILE_LEGACY = "internal_normalized_legacy"
@@ -174,7 +179,7 @@ class ScanConfig:
 @dataclass
 class SpreadingConfig:
     """Configuration specific to spreading algorithms."""
-    f_distribution: str = "rademacher"  # "rademacher" or "gaussian"
+    f_distribution: str = F_DISTRIBUTION_ISING  # "ising" or "gaussian"
     onsager_correction: bool = False  # Enable Onsager correction for Z update
     allow_intra_connection: bool = False  # Allow W-W and X-X connections (general graph)
     seed: int = 12345  # Spreading-specific random seed
@@ -182,17 +187,12 @@ class SpreadingConfig:
     tensor_order: int = 2  # N-dimensional tensor order (2=matrix, 3+=tensor)
     
     def __post_init__(self):
-        valid = ["rademacher", "gaussian"]
-        if self.f_distribution not in valid:
-            raise ValueError(
-                f"Invalid f_distribution: {self.f_distribution}. "
-                f"Valid options: {valid}"
-            )
+        self.f_distribution = normalize_f_distribution(self.f_distribution)
     
     @property
     def f_bytes_per_element(self) -> int:
         """Bytes per F element."""
-        return 1 if self.f_distribution == "rademacher" else 4
+        return f_distribution_bytes_per_element(self.f_distribution)
     
     def to_dict(self) -> Dict:
         return asdict(self)

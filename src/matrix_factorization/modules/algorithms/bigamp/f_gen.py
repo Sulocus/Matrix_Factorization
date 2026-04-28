@@ -5,6 +5,12 @@ F Generation strategies for BiG-AMP Spreading.
 from typing import Tuple, Callable, Dict
 import math
 import torch
+from ....core.distributions import (
+    F_DISTRIBUTION_GAUSSIAN,
+    F_DISTRIBUTION_ISING,
+    is_ising_f_distribution,
+    normalize_f_distribution,
+)
 from ...graphs.supergraph import SuperGraphData
 from ...graphs.supergraph_general import SuperGraphDataGeneral, EDGE_TYPE_WW, EDGE_TYPE_WX, EDGE_TYPE_XX
 
@@ -35,14 +41,14 @@ def generate_F_gaussian(
     return torch.randn(C, M, device=device, dtype=torch.float32, generator=gen)
 
 
-def generate_F_rademacher(
+def generate_F_ising(
     C: int,
     M: int,
     seed: int,
     device: torch.device,
 ) -> torch.Tensor:
     """
-    Generate F ~ Rademacher (uniform {-1, +1}).
+    Generate Ising spreading coefficients F, uniformly distributed on {-1, +1}.
 
     OPTIMIZATION: Uses int8 storage for 4x memory reduction.
     Values are stored as int8 and converted to float on demand.
@@ -74,8 +80,8 @@ def generate_F_rademacher(
 
 # Strategy dictionary
 F_GENERATORS: Dict[str, Callable] = {
-    'gaussian': generate_F_gaussian,
-    'rademacher': generate_F_rademacher,
+    F_DISTRIBUTION_GAUSSIAN: generate_F_gaussian,
+    F_DISTRIBUTION_ISING: generate_F_ising,
 }
 
 
@@ -92,18 +98,19 @@ def generate_F_super(
     Each sample has independent F, but within a sample,
     different alphas share the same F (just different masks).
 
-    OPTIMIZATION: For Rademacher, stores as int8 (4x memory reduction).
+    OPTIMIZATION: For Ising F, stores as int8 (4x memory reduction).
 
     Args:
         supergraph: SuperGraphData with edge structure
         M: Hidden dimension
         base_seed: Base seed for F generation
         device: Target device
-        f_distribution: 'gaussian' or 'rademacher'
+        f_distribution: 'gaussian' or 'ising'
 
     Returns:
-        F_super: (S, C_max, M) tensor (float32 for gaussian, int8 for rademacher)
+        F_super: (S, C_max, M) tensor (float32 for gaussian, int8 for ising)
     """
+    f_distribution = normalize_f_distribution(f_distribution)
     if f_distribution not in F_GENERATORS:
         raise ValueError(
             f"Invalid f_distribution='{f_distribution}'. "
@@ -115,7 +122,7 @@ def generate_F_super(
     C_max = supergraph.C_max
 
     # Determine dtype based on distribution
-    dtype = torch.int8 if f_distribution == 'rademacher' else torch.float32
+    dtype = torch.int8 if is_ising_f_distribution(f_distribution) else torch.float32
     F_super = torch.empty(S, C_max, M, device=device, dtype=dtype)
 
     for s in range(S):
@@ -159,7 +166,7 @@ def compute_Y_super(
         W_sel = W_teacher[i_idx]     # (C_max, M)
         X_sel = X_teacher[:, j_idx].T  # (C_max, M)
 
-        # Convert F to float for computation (handles int8 Rademacher)
+        # Convert F to float for computation (handles int8 Ising F)
         F_s = F_super[s].float() if F_super.dtype == torch.int8 else F_super[s]
         
         # Y[c] = (1/√M) Σ_μ F[c,μ] W[i,μ] X[μ,j]
@@ -173,7 +180,7 @@ def generate_F_super_general(
     M: int,
     base_seed: int,
     device: torch.device,
-    f_distribution: str = 'rademacher',
+    f_distribution: str = F_DISTRIBUTION_ISING,
 ) -> torch.Tensor:
     """
     Generate spreading coefficients F for the general super-graph.
@@ -181,9 +188,10 @@ def generate_F_super_general(
     """
     S = supergraph.seeds.shape[0]
     C_max = supergraph.C_max
+    f_distribution = normalize_f_distribution(f_distribution)
     
-    # Store as int8 for memory efficiency if rademacher
-    dtype = torch.int8 if f_distribution == 'rademacher' else torch.float32
+    # Store as int8 for memory efficiency if Ising
+    dtype = torch.int8 if is_ising_f_distribution(f_distribution) else torch.float32
     F_super = torch.empty(S, C_max, M, device=device, dtype=dtype)
     
     for s in range(S):
@@ -192,11 +200,11 @@ def generate_F_super_general(
         seed = base_seed + s * 777 + 100000
         gen = torch.Generator(device=device).manual_seed(seed)
         
-        if f_distribution == 'rademacher':
+        if f_distribution == F_DISTRIBUTION_ISING:
             # Generate 0/1 then map to -1/1
             bits = torch.randint(0, 2, (C_max, M), generator=gen, device=device, dtype=torch.int8)
             F_super[s] = bits * 2 - 1
-        elif f_distribution == 'gaussian':
+        elif f_distribution == F_DISTRIBUTION_GAUSSIAN:
             F_super[s].normal_(0, 1, generator=gen)
             
     return F_super

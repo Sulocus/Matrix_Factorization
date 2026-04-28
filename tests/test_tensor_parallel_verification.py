@@ -57,7 +57,7 @@ def test_serial_vs_parallel():
         max_steps=max_steps,
         damping=0.5,
         noise_var=1e-6,
-        f_distribution='rademacher',
+        f_distribution='ising',
         onsager_correction=False,
         device=device,
     )
@@ -71,7 +71,7 @@ def test_serial_vs_parallel():
         max_steps=max_steps,
         damping=0.5,
         noise_var=1e-6,
-        f_distribution='rademacher',
+        f_distribution='ising',
         onsager_correction=False,
         device=device,
     )

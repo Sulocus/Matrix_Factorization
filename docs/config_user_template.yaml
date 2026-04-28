@@ -342,7 +342,7 @@ algorithm_params:
 # =============================================================================
 spreading:
   # f_distribution:
-  #   1 | rademacher = ±1 F，常用
+  #   1 | ising = ±1 F，常用；旧 rademacher 写法仍作为兼容别名
   #   2 | gaussian   = Gaussian F
   f_distribution: 1
 
@@ -394,7 +394,7 @@ output:
 
   # heatmap_metric:
   #   Q_Y = measurement projection overlap
-  #   Q_W = factor Gram-root diagnostic
+  #   Q_W = factor Cos-root diagnostic
   heatmap_metric: "Q_Y"
 
   # uniform_colormap:
@@ -410,8 +410,8 @@ output:
   #   A.w = Q_W_mean
   #   A.x = Q_X_mean
   #
-  #   B.w = Q_W_GRAM_ROOT_mean
-  #   B.x = Q_X_GRAM_ROOT_mean
+  #   B.w = Q_W_COS_ROOT_mean
+  #   B.x = Q_X_COS_ROOT_mean
   #
   #   D.w = Q_W_SIGN_ALIGNED_mean
   #   D.x = Q_X_SIGN_ALIGNED_mean

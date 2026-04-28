@@ -105,7 +105,7 @@ TEXTS = {
         'spreading_config': 'Spreading Configuration',
         'f_distribution': 'F Distribution',
         'gaussian_desc': 'Gaussian F ~ N(0,1)',
-        'rademacher_desc': 'Rademacher F ~ {-1, +1}',
+        'ising_desc': 'Ising F ~ {-1, +1}',
     },
     'cn': {
         'select_language': '选择语言',
@@ -150,7 +150,7 @@ TEXTS = {
         'spreading_config': 'Spreading 配置',
         'f_distribution': 'F 分布类型',
         'gaussian_desc': '高斯分布 F ~ N(0,1)',
-        'rademacher_desc': '二值分布 F ~ {-1, +1}',
+        'ising_desc': 'Ising 二值分布 F ~ {-1, +1}',
     }
 }
 
@@ -562,14 +562,14 @@ class ConfigWizard:
         )
         table.add_row(
             f"[{THEME['option_number']}][2][/{THEME['option_number']}]",
-            "Rademacher",
-            f"[dim]{self.t('rademacher_desc')}[/dim]"
+            "Ising",
+            f"[dim]{self.t('ising_desc')}[/dim]"
         )
         self.console.print(table)
 
         choice = IntPrompt.ask(self.t('select_default').format(1), default=1, show_default=False)
         choice = max(1, min(choice, 2))
-        result['f_distribution'] = 'gaussian' if choice == 1 else 'rademacher'
+        result['f_distribution'] = 'gaussian' if choice == 1 else 'ising'
         self.console.print()
 
         # 2. Teacher type selection (orthogonal vs standard)
@@ -627,7 +627,7 @@ class ConfigWizard:
         exec_params = result.execution_params or {}
         execution = ExecutionConfig(
             metrics_to_compute=exec_params.get('metrics_to_compute',
-                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT']),
+                ['Q_Y', 'Q_W', 'Q_X', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT']),
             plots=exec_params.get('plots', []),
             include_summary_plot=exec_params.get('include_summary_plot', True),
             include_qy_plot=exec_params.get('include_qy_plot', True),

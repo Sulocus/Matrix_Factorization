@@ -90,7 +90,7 @@ class ExecutionPlan:
         return len(self.steps) if self.steps else 1
 
     # Spreading configuration (only for spreading algorithms)
-    spreading_f_distribution: Optional[str] = None  # gaussian | rademacher
+    spreading_f_distribution: Optional[str] = None  # gaussian | ising
 
     def to_display_list(self, lang: str = 'cn') -> List[Dict[str, Any]]:
         """
@@ -180,7 +180,8 @@ class ExecutionPlan:
         if self.spreading_f_distribution is not None:
             f_dist_display = {
                 'gaussian': 'Gaussian N(0,1)',
-                'rademacher': 'Rademacher {-1,+1}',
+                'ising': 'Ising {-1,+1}',
+                'rademacher': 'Ising {-1,+1}',
             }.get(self.spreading_f_distribution, self.spreading_f_distribution)
             items.append({
                 'key': 'spreading',
@@ -419,7 +420,7 @@ def build_execution_plan_from_dict(config_dict: Dict[str, Any],
     # Metrics and plots from execution_params
     exec_params = execution_params or {}
     metrics = exec_params.get('metrics_to_compute',
-                              ['Q_Y', 'Q_W', 'Q_X', 'Q_W_GRAM_ROOT', 'Q_X_GRAM_ROOT'])
+                              ['Q_Y', 'Q_W', 'Q_X', 'Q_W_COS_ROOT', 'Q_X_COS_ROOT'])
 
     plots = []
     if exec_params.get('include_summary_plot', True):

@@ -10,6 +10,11 @@ one from each dimension of the tensor.
 
 import torch
 from typing import Tuple
+from matrix_factorization.core.distributions import (
+    F_DISTRIBUTION_GAUSSIAN,
+    F_DISTRIBUTION_ISING,
+    normalize_f_distribution,
+)
 from .tensor_data import TensorHypergraph
 
 
@@ -65,7 +70,7 @@ def generate_tensor_observations(
     hypergraph: TensorHypergraph,
     seed: int,
     device: torch.device,
-    f_distribution: str = 'rademacher',
+    f_distribution: str = 'ising',
 ):
     """
     Generate F and Y for tensor spreading.
@@ -79,7 +84,7 @@ def generate_tensor_observations(
         hypergraph: TensorHypergraph defining observation structure
         seed: random seed for F generation
         device: torch device
-        f_distribution: 'rademacher' or 'gaussian'
+        f_distribution: 'ising' or 'gaussian'
         
     Returns:
         F: (C, M) spreading coefficients
@@ -90,11 +95,12 @@ def generate_tensor_observations(
     C = hypergraph.C
     M = teacher_factors[0].shape[1]
     
+    f_distribution = normalize_f_distribution(f_distribution)
     gen = torch.Generator(device=device).manual_seed(seed)
     
-    if f_distribution == 'rademacher':
+    if f_distribution == F_DISTRIBUTION_ISING:
         F = (torch.randint(0, 2, (C, M), generator=gen, device=device) * 2 - 1).float()
-    else:  # gaussian
+    elif f_distribution == F_DISTRIBUTION_GAUSSIAN:
         F = torch.randn(C, M, generator=gen, device=device)
     
     # Compute Y from teacher
@@ -109,7 +115,7 @@ def generate_F_batch(
     M: int,
     base_seed: int,
     device: torch.device,
-    distribution: str = 'rademacher',
+    distribution: str = 'ising',
 ) -> torch.Tensor:
     """
     Generate S independent F realizations for sample parallelization.
@@ -123,17 +129,18 @@ def generate_F_batch(
         M: Latent dimension
         base_seed: Base random seed
         device: torch device
-        distribution: 'rademacher' or 'gaussian'
+        distribution: 'ising' or 'gaussian'
         
     Returns:
         F: (S, C, M) spreading coefficients for all samples
     """
     F_list = []
+    distribution = normalize_f_distribution(distribution)
     for s in range(S):
         gen = torch.Generator(device=device).manual_seed(base_seed + s * 1000)
-        if distribution == 'rademacher':
+        if distribution == F_DISTRIBUTION_ISING:
             F_s = (torch.randint(0, 2, (C, M), generator=gen, device=device) * 2 - 1).float()
-        else:  # gaussian
+        elif distribution == F_DISTRIBUTION_GAUSSIAN:
             F_s = torch.randn(C, M, generator=gen, device=device)
         F_list.append(F_s)
     
@@ -146,7 +153,7 @@ def generate_tensor_observations_batch(
     S: int,
     base_seed: int,
     device: torch.device,
-    f_distribution: str = 'rademacher',
+    f_distribution: str = 'ising',
 ):
     """
     Generate batched F and Y for sample parallelization.
@@ -163,7 +170,7 @@ def generate_tensor_observations_batch(
         S: Number of samples
         base_seed: Base random seed
         device: torch device
-        f_distribution: 'rademacher' or 'gaussian'
+        f_distribution: 'ising' or 'gaussian'
         
     Returns:
         F: (S, C, M) spreading coefficients

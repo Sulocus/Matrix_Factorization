@@ -43,7 +43,7 @@ teacher: 2
 #   2 | rademacher      = ±1 或 ±1/√M；尺度由 normalization_profile 决定
 #   3 | biased_gaussian = 均值为 mean_scale * latent_std 的高斯
 # mean_scale:
-#   只在 biased_gaussian 下生效；Ising/Rademacher 实验中保持 0。
+#   只在 biased_gaussian 下生效；Ising 实验中保持 0。
 teacher_config:
   init_distribution: 1
   mean_scale: 0.0
@@ -160,10 +160,10 @@ algorithm_params:
 # Spreading 配置（algorithm = 2 | bigamp_spreading 时生效）
 # =============================================================================
 # f_distribution:
-#   1 | rademacher = Rademacher 分布（推荐，更稳定）
+#   1 | ising = Ising ±1 分布（推荐，更稳定；旧 rademacher 写法兼容）
 #   2 | gaussian   = 高斯分布
 spreading:
-  f_distribution: 1       # rademacher spreading
+  f_distribution: 1       # ising spreading
   seed: 12345
   # ⚠️ Onsager 修正开关
   # - false = 关闭（二分图模式推荐）
@@ -184,7 +184,7 @@ output:
   # Heatmap 设置
   enable_heatmap: true     # 生成最终完整 heatmap/GIF
   rsb_ordering: true        # 是否对 Heatmap 进行聚类排序 (检测 RSB)
-  heatmap_metric: "Q_W_SIGN_ALIGNED" # Q_W_SIGN_ALIGNED=逐 channel sign-aligned heatmap；Q_W=Gram diagnostic
+  heatmap_metric: "Q_W_SIGN_ALIGNED" # Q_W_SIGN_ALIGNED=逐 channel sign-aligned heatmap；Q_W=raw projection
   uniform_colormap: true  # true=均匀颜色, false=增强高值区域
   
   # =============================================================================
@@ -194,7 +194,7 @@ output:
   #
   # 指标类别：
   #   A (Projection): A.y=Q_Y  A.w=Q_W  A.x=Q_X
-  #   B (Gram root):  B.w=Q_W_GRAM_ROOT  B.x=Q_X_GRAM_ROOT
+  #   B (Cos root):  B.w=Q_W_COS_ROOT  B.x=Q_X_COS_ROOT
   #   C (Split):      C.o=Q_Y_observed  C.u=Q_Y_unobserved
   #   D (Sign align): D.w=Q_W_SIGN_ALIGNED  D.x=Q_X_SIGN_ALIGNED
   #   N (Tensor):     N.n=Q_N
@@ -215,13 +215,13 @@ output:
       series_by: [onsager_policy]
       filename: qx_by_onsager_policy.png
     - x: alpha
-      y: Q_W_GRAM_ROOT_mean
+      y: Q_W_COS_ROOT_mean
       series_by: [onsager_policy]
-      filename: qw_gram_root_by_onsager_policy.png
+      filename: qw_cos_root_by_onsager_policy.png
     - x: alpha
-      y: Q_X_GRAM_ROOT_mean
+      y: Q_X_COS_ROOT_mean
       series_by: [onsager_policy]
-      filename: qx_gram_root_by_onsager_policy.png
+      filename: qx_cos_root_by_onsager_policy.png
     - x: alpha
       y: Q_W_SIGN_ALIGNED_mean
       series_by: [onsager_policy]

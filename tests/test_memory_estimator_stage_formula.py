@@ -82,7 +82,7 @@ def test_spreading_estimator_uses_supergraph_edge_count_for_alpha_folding():
         algorithm_key="bigamp_spreading",
         use_compile=False,
         use_bf16=True,
-        f_distribution="rademacher",
+        f_distribution="ising",
     )
 
     estimate = MemoryEstimator(apply_calibration=False).estimate(params)

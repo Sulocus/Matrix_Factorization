@@ -213,7 +213,7 @@ def run_calibration_test():
             algorithm_key=algo_key,
             use_compile=True,
             use_bf16=True,
-            f_distribution='rademacher',
+            f_distribution='ising',
         )
         
         estimated_gb = estimator.estimate_raw(params)
@@ -315,7 +315,7 @@ def _run_spreading_parallel(N, M, S, alpha_max, max_steps, device):
         learning_rate: float = 0.1
         use_bf16: bool = True
         teacher_key: str = 'standard'
-        f_distribution: str = 'rademacher'
+        f_distribution: str = 'ising'
     
     config = MinimalConfig()
     
@@ -338,7 +338,7 @@ def _run_spreading_parallel(N, M, S, alpha_max, max_steps, device):
     print("  Generating F and Y...")
     F_super = generate_F_super(
         supergraph, M, base_seed=42, device=device,
-        f_distribution='rademacher'
+        f_distribution='ising'
     )
     Y_super = compute_Y_super(W_teacher, X_teacher, supergraph, F_super)
     

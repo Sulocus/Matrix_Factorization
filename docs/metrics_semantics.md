@@ -268,7 +268,7 @@ Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如
 ## 同义不同名风险
 
 - `physical_overlap_Y/W/X` 是旧 projection 名，schema v3 的正式名是 `Q_Y/Q_W/Q_X`。
-- `Q_W_prime / Q_X_prime` 是旧 baseline-corrected Gram 名，schema v3 的正式 diagnostic 是 `Q_W_GRAM_ROOT / Q_X_GRAM_ROOT`。
+- `Q_W_prime / Q_X_prime` 是旧 baseline-corrected Gram 名，schema v3 的正式 diagnostic 是 `Q_W_COS_ROOT / Q_X_COS_ROOT`。
 - `MSE` 和 legacy `Gen_Error` 不再是 formal result metric；只能作为 algorithm 内部 loss/debug 或 legacy result 解释。
 - `overlap_matrix_metric=Q_Y` 指的是 heatmap cell 的选择，不等价于 scalar `Q_Y_mean`。
 
@@ -305,8 +305,8 @@ latent.X.teacher_student.Q_X_projection
   aliases: Q_X_mean, Q_X_std
   formula: abs(<X_s, X_t>) / <X_t, X_t>
 
-latent.W.teacher_student.Q_W_GRAM_ROOT
-  aliases: Q_W_GRAM_ROOT_mean, Q_W_GRAM_ROOT_std
+latent.W.teacher_student.Q_W_COS_ROOT
+  aliases: Q_W_COS_ROOT_mean, Q_W_COS_ROOT_std
   formula: sqrt(max(baseline_corrected_gram_overlap, 0))
   role: gauge/rotation-insensitive diagnostic
 
@@ -315,8 +315,8 @@ latent.W.teacher_student.Q_W_SIGN_ALIGNED
   formula: sum_k abs(<W_s[:,k], W_t[:,k]>) / sum_k ||W_t[:,k]||^2
   role: per-channel sign-gauge diagnostic, still rotation/permutation sensitive
 
-latent.X.teacher_student.Q_X_GRAM_ROOT
-  aliases: Q_X_GRAM_ROOT_mean, Q_X_GRAM_ROOT_std
+latent.X.teacher_student.Q_X_COS_ROOT
+  aliases: Q_X_COS_ROOT_mean, Q_X_COS_ROOT_std
   formula: sqrt(max(baseline_corrected_gram_overlap, 0))
   role: gauge/rotation-insensitive diagnostic
 

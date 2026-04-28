@@ -208,7 +208,7 @@ def bigamp_step_disjoint_union(
         noise_var=noise_var,
         prior_precision_base=prior_precision_base,
         prior_variance=prior_variance,
-        is_rademacher=False,
+        is_ising=False,
         prev_s=prev_s,
         prev_svar=prev_svar,
     )
@@ -257,7 +257,7 @@ def forward_disjoint_union_flat_legacy_fast(
     i_offset: torch.Tensor,
     j_offset: torch.Tensor,
     alpha_mask_exp: torch.Tensor,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Forward mean/variance for a legacy spreading flat state."""
     M = W_flat.shape[2]
@@ -275,7 +275,7 @@ def forward_disjoint_union_flat_legacy_fast(
     Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)
     Z_hat = Z_hat * mask_typed
 
-    if is_rademacher:
+    if is_ising:
         V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
     else:
         F_sq_exp = F_exp.pow(2)
@@ -295,7 +295,7 @@ def forward_disjoint_union_flat_corrected(
     i_offset: torch.Tensor,
     j_offset: torch.Tensor,
     alpha_mask_exp: torch.Tensor,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Forward mean and BiG-AMP pvar for a corrected spreading flat state."""
     M = W_flat.shape[2]
@@ -313,7 +313,7 @@ def forward_disjoint_union_flat_corrected(
     Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)
     Z_hat = Z_hat * mask_typed
 
-    if is_rademacher:
+    if is_ising:
         zvar = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
         cross_var = alpha_scale_sq * (W_var_sel * X_var_sel).sum(dim=2)
     else:
@@ -344,7 +344,7 @@ def bigamp_step_disjoint_union_flat_legacy_fast(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -367,7 +367,7 @@ def bigamp_step_disjoint_union_flat_legacy_fast(
     Z_hat = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2)
     Z_hat = Z_hat * mask_typed
 
-    if is_rademacher:
+    if is_ising:
         V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
         F_sq_exp = None
     else:
@@ -394,7 +394,7 @@ def bigamp_step_disjoint_union_flat_legacy_fast(
     r_W = torch.zeros(A, S * N1, M, device=W_flat.device, dtype=storage_dtype)
     r_W.scatter_add_(1, idx_W, r_W_contrib)
 
-    if is_rademacher:
+    if is_ising:
         tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * inv_V_typed * mask_3d
     else:
         tau_W_contrib = alpha_scale_sq * F_sq_exp * X_sel.pow(2) * inv_V_typed * mask_3d
@@ -411,7 +411,7 @@ def bigamp_step_disjoint_union_flat_legacy_fast(
     r_X = torch.zeros(A, S * N2, M, device=W_flat.device, dtype=storage_dtype)
     r_X.scatter_add_(1, idx_X, r_X_contrib)
 
-    if is_rademacher:
+    if is_ising:
         tau_X_contrib = alpha_scale_sq * W_sel.pow(2) * inv_V_typed * mask_3d
     else:
         tau_X_contrib = alpha_scale_sq * F_sq_exp * W_sel.pow(2) * inv_V_typed * mask_3d
@@ -452,7 +452,7 @@ def bigamp_step_disjoint_union_flat_adaptive_legacy_fast(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -474,7 +474,7 @@ def bigamp_step_disjoint_union_flat_adaptive_legacy_fast(
         noise_var=noise_var,
         prior_precision_base=prior_precision_base,
         prior_variance=prior_variance,
-        is_rademacher=is_rademacher,
+        is_ising=is_ising,
         prev_s=prev_s,
         prev_svar=prev_svar,
     )
@@ -492,7 +492,7 @@ def bigamp_step_disjoint_union_flat_adaptive_legacy_fast(
     F_compute = F_flat.to(W_flat.dtype)
     F_exp = F_compute.unsqueeze(0)
     Z_raw = alpha_scale * (F_exp * W_sel * X_sel).sum(dim=2) * mask_typed
-    if is_rademacher:
+    if is_ising:
         V = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
     else:
         F_sq_exp = F_exp.pow(2)
@@ -518,7 +518,7 @@ def bigamp_step_disjoint_union_flat_adaptive(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -553,7 +553,7 @@ def bigamp_step_disjoint_union_flat_adaptive(
     Z_hat = Z_hat * mask_typed
     
     # ===== 3. BiG-AMP zvar/pvar =====
-    if is_rademacher:
+    if is_ising:
         zvar = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
         cross_var = alpha_scale_sq * (W_var_sel * X_var_sel).sum(dim=2)
         F_sq_exp = None
@@ -594,7 +594,7 @@ def bigamp_step_disjoint_union_flat_adaptive(
     idx_W = i_offset.view(1, SC, 1).expand(A, SC, M)
     r_W.scatter_add_(1, idx_W, r_W_contrib)
     
-    if is_rademacher:
+    if is_ising:
         tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * svar_typed * mask_typed
         gain_W_contrib = alpha_scale_sq * X_var_sel * svar_typed * mask_typed
     else:
@@ -618,7 +618,7 @@ def bigamp_step_disjoint_union_flat_adaptive(
     idx_X = j_offset.view(1, SC, 1).expand(A, SC, M)
     r_X.scatter_add_(1, idx_X, r_X_contrib)
     
-    if is_rademacher:
+    if is_ising:
         tau_X_contrib = alpha_scale_sq * W_sel.pow(2) * svar_typed * mask_typed
         gain_X_contrib = alpha_scale_sq * W_var_sel * svar_typed * mask_typed
     else:
@@ -656,7 +656,7 @@ def bigamp_step_disjoint_union_flat(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,  # Optimization: skip F² for Rademacher
+    is_ising: bool = False,  # Optimization: skip F² for Ising
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -680,7 +680,7 @@ def bigamp_step_disjoint_union_flat(
         N1, N2: original dimensions
         damping: damping factor
         noise_var: noise variance
-        is_rademacher: if True, skip F² computation (F²=1)
+        is_ising: if True, skip F² computation (F²=1)
         prev_s: previous damped shat values for Onsager correction
     
     Returns:
@@ -705,7 +705,7 @@ def bigamp_step_disjoint_union_flat(
     
     # ===== 2. Forward pass =====
     # ALWAYS convert F to compute dtype to ensure scatter_add_ dtype consistency
-    # (needed for both int8 Rademacher and float32 Gaussian when using bf16 storage)
+    # (needed for both int8 Ising and float32 Gaussian when using bf16 storage)
     F_compute = F_flat.to(W_flat.dtype)
     F_exp = F_compute.unsqueeze(0)  # (1, SC, M)
     # Direct BF16 computation (RTX 5090 native support, 2.7x faster than .float())
@@ -713,8 +713,8 @@ def bigamp_step_disjoint_union_flat(
     Z_hat = Z_hat * mask_typed
     
     # ===== 3. BiG-AMP zvar/pvar =====
-    if is_rademacher:
-        # F² = 1 for Rademacher, skip pow(2) computation
+    if is_ising:
+        # F² = 1 for Ising, skip pow(2) computation
         zvar = alpha_scale_sq * (W_var_sel * X_sel.pow(2) + W_sel.pow(2) * X_var_sel).sum(dim=2)
         cross_var = alpha_scale_sq * (W_var_sel * X_var_sel).sum(dim=2)
         F_sq_exp = None  # Not needed
@@ -757,7 +757,7 @@ def bigamp_step_disjoint_union_flat(
     idx_W = i_offset.view(1, SC, 1).expand(A, SC, M)
     r_W.scatter_add_(1, idx_W, r_W_contrib)
     
-    if is_rademacher:
+    if is_ising:
         tau_W_contrib = alpha_scale_sq * X_sel.pow(2) * svar_typed * mask_typed
         gain_W_contrib = alpha_scale_sq * X_var_sel * svar_typed * mask_typed
     else:
@@ -780,7 +780,7 @@ def bigamp_step_disjoint_union_flat(
     idx_X = j_offset.view(1, SC, 1).expand(A, SC, M)
     r_X.scatter_add_(1, idx_X, r_X_contrib)
     
-    if is_rademacher:
+    if is_ising:
         tau_X_contrib = alpha_scale_sq * W_sel.pow(2) * svar_typed * mask_typed
         gain_X_contrib = alpha_scale_sq * W_var_sel * svar_typed * mask_typed
     else:
@@ -830,7 +830,7 @@ def general_edge_kernel_chunk(
     alpha_scale_sq: float,
     noise_var: float,
     damping: float,
-    is_rademacher: bool,
+    is_ising: bool,
     compute_dtype: torch.dtype,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
@@ -854,8 +854,8 @@ def general_edge_kernel_chunk(
     Z_hat = alpha_scale * (F_exp * V_a * V_b).sum(dim=2) * mask_typed
     
     # 3. BiG-AMP zvar/pvar calculation
-    if is_rademacher:
-        # F^2 = 1 for Rademacher
+    if is_ising:
+        # F^2 = 1 for Ising
         zvar_raw = (V_a_var * V_b.pow(2) + V_a.pow(2) * V_b_var).sum(dim=2)
         cross_raw = (V_a_var * V_b_var).sum(dim=2)
         F_sq_exp = None
@@ -893,7 +893,7 @@ def general_edge_kernel_chunk(
     r_b_contrib = alpha_scale * F_exp * V_a * s_exp * mask_3d
 
     # Preconditioners (Tau)
-    if is_rademacher:
+    if is_ising:
         tau_common = alpha_scale_sq * svar_exp * mask_3d
         tau_a_contrib = V_b.pow(2) * tau_common
         tau_b_contrib = V_a.pow(2) * tau_common
@@ -923,7 +923,7 @@ def bigamp_step_general_chunked(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
     chunk_size: int = 131072,
@@ -949,7 +949,7 @@ def bigamp_step_general_chunked(
         N_total: N1 + N2
         damping: damping factor
         noise_var: noise variance
-        is_rademacher: True if F is Rademacher (F²=1)
+        is_ising: True if F is Ising (F²=1)
         prev_s: (B, SC) previous s values for Onsager correction
         chunk_size: edges per chunk
         use_compile: whether to use compiled kernel
@@ -1019,7 +1019,7 @@ def bigamp_step_general_chunked(
         # 3b. Execute Kernel
         s_chunk, svar_chunk, r_a, r_b, tau_a, tau_b, gain_a, gain_b = kernel_fn(
             V_a, V_b, V_a_var, V_b_var, F_chunk, Y_chunk, mask_chunk, prev_s_chunk, prev_svar_chunk,
-            alpha_scale, alpha_scale_sq, noise_var, damping, is_rademacher, compute_dtype
+            alpha_scale, alpha_scale_sq, noise_var, damping, is_ising, compute_dtype
         )
         
         # 3c. Store s values
@@ -1075,7 +1075,7 @@ def bigamp_step_disjoint_union_flat_general(
     noise_var: float,
     prior_precision_base: float = 1.0,
     prior_variance: float = 1.0,
-    is_rademacher: bool = False,
+    is_ising: bool = False,
     prev_s: Optional[torch.Tensor] = None,
     prev_svar: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1099,7 +1099,7 @@ def bigamp_step_disjoint_union_flat_general(
         noise_var=noise_var,
         prior_precision_base=prior_precision_base,
         prior_variance=prior_variance,
-        is_rademacher=is_rademacher,
+        is_ising=is_ising,
         prev_s=prev_s,
         prev_svar=prev_svar,
         chunk_size=F_flat.shape[0],

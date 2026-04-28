@@ -5,7 +5,7 @@ Tests:
 1. F generation determinism (same seed -> same F)
 2. SuperGraph data structure creation
 3. Parallel BiG-AMP basic functionality
-4. All 4 combinations (gaussian/rademacher x standard/orthogonal)
+4. All 4 combinations (gaussian/ising x standard/orthogonal)
 """
 
 import pytest
@@ -41,29 +41,29 @@ class TestFGeneration:
 
         assert torch.allclose(F1, F2), "Gaussian F should be deterministic"
 
-    def test_rademacher_determinism(self):
-        """Same seed produces same Rademacher F."""
-        from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import generate_F_rademacher
+    def test_ising_determinism(self):
+        """Same seed produces same Ising F."""
+        from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import generate_F_ising
 
         device = torch.device('cpu')
         C, M = 100, 10
 
-        F1 = generate_F_rademacher(C, M, SEED, device)
-        F2 = generate_F_rademacher(C, M, SEED, device)
+        F1 = generate_F_ising(C, M, SEED, device)
+        F2 = generate_F_ising(C, M, SEED, device)
 
-        assert torch.allclose(F1, F2), "Rademacher F should be deterministic"
+        assert torch.allclose(F1, F2), "Ising F should be deterministic"
 
-    def test_rademacher_values(self):
-        """Rademacher F should only contain {-1, +1}."""
-        from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import generate_F_rademacher
+    def test_ising_values(self):
+        """Ising F should only contain {-1, +1}."""
+        from matrix_factorization.modules.algorithms.bigamp.spreading_parallel import generate_F_ising
 
         device = torch.device('cpu')
         C, M = 100, 10
 
-        F = generate_F_rademacher(C, M, SEED, device)
+        F = generate_F_ising(C, M, SEED, device)
 
         unique_values = torch.unique(F)
-        assert len(unique_values) == 2, f"Rademacher should have 2 unique values, got {len(unique_values)}"
+        assert len(unique_values) == 2, f"Ising should have 2 unique values, got {len(unique_values)}"
         assert -1 in unique_values and 1 in unique_values, f"Values should be -1 and +1, got {unique_values}"
 
     def test_gaussian_statistics(self):
@@ -228,7 +228,7 @@ class TestFDistributionCombinations:
     def device(self):
         return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    @pytest.mark.parametrize("f_distribution", ["gaussian", "rademacher"])
+    @pytest.mark.parametrize("f_distribution", ["gaussian", "ising"])
     def test_f_distribution_runs(self, f_distribution, device):
         """Both F distributions should run without errors."""
         from matrix_factorization.core.config import Config, MatrixConfig, AlphaConfig, TrainingConfig, SpreadingConfig, AlgorithmConfig

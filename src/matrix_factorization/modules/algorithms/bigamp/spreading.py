@@ -5,7 +5,7 @@ This module implements BiG-AMP algorithm for the random spreading model
 with Super-Graph parallelization across alpha values.
 
 Key features:
-1. Configurable F distribution: gaussian or rademacher
+1. Configurable F distribution: gaussian or ising
 2. Super-Graph strategy: parallel processing of all alphas
 3. Teacher type controlled by config.teacher_key (reuses existing system)
 
@@ -26,13 +26,18 @@ import torch
 from matrix_factorization.modules.registry import register_algorithm
 from matrix_factorization.modules.algorithms.base import AlgorithmBase
 from matrix_factorization.core.contracts import AlgorithmStateView
+from matrix_factorization.core.distributions import (
+    F_DISTRIBUTION_GAUSSIAN,
+    F_DISTRIBUTION_ISING,
+    normalize_f_distribution,
+)
 from matrix_factorization.core.experiment.config import resolve_normalization_profile
 from matrix_factorization.modules.graphs.supergraph import SuperGraphData, create_supergraph
 from matrix_factorization.modules.graphs.supergraph_general import SuperGraphDataGeneral, create_supergraph_general, EDGE_TYPE_WW, EDGE_TYPE_WX, EDGE_TYPE_XX
 from matrix_factorization.modules.teachers.random_spreading import SpreadingDataParallel
 
 from .f_gen import (
-    generate_F_gaussian, generate_F_rademacher, F_GENERATORS,
+    generate_F_gaussian, generate_F_ising, F_GENERATORS,
     generate_F_super, compute_Y_super,
     generate_F_super_general, compute_Y_super_general
 )
@@ -87,13 +92,13 @@ class BiGAMPSpreading(AlgorithmBase):
 
     Configurable options:
     - teacher_key: 'standard' (Gaussian) or 'orthogonal' - via config.teacher_key
-    - f_distribution: 'gaussian' or 'rademacher' - via config.spreading.f_distribution
+    - f_distribution: 'gaussian' or 'ising' - via config.spreading.f_distribution
 
     Usage:
         config = Config(
             algorithm_key="bigamp_spreading",
             teacher_key="orthogonal",  # Controls W, X generation
-            spreading=SpreadingConfig(f_distribution="rademacher"),
+            spreading=SpreadingConfig(f_distribution="ising"),
         )
     """
 
@@ -169,7 +174,7 @@ class BiGAMPSpreading(AlgorithmBase):
         # Spreading configuration
         spreading_cfg = config.spreading
         if spreading_cfg is not None:
-            self.f_distribution = spreading_cfg.f_distribution
+            self.f_distribution = normalize_f_distribution(spreading_cfg.f_distribution)
             self.spreading_seed = spreading_cfg.seed
             self.onsager_correction = getattr(spreading_cfg, 'onsager_correction', False)
             self.allow_intra_connection = getattr(spreading_cfg, 'allow_intra_connection', False)
@@ -178,7 +183,7 @@ class BiGAMPSpreading(AlgorithmBase):
             self.chunk_size = getattr(spreading_cfg, 'chunk_size', 0) 
         else:
             # Default values
-            self.f_distribution = 'gaussian'
+            self.f_distribution = F_DISTRIBUTION_GAUSSIAN
             self.spreading_seed = 12345
             self.onsager_correction = False
             self.allow_intra_connection = False
@@ -875,7 +880,7 @@ class BiGAMPSpreading(AlgorithmBase):
         1. All tensors stored in flat format (A, S*N, M) - no per-iteration reshape
         2. Pre-flattened F, Y, alpha_mask computed once
         3. torch.compile for kernel fusion (if enabled)
-        4. Rademacher F² optimization (F²=1 skips pow(2))
+        4. Ising F² optimization (F²=1 skips pow(2))
 
         Args:
             spreading_data: SpreadingDataParallel with F_super, Y_super, etc.
@@ -1044,7 +1049,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 SC=SC,
                 alpha_mask_exp=alpha_mask_exp,
             )
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
 
         # ===== OPTIMIZATION 3: Route by Onsager convention =====
         # no_onsager keeps the legacy no-feedback fast route.  Once Onsager is
@@ -1098,7 +1103,7 @@ class BiGAMPSpreading(AlgorithmBase):
                         noise_var=self.noise_var,
                         prior_precision_base=self._norm.prior_precision_base,
                         prior_variance=self._norm.prior_variance,
-                        is_rademacher=is_rademacher,
+                        is_ising=is_ising,
                         prev_s=call_prev_s,
                         prev_svar=call_prev_svar,
                     )
@@ -1349,7 +1354,7 @@ class BiGAMPSpreading(AlgorithmBase):
             else bigamp_step_disjoint_union_flat_adaptive
         )
         
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
         steps = max_steps if max_steps is not None else self.max_steps
         
         # Warm Restart Parameters
@@ -1375,7 +1380,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     S, N1, N2, self.noise_var,
                     self._norm.prior_precision_base,
                     self._norm.prior_variance,
-                    is_rademacher, prev_s, prev_svar
+                    is_ising, prev_s, prev_svar
                 )
             except RuntimeError as exc:
                 if step_fn is not BiGAMPSpreading._compiled_step_adaptive:
@@ -1396,7 +1401,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     S, N1, N2, self.noise_var,
                     self._norm.prior_precision_base,
                     self._norm.prior_variance,
-                    is_rademacher, prev_s, prev_svar
+                    is_ising, prev_s, prev_svar
                 )
             
             # Evaluate the actual damped candidate state.  The raw step output
@@ -1417,7 +1422,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 i_offset,
                 j_offset,
                 alpha_mask_exp,
-                is_rademacher,
+                is_ising,
             )
             output_val = compute_log_likelihood(Y_flat, Z_candidate, V_candidate, self.noise_var)
             prior_penalty = 0.5 / float(self._norm.prior_variance) * (
@@ -2310,7 +2315,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 SC=SC,
                 alpha_mask_exp=alpha_mask_exp,
             )
-        is_rademacher = (self.f_distribution == 'rademacher')
+        is_ising = (self.f_distribution == 'ising')
 
         steps = max_steps if max_steps is not None else self.max_steps
         
@@ -2351,7 +2356,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     alpha_mask_exp, S, N_total, self.damping, self.noise_var,
                     self._norm.prior_precision_base,
                     self._norm.prior_variance,
-                    is_rademacher, prev_s, prev_svar, self.chunk_size, self.use_compile
+                    is_ising, prev_s, prev_svar, self.chunk_size, self.use_compile
                 )
             else:
                 # Legacy version
@@ -2360,7 +2365,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     alpha_mask_exp, S, N_total, self.damping, self.noise_var,
                     self._norm.prior_precision_base,
                     self._norm.prior_variance,
-                    is_rademacher, prev_s, prev_svar
+                    is_ising, prev_s, prev_svar
                 )
 
             # Onsager

@@ -74,7 +74,7 @@
    - Q_Y = absolute projection, not cosine.
    - Q_W/Q_X = coordinate projection.
    - Q_N = tensor latent node/spin/factor projection.
-   - Q_W_GRAM_ROOT / Q_X_GRAM_ROOT = Gram-root diagnostic.
+   - Q_W_COS_ROOT / Q_X_COS_ROOT = Cos-root diagnostic.
    - Q_W_SIGN_ALIGNED / Q_X_SIGN_ALIGNED = sign-gauge diagnostic.
    - MSE / Gen_Error / old cosine Q_Y 不再是 formal metrics.
 

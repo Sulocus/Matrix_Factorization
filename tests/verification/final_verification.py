@@ -23,7 +23,7 @@ def main():
     cfg.training.seed = 42
     cfg.algorithm.mode = "spreading_parallel"
     cfg.algorithm.damping = 0.5
-    cfg.spreading.f_distribution = "rademacher"
+    cfg.spreading.f_distribution = "ising"
     cfg.spreading.seed = 12345
     
     print("=" * 70)

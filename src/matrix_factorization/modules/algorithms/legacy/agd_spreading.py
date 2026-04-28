@@ -5,7 +5,7 @@ This module implements AGD algorithm for the random spreading model
 with Super-Graph parallelization across alpha values, mirroring BiGAMP Spreading structure.
 
 Key features:
-1. Configurable F distribution: gaussian or rademacher
+1. Configurable F distribution: gaussian or ising
 2. Super-Graph strategy: parallel processing of all alphas
 3. Simpler gradient descent (no variance estimation, no Onsager)
 
@@ -26,6 +26,11 @@ from typing import Tuple, Optional, List
 import math
 import torch
 
+from matrix_factorization.core.distributions import (
+    F_DISTRIBUTION_ISING,
+    f_distribution_bytes_per_element,
+    normalize_f_distribution,
+)
 from ..registry import register_algorithm
 from .base import AlgorithmBase
 from ..graphs.supergraph import create_supergraph
@@ -207,7 +212,7 @@ class AGDSpreading(AlgorithmBase):
     AGD with random spreading, parallel across alpha values.
     
     Configurable options:
-    - f_distribution: 'gaussian' or 'rademacher' - via config.spreading.f_distribution
+    - f_distribution: 'gaussian' or 'ising' - via config.spreading.f_distribution
     
     Differences from BiGAMP Spreading:
     - Uses simple gradient descent instead of message passing
@@ -218,7 +223,7 @@ class AGDSpreading(AlgorithmBase):
     Usage:
         config = Config(
             algorithm_key="agd_spreading",
-            spreading=SpreadingConfig(f_distribution="rademacher"),
+            spreading=SpreadingConfig(f_distribution="ising"),
         )
     """
     
@@ -248,11 +253,11 @@ class AGDSpreading(AlgorithmBase):
         # Spreading configuration (match BiGAMP Spreading pattern)
         spreading_cfg = getattr(config, 'spreading', None)
         if spreading_cfg is not None:
-            self.f_distribution = spreading_cfg.f_distribution
+            self.f_distribution = normalize_f_distribution(spreading_cfg.f_distribution)
             self.spreading_seed = getattr(spreading_cfg, 'seed', 12345)
         else:
             # Default values
-            self.f_distribution = 'rademacher'
+            self.f_distribution = F_DISTRIBUTION_ISING
             self.spreading_seed = 12345
         
         # Algorithm parameters
@@ -553,7 +558,7 @@ class AGDSpreading(AlgorithmBase):
         alpha_max = 4.0  # Conservative estimate
         C_max = max(1, int(math.ceil(alpha_max * N1 * N2 / M)))
         SC = S * C_max
-        f_bytes = 1 if self.f_distribution == 'rademacher' else 4
+        f_bytes = f_distribution_bytes_per_element(self.f_distribution)
         supergraph_elements = SC * M * (f_bytes / 4) + SC + 2 * SC  # F + Y + indices
         
         # Gather tensors: W_sel, X_sel = 2 * (SC, M)

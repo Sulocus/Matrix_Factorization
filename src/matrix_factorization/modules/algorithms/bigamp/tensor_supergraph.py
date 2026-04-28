@@ -17,6 +17,11 @@ import torch
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import logging
+from matrix_factorization.core.distributions import (
+    F_DISTRIBUTION_GAUSSIAN,
+    F_DISTRIBUTION_ISING,
+    normalize_f_distribution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +262,7 @@ def create_tensor_supergraph(
 def create_tensor_superdata(
     supergraph: TensorSuperGraph,
     teacher_factors: List[torch.Tensor],
-    f_distribution: str = 'rademacher',
+    f_distribution: str = 'ising',
     seed: int = 12345,
     partition_invariant: bool = False,
 ) -> TensorSuperData:
@@ -267,7 +272,7 @@ def create_tensor_superdata(
     Args:
         supergraph: TensorSuperGraph with index structure
         teacher_factors: n tensors of (N_d, M) teacher factors
-        f_distribution: 'rademacher' or 'gaussian'
+        f_distribution: 'ising' or 'gaussian'
         seed: Random seed for F generation
         
     Returns:
@@ -278,6 +283,7 @@ def create_tensor_superdata(
     M = supergraph.M
     n = supergraph.n
     device = supergraph.device
+    f_distribution = normalize_f_distribution(f_distribution)
     
     # Generate F: (S, C_max, M).  The legacy path intentionally keeps the old
     # global RNG behavior.  The opt-in partition-invariant path gives each
@@ -288,17 +294,17 @@ def create_tensor_superdata(
             gen = torch.Generator(device=device).manual_seed(
                 stable_partition_seed(seed, "tensor_superdata", "F", s)
             )
-            if f_distribution == 'rademacher':
+            if f_distribution == F_DISTRIBUTION_ISING:
                 F_s = (torch.randint(0, 2, (C_max, M), generator=gen, device=device, dtype=torch.int8) * 2 - 1)
-            else:
+            elif f_distribution == F_DISTRIBUTION_GAUSSIAN:
                 F_s = torch.randn(C_max, M, generator=gen, device=device)
             f_samples.append(F_s)
         F_super = torch.stack(f_samples, dim=0)
     else:
         torch.manual_seed(seed)
-        if f_distribution == 'rademacher':
+        if f_distribution == F_DISTRIBUTION_ISING:
             F_super = (torch.randint(0, 2, (S, C_max, M), device=device, dtype=torch.int8) * 2 - 1)
-        else:
+        elif f_distribution == F_DISTRIBUTION_GAUSSIAN:
             F_super = torch.randn(S, C_max, M, device=device)
     
     # Compute Y using teacher factors

@@ -53,7 +53,7 @@ def test_experiment_result_directory_schema(tmp_path):
                 scan_value=alpha,
                 metrics={
                     "Q_W_mean": q_y / 2,
-                    "Q_W_GRAM_ROOT_mean": q_y / 2,
+                    "Q_W_COS_ROOT_mean": q_y / 2,
                     "Q_Y_mean": q_y,
                 },
                 metric_contract={
@@ -96,7 +96,7 @@ def test_experiment_result_directory_schema(tmp_path):
     assert metrics["contract"]["algorithm"] == "bigamp"
     assert metrics["scan_dimension"] == "alpha"
     assert metrics["scan_values"] == ["0.0", "0.5"]
-    assert metrics["available_metric_keys"] == ["Q_W_GRAM_ROOT_mean", "Q_W_mean", "Q_Y_mean"]
+    assert metrics["available_metric_keys"] == ["Q_W_COS_ROOT_mean", "Q_W_mean", "Q_Y_mean"]
     assert metrics["metric_schema"]["schema_version"] == 3
     assert metrics["metric_schema"]["compatibility"]["legacy_flat_keys_preserved"] is True
     assert metrics["metric_schema"]["compatibility"]["projection_metric_migration"] is True
@@ -108,7 +108,7 @@ def test_experiment_result_directory_schema(tmp_path):
         "clipped": False,
     }
     assert metrics["metric_schema"]["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
-    assert metrics["metric_schema"]["flat_key_index"]["Q_W_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_GRAM_ROOT"
+    assert metrics["metric_schema"]["flat_key_index"]["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
     assert "measurement.full.teacher_student.Q_Y_projection" in metrics["metric_schema"]["semantic_classes"]
     assert metrics["metric_semantics"]["Q_Y_mean"][0]["space"] == "measurement"
     assert metrics["metric_contracts"]["0.5"]["source"] == "runner_matrix_metrics"

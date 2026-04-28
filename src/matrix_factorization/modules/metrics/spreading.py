@@ -4,13 +4,15 @@ Evaluation metrics for random spreading model.
 Key difference from standard metrics:
 - Q_Y uses the same F coefficients for both teacher and student.
 - Formal Q_Y is absolute projection, not cosine or reconstruction error.
-- Q_W/Q_X are coordinate projection overlaps; Gram-root metrics are diagnostics.
+- Q_W/Q_X are coordinate projection overlaps; Cos-root metrics are diagnostics.
 """
 
 from dataclasses import dataclass
 from typing import Dict, TYPE_CHECKING
 import numpy as np
 import torch
+
+from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING
 
 from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
 from .overlap import sign_aligned_projection_abs
@@ -213,13 +215,13 @@ def _mean_std(values: torch.Tensor, dim: int = 0) -> tuple[torch.Tensor, torch.T
 
 
 @torch.no_grad()
-def _gram_root_and_replica_by_alpha(
+def _cos_root_and_replica_by_alpha(
     factors: torch.Tensor,
     teacher: torch.Tensor,
     *,
     use_left: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return teacher-student Gram-root and student-student Gram diagnostics.
+    """Return teacher-student Cos-root and student-student Gram diagnostics.
 
     factors is (S, N, M) for W when use_left=True, or (S, M, N) for X when
     use_left=False.  The computation stays on the device and vectorizes the
@@ -240,18 +242,18 @@ def _gram_root_and_replica_by_alpha(
     q = (flat * teacher_flat).sum(dim=1) / ((flat.norm(dim=1) * teacher_norm) + PROJECTION_NORM_EPS)
     baseline = float(m) / float(m + n + 1)
     corrected = ((q - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
-    gram_root = corrected.sqrt()
+    cos_root = corrected.sqrt()
 
     if factors.shape[0] < 2:
         zero = torch.zeros((), device=factors.device, dtype=torch.float32)
-        return gram_root.float(), zero, zero
+        return cos_root.float(), zero, zero
 
     normalized = flat / (flat.norm(dim=1, keepdim=True) + PROJECTION_NORM_EPS)
     pair_cos = normalized @ normalized.T
     pair_corrected = ((pair_cos - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
     upper = torch.triu_indices(factors.shape[0], factors.shape[0], offset=1, device=factors.device)
     return (
-        gram_root.float(),
+        cos_root.float(),
         pair_cos[upper[0], upper[1]].mean().float(),
         pair_corrected[upper[0], upper[1]].mean().float(),
     )
@@ -560,7 +562,7 @@ def compute_all_metrics_spreading(
     Includes:
     - Q_Y: F-aware projection overlap
     - Q_W, Q_X: coordinate projection overlap
-    - Q_W_GRAM_ROOT, Q_X_GRAM_ROOT: Gram-root diagnostics
+    - Q_W_COS_ROOT, Q_X_COS_ROOT: Cos-root diagnostics
 
     Args:
         W_student: (N1, M) or (S, N1, M) student W
@@ -572,7 +574,7 @@ def compute_all_metrics_spreading(
     Returns:
         Dictionary with all metrics
     """
-    from .overlap import gram_overlap_root, projection_abs
+    from .overlap import cos_overlap_root, projection_abs
 
     results = {}
 
@@ -588,8 +590,8 @@ def compute_all_metrics_spreading(
     results['Q_X'] = projection_abs(X_s, X_teacher)
     results['Q_W_SIGN_ALIGNED'] = sign_aligned_projection_abs(W_s, W_teacher, latent_axis=-1)
     results['Q_X_SIGN_ALIGNED'] = sign_aligned_projection_abs(X_s, X_teacher, latent_axis=0)
-    results['Q_W_GRAM_ROOT'] = gram_overlap_root(W_s, W_teacher, use_left=True)
-    results['Q_X_GRAM_ROOT'] = gram_overlap_root(X_s, X_teacher, use_left=False)
+    results['Q_W_COS_ROOT'] = cos_overlap_root(W_s, W_teacher, use_left=True)
+    results['Q_X_COS_ROOT'] = cos_overlap_root(X_s, X_teacher, use_left=False)
 
     # Spreading-aware Q_Y
     results['Q_Y'] = compute_qy_spreading(W_student, X_student, spreading_data)
@@ -667,8 +669,8 @@ def compute_all_metrics_spreading_parallel(
         channel_sum_dim=-1,
     )
 
-    Q_W_gram_root_all = torch.zeros(S, output_A, device=device)
-    Q_X_gram_root_all = torch.zeros(S, output_A, device=device)
+    Q_W_cos_root_all = torch.zeros(S, output_A, device=device)
+    Q_X_cos_root_all = torch.zeros(S, output_A, device=device)
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_full_all = torch.zeros(S, output_A, device=device)
@@ -708,7 +710,7 @@ def compute_all_metrics_spreading_parallel(
             N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
             h_i_all = torch.empty(S, C_k, dtype=torch.long, device=device)
             h_j_all = torch.empty(S, C_k, dtype=torch.long, device=device)
-            f_dtype = torch.float32 if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian" else torch.int8
+            f_dtype = torch.float32 if str(getattr(spreading_data, "f_distribution", F_DISTRIBUTION_ISING)) == "gaussian" else torch.int8
             F_holdout = torch.empty(S, C_k, spreading_data.M, dtype=f_dtype, device=device)
             valid_samples = torch.ones(S, dtype=torch.bool, device=device)
             for s in range(S):
@@ -734,7 +736,7 @@ def compute_all_metrics_spreading_parallel(
                 h_i_all[s] = h_i[:C_k]
                 h_j_all[s] = h_j[:C_k]
                 gen = torch.Generator(device=device).manual_seed(seed_base + 104729 * (int(actual_alpha_idx) + 1))
-                if str(getattr(spreading_data, "f_distribution", "rademacher")) == "gaussian":
+                if str(getattr(spreading_data, "f_distribution", F_DISTRIBUTION_ISING)) == "gaussian":
                     F_holdout[s].normal_(0, 1, generator=gen)
                 else:
                     F_holdout[s] = torch.randint(
@@ -762,18 +764,18 @@ def compute_all_metrics_spreading_parallel(
             Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs, torch.zeros_like(q_unobs))
             Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
 
-        w_root, w_replica, w_prime = _gram_root_and_replica_by_alpha(
+        w_root, w_replica, w_prime = _cos_root_and_replica_by_alpha(
             W_students[:, local_alpha_idx],
             W_teacher,
             use_left=True,
         )
-        x_root, x_replica, x_prime = _gram_root_and_replica_by_alpha(
+        x_root, x_replica, x_prime = _cos_root_and_replica_by_alpha(
             X_students[:, local_alpha_idx],
             X_teacher,
             use_left=False,
         )
-        Q_W_gram_root_all[:, out_idx] = w_root
-        Q_X_gram_root_all[:, out_idx] = x_root
+        Q_W_cos_root_all[:, out_idx] = w_root
+        Q_X_cos_root_all[:, out_idx] = x_root
         Q_W_replica_all[out_idx] = w_replica
         Q_X_replica_all[out_idx] = x_replica
         Q_W_prime_replica_all[out_idx] = w_prime
@@ -786,8 +788,8 @@ def compute_all_metrics_spreading_parallel(
     qx_mean, qx_std = _mean_std(Q_X_all, dim=0)
     qw_sign_aligned_mean, qw_sign_aligned_std = _mean_std(Q_W_sign_aligned_all, dim=0)
     qx_sign_aligned_mean, qx_sign_aligned_std = _mean_std(Q_X_sign_aligned_all, dim=0)
-    qw_gram_root_mean, qw_gram_root_std = _mean_std(Q_W_gram_root_all, dim=0)
-    qx_gram_root_mean, qx_gram_root_std = _mean_std(Q_X_gram_root_all, dim=0)
+    qw_cos_root_mean, qw_cos_root_std = _mean_std(Q_W_cos_root_all, dim=0)
+    qx_cos_root_mean, qx_cos_root_std = _mean_std(Q_X_cos_root_all, dim=0)
     q_w_scale_gauge_all, q_x_scale_gauge_all, q_wx_scale_gauge_all, gauge_mag_all = _scale_gauge_projection_batch(
         W_local,
         X_local,
@@ -814,10 +816,10 @@ def compute_all_metrics_spreading_parallel(
         'Q_W_SIGN_ALIGNED_std': qw_sign_aligned_std,
         'Q_X_SIGN_ALIGNED_mean': qx_sign_aligned_mean,
         'Q_X_SIGN_ALIGNED_std': qx_sign_aligned_std,
-        'Q_W_GRAM_ROOT_mean': qw_gram_root_mean,
-        'Q_W_GRAM_ROOT_std': qw_gram_root_std,
-        'Q_X_GRAM_ROOT_mean': qx_gram_root_mean,
-        'Q_X_GRAM_ROOT_std': qx_gram_root_std,
+        'Q_W_COS_ROOT_mean': qw_cos_root_mean,
+        'Q_W_COS_ROOT_std': qw_cos_root_std,
+        'Q_X_COS_ROOT_mean': qx_cos_root_mean,
+        'Q_X_COS_ROOT_std': qx_cos_root_std,
         'Q_W_SCALE_GAUGE_mean': qw_scale_gauge_mean,
         'Q_W_SCALE_GAUGE_std': qw_scale_gauge_std,
         'Q_X_SCALE_GAUGE_mean': qx_scale_gauge_mean,

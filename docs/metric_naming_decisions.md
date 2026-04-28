@@ -89,8 +89,8 @@
 | `measurement.unobserved.teacher_student.Q_Y_projection` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement projection。 |
 | `latent.W.teacher_student.Q_W_projection` | `Q_W_mean`, `Q_W_std` | Q_W | approved | matrix W latent coordinate projection。 |
 | `latent.X.teacher_student.Q_X_projection` | `Q_X_mean`, `Q_X_std` | Q_X | approved | matrix X latent coordinate projection。 |
-| `latent.W.teacher_student.Q_W_GRAM_ROOT` | `Q_W_GRAM_ROOT_mean`, `Q_W_GRAM_ROOT_std` | Q_W Gram root | approved | sqrt baseline-corrected Gram diagnostic。 |
-| `latent.X.teacher_student.Q_X_GRAM_ROOT` | `Q_X_GRAM_ROOT_mean`, `Q_X_GRAM_ROOT_std` | Q_X Gram root | approved | sqrt baseline-corrected Gram diagnostic。 |
+| `latent.W.teacher_student.Q_W_COS_ROOT` | `Q_W_COS_ROOT_mean`, `Q_W_COS_ROOT_std` | Q_W Cos root | approved | sqrt baseline-corrected Cos-root diagnostic。 |
+| `latent.X.teacher_student.Q_X_COS_ROOT` | `Q_X_COS_ROOT_mean`, `Q_X_COS_ROOT_std` | Q_X Cos root | approved | sqrt baseline-corrected Cos-root diagnostic。 |
 | `latent.W.teacher_student.Q_W_SIGN_ALIGNED` | `Q_W_SIGN_ALIGNED_mean`, `Q_W_SIGN_ALIGNED_std` | Q_W sign-aligned | approved | 逐 channel 取绝对值的 sign-gauge diagnostic；不处理 permutation/rotation。 |
 | `latent.X.teacher_student.Q_X_SIGN_ALIGNED` | `Q_X_SIGN_ALIGNED_mean`, `Q_X_SIGN_ALIGNED_std` | Q_X sign-aligned | approved | 逐 channel 取绝对值的 sign-gauge diagnostic；不处理 permutation/rotation。 |
 | `latent.W.teacher_student.Q_W_SCALE_GAUGE` | `Q_W_SCALE_GAUGE_mean`, `Q_W_SCALE_GAUGE_std` | Q_W scale-gauge | approved | 联合 W/X diagonal scale-gauge 对齐后的 W diagnostic；不改变训练轨迹。 |

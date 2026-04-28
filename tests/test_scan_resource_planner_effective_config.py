@@ -43,7 +43,7 @@ def _mixed_config():
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=[0.0, 0.1]),
         algorithm_params=AlgorithmParams(use_compile=False, use_bf16=False),
-        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=0),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=0),
         scan_spec=scan_spec,
         experiment_name="resource_mixed",
     )
@@ -106,7 +106,7 @@ def test_spreading_large_sample_alpha_scan_is_not_full_alpha_folded():
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=alpha_values),
         algorithm_params=AlgorithmParams(use_compile=False, use_bf16=True),
-        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=262144),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=262144),
         scan_spec={
             "axes": {
                 "alpha": {
@@ -139,7 +139,7 @@ def test_spreading_resource_estimation_keeps_requested_compile_path():
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=alpha_values),
         algorithm_params=AlgorithmParams(use_compile=True, use_bf16=True),
-        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=8192),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=8192),
         scan_spec={
             "axes": {
                 "alpha": {
@@ -169,7 +169,7 @@ def test_scan_execution_can_disable_alpha_folding():
         algorithm_key="bigamp_spreading",
         scan=ScanConfig(dimension="alpha", values=[0.0, 0.1]),
         algorithm_params=AlgorithmParams(use_compile=False, use_bf16=False),
-        spreading=SpreadingConfig(f_distribution="rademacher", tensor_order=2, chunk_size=0),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=0),
         scan_spec={
             "execution": {"allowed_fold_axes": []},
             "axes": {

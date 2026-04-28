@@ -24,7 +24,7 @@ def test_general_chunked():
         algorithm_key='bigamp_spreading',
         scan=ScanConfig(dimension='alpha', values=[0.5, 1.0, 1.5]),
         spreading=SpreadingConfig(
-            f_distribution='rademacher',
+            f_distribution='ising',
             allow_intra_connection=True,  # Enable General mode
             chunk_size=1024,  # Small chunk for testing
         ),
@@ -66,7 +66,7 @@ def test_general_chunked():
         algorithm_key='bigamp_spreading',
         scan=ScanConfig(dimension='alpha', values=[0.5, 1.0, 1.5]),
         spreading=SpreadingConfig(
-            f_distribution='rademacher',
+            f_distribution='ising',
             allow_intra_connection=True,
             chunk_size=0,  # Disable chunking
         ),

@@ -5,7 +5,7 @@ Supports selecting which metrics to compute:
 - Q_Y: measurement projection overlap
 - Q_W, Q_X: coordinate projection overlaps
 - Q_W_SIGN_ALIGNED, Q_X_SIGN_ALIGNED: per-channel sign-gauge diagnostics
-- Q_W_GRAM_ROOT, Q_X_GRAM_ROOT: Gram-root diagnostics
+- Q_W_COS_ROOT, Q_X_COS_ROOT: Cos-root diagnostics
 - Q_Y_unobserved: Q_Y on unobserved positions only
 - Replica: Pairwise replica overlaps
 
@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional
 import torch
 
 from .overlap import (
-    gram_overlap_root,
+    cos_overlap_root,
     projection_abs,
     sign_aligned_projection_abs,
 )
@@ -31,8 +31,8 @@ ALL_METRICS = {
     "Q_X",           # X coordinate projection
     "Q_W_SIGN_ALIGNED", # W sign-gauge-aligned diagnostic
     "Q_X_SIGN_ALIGNED", # X sign-gauge-aligned diagnostic
-    "Q_W_GRAM_ROOT", # W Gram-root diagnostic
-    "Q_X_GRAM_ROOT", # X Gram-root diagnostic
+    "Q_W_COS_ROOT", # W Cos-root diagnostic
+    "Q_X_COS_ROOT", # X Cos-root diagnostic
     "Q_Y_unobserved", # Q_Y on unobserved positions
     "Q_Y_observed",  # Q_Y on observed positions
 }
@@ -49,12 +49,24 @@ METRIC_ALIASES = {
     "qw_sign": "Q_W_SIGN_ALIGNED",
     "qx_sign": "Q_X_SIGN_ALIGNED",
     "sign_aligned": {"Q_W_SIGN_ALIGNED", "Q_X_SIGN_ALIGNED"},
-    "qw_gram_root": "Q_W_GRAM_ROOT",
-    "qx_gram_root": "Q_X_GRAM_ROOT",
-    "gram_root": {"Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"},
+    "qw_cos_root": "Q_W_COS_ROOT",
+    "qx_cos_root": "Q_X_COS_ROOT",
+    "qw_gram_root": "Q_W_COS_ROOT",
+    "qx_gram_root": "Q_X_COS_ROOT",
+    "cos_root": {"Q_W_COS_ROOT", "Q_X_COS_ROOT"},
+    "gram_root": {"Q_W_COS_ROOT", "Q_X_COS_ROOT"},
     "qy_unobs": "Q_Y_unobserved",
     "unobserved": "Q_Y_unobserved",
 }
+
+LEGACY_METRIC_ALIASES = {
+    "Q_W_GRAM_ROOT": "Q_W_COS_ROOT",
+    "Q_X_GRAM_ROOT": "Q_X_COS_ROOT",
+}
+
+
+def _normalize_metric_name(metric: str) -> str:
+    return LEGACY_METRIC_ALIASES.get(metric, metric)
 
 
 class CombinedMetrics:
@@ -62,7 +74,7 @@ class CombinedMetrics:
     Flexible metrics calculator that computes selected metrics.
 
     Example configurations:
-    - {"metrics": ["Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"]} -> Standard metrics
+    - {"metrics": ["Q_Y", "Q_W_COS_ROOT", "Q_X_COS_ROOT"]} -> Standard metrics
     - {"metrics": ["Q_Y", "Q_Y_unobserved"]} -> Compare observed vs unobserved
     - {"metrics": "all"} -> All available metrics
 
@@ -83,11 +95,11 @@ class CombinedMetrics:
         """
         if metrics is None:
             # Default standard metrics
-            self.metrics = {"Q_Y", "Q_W_GRAM_ROOT", "Q_X_GRAM_ROOT"}
+            self.metrics = {"Q_Y", "Q_W_COS_ROOT", "Q_X_COS_ROOT"}
         elif metrics == "all" or (isinstance(metrics, list) and "all" in metrics):
             self.metrics = ALL_METRICS.copy()
         else:
-            self.metrics = set(metrics)
+            self.metrics = {_normalize_metric_name(metric) for metric in metrics}
 
         if include_unobserved:
             self.metrics.add("Q_Y_unobserved")
@@ -147,11 +159,11 @@ class CombinedMetrics:
                 latent_axis=0,
             )
 
-        if "Q_W_GRAM_ROOT" in self.metrics:
-            results["Q_W_GRAM_ROOT"] = gram_overlap_root(W_student, W_teacher, use_left=True)
+        if "Q_W_COS_ROOT" in self.metrics:
+            results["Q_W_COS_ROOT"] = cos_overlap_root(W_student, W_teacher, use_left=True)
 
-        if "Q_X_GRAM_ROOT" in self.metrics:
-            results["Q_X_GRAM_ROOT"] = gram_overlap_root(X_student, X_teacher, use_left=False)
+        if "Q_X_COS_ROOT" in self.metrics:
+            results["Q_X_COS_ROOT"] = cos_overlap_root(X_student, X_teacher, use_left=False)
 
         # Unobserved metrics require mask
         if mask is not None:

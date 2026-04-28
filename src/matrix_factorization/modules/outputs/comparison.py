@@ -50,7 +50,7 @@ class ResultComparison:
             title: Plot title
             filename: Output filename
             show_std: Whether to show error bars
-            metric: Metric to plot (default: Q_Y, can be Q_W, Q_X, Q_W_GRAM_ROOT, etc.)
+            metric: Metric to plot (default: Q_Y, can be Q_W, Q_X, Q_W_COS_ROOT, etc.)
             error_style: Error bar style - 'bar' or 'band' (default: 'bar')
             palette: Color palette for StyleCycler ('colorblind', 'tab10', etc.)
 
@@ -108,7 +108,7 @@ class ResultComparison:
                 )
 
         # Format y-axis label
-        metric_label = metric.replace('_GRAM_ROOT', ' gram root').replace('_', ' ')
+        metric_label = metric.replace('_COS_ROOT', ' cos root').replace('_GRAM_ROOT', ' cos root').replace('_', ' ')
         ylabel = f"${metric_label}$"
         ax.set_xlabel(r'$\tilde{\alpha}$', fontsize=STYLE['fontsize']['label'])
         ax.set_ylabel(ylabel, fontsize=STYLE['fontsize']['label'])
@@ -140,7 +140,7 @@ class ResultComparison:
         Args:
             results_list: List of results dicts
             labels: Labels for each result set
-            metrics: Metrics to compare (default: Q_Y, Q_W_GRAM_ROOT, Q_X_GRAM_ROOT)
+            metrics: Metrics to compare (default: Q_Y, Q_W_COS_ROOT, Q_X_COS_ROOT)
             filename: Output filename
             palette: Color palette for StyleCycler
 
@@ -148,7 +148,7 @@ class ResultComparison:
             Path to saved plot
         """
         if metrics is None:
-            metrics = ['Q_Y_mean', 'Q_W_GRAM_ROOT_mean', 'Q_X_GRAM_ROOT_mean']
+            metrics = ['Q_Y_mean', 'Q_W_COS_ROOT_mean', 'Q_X_COS_ROOT_mean']
 
         num_metrics = len(metrics)
         fig, axes = plt.subplots(1, num_metrics, figsize=(5 * num_metrics, 5))
@@ -178,7 +178,7 @@ class ResultComparison:
                     markersize=STYLE['markersize'],
                 )
 
-            metric_name = metric.replace('_mean', '').replace('_GRAM_ROOT', ' gram root')
+            metric_name = metric.replace('_mean', '').replace('_COS_ROOT', ' cos root').replace('_GRAM_ROOT', ' cos root')
             ax.set_xlabel(r'$\tilde{\alpha}$')
             ax.set_ylabel(metric_name)
             ax.set_ylim(-0.05, 1.05)

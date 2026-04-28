@@ -39,6 +39,7 @@ from matrix_factorization.core.experiment import (
     MatrixParams, TrainingParams, SeedConfig, ScanConfig,
     AlgorithmParams, SpreadingConfig, TeacherConfig
 )
+from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING, normalize_f_distribution
 from matrix_factorization.core.planning import build_experiment_plan
 from matrix_factorization.core.progress import ProgressBridge
 from matrix_factorization.modules.outputs.latest import refresh_latest_results
@@ -64,7 +65,13 @@ def load_yaml_config(yaml_path: Path):
     # 数字选项映射
     ALGORITHM_MAP = {1: 'bigamp', 2: 'bigamp_spreading', 3: 'agd', 4: 'bigamp_tensor', 'bigamp': 'bigamp', 'bigamp_spreading': 'bigamp_spreading', 'agd': 'agd', 'bigamp_tensor': 'bigamp_tensor'}
     TEACHER_MAP = {1: 'orthogonal', 2: 'standard', 'orthogonal': 'orthogonal', 'standard': 'standard'}
-    F_DIST_MAP = {1: 'rademacher', 2: 'gaussian', 'rademacher': 'rademacher', 'gaussian': 'gaussian'}
+    F_DIST_MAP = {
+        1: F_DISTRIBUTION_ISING,
+        2: 'gaussian',
+        'ising': F_DISTRIBUTION_ISING,
+        'rademacher': F_DISTRIBUTION_ISING,
+        'gaussian': 'gaussian',
+    }
 
     # ========== tensor_order 自动推断 ==========
     # tensor_order: 1=一般图, 2=二分图(默认), 3+=N维张量
@@ -123,7 +130,7 @@ def load_yaml_config(yaml_path: Path):
     spreading = None
     if 'spreading' in algorithm_key or 'tensor' in algorithm_key:
         s = cfg.get('spreading', {})
-        f_dist = F_DIST_MAP.get(s.get('f_distribution', 1), 'rademacher')
+        f_dist = normalize_f_distribution(F_DIST_MAP.get(s.get('f_distribution', 1), s.get('f_distribution', 1)))
         onsager = s.get('onsager_correction', False)
         chunk_size = s.get('chunk_size', 131072)
         spreading_seed = s.get('seed', spreading_seed_from_seeds)
@@ -415,7 +422,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument('--alpha-stop', type=float, default=4.0)
     parser.add_argument('--alpha-step', type=float, default=0.05)
     parser.add_argument('--damping', type=float, default=0.5)
-    parser.add_argument('--f-dist', choices=['rademacher', 'gaussian'], default='rademacher')
+    parser.add_argument('--f-dist', choices=['ising', 'gaussian'], default='ising')
     parser.add_argument('--no-compile', action='store_true')
     parser.add_argument('--output-dir', default='runs')
 

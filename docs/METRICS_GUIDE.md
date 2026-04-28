@@ -31,7 +31,7 @@ Q_W = abs(<W_student, W_teacher>) / <W_teacher, W_teacher>
 Q_X = abs(<X_student, X_teacher>) / <X_teacher, X_teacher>
 ```
 
-这是 matrix latent factor 的 coordinate projection overlap。它对 rotation/gauge/permutation 敏感，因此需要同时看 Gram-root diagnostic。
+这是 matrix latent factor 的 coordinate projection overlap。它对 rotation/gauge/permutation 敏感，因此需要同时看 Cos-root diagnostic。
 
 ### `Q_N`
 
@@ -46,13 +46,13 @@ Q_N = mean_d Q_N_mode_d
 
 ## Formal Diagnostics
 
-### `Q_W_GRAM_ROOT` / `Q_X_GRAM_ROOT`
+### `Q_W_COS_ROOT` / `Q_X_COS_ROOT`
 
 公式：
 
 ```text
-Q_W_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(W), 0))
-Q_X_GRAM_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
+Q_W_COS_ROOT = sqrt(max(baseline_corrected_gram_overlap(W), 0))
+Q_X_COS_ROOT = sqrt(max(baseline_corrected_gram_overlap(X), 0))
 ```
 
 它们不是 coordinate projection，而是解决 matrix factor rotation/gauge 后更稳定的 learning diagnostic。
@@ -75,7 +75,7 @@ Q_X_SIGN_ALIGNED = sum_k abs(<X_s[k,:], X_t[k,:]>) / sum_k ||X_t[k,:]||^2
 - `MSE`：只能作为 algorithm 内部 loss/debug，不进入 formal result metric。
 - `Gen_Error`：legacy alias，不进入 formal result metric。
 - `physical_overlap_Y/W/X`：旧 projection 名，已迁移到 `Q_Y/Q_W/Q_X`。
-- `Q_W_prime/Q_X_prime`：旧 baseline-corrected Gram 名，已迁移到 `Q_W_GRAM_ROOT/Q_X_GRAM_ROOT`。
+- `Q_W_prime/Q_X_prime`：旧 baseline-corrected Gram 名，已迁移到 `Q_W_COS_ROOT/Q_X_COS_ROOT`。
 - `Q_Y_COS` 或旧 cosine `Q_Y`：legacy result 解释，不进入新 run formal schema。
 
 ## Result Schema

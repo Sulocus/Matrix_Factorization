@@ -22,7 +22,7 @@ GPU 并行化的 BiG-AMP Random Spreading 算法实现。
 ```python
 @dataclass
 class SpreadingConfig:
-    f_distribution: str = "gaussian"  # gaussian | rademacher
+    f_distribution: str = "gaussian"  # gaussian | ising
     seed: int = 12345                 # F 生成种子
 ```
 
@@ -34,7 +34,7 @@ from smf.core.config import Config, SpreadingConfig
 config = Config(
     algorithm_key='bigamp_spreading_parallel',
     spreading=SpreadingConfig(
-        f_distribution='gaussian',  # 或 'rademacher'
+        f_distribution='gaussian',  # 或 'ising'
         seed=12345,
     ),
     # ... 其他配置
@@ -91,7 +91,7 @@ from smf.runner import run_experiment
 
 config = Config(
     algorithm_key='bigamp_spreading_parallel',
-    spreading=SpreadingConfig(f_distribution='rademacher'),
+    spreading=SpreadingConfig(f_distribution='ising'),
     # ...
 )
 results = run_experiment(config)

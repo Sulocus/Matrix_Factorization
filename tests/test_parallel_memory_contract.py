@@ -455,14 +455,14 @@ def test_tensor_superdata_partition_invariant_F_and_Y_do_not_depend_on_batch_cma
     single_data = create_tensor_superdata(
         single_graph,
         teacher_factors,
-        f_distribution="rademacher",
+        f_distribution="ising",
         seed=1123,
         partition_invariant=True,
     )
     combined_data = create_tensor_superdata(
         combined_graph,
         teacher_factors,
-        f_distribution="rademacher",
+        f_distribution="ising",
         seed=1123,
         partition_invariant=True,
     )

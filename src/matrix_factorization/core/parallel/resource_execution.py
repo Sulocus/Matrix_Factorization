@@ -13,6 +13,7 @@ import copy
 from typing import Any, Dict, List, Optional, Tuple
 
 from matrix_factorization.core.scan_planning import ScanPlan, ScanPoint
+from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING
 from matrix_factorization.core.parallel.execution_modes import AllocationConfig, EstimationParams
 
 
@@ -698,7 +699,7 @@ def estimation_params_from_config(config: Any, alpha_values: Optional[List[float
         use_bf16=config.algorithm_params.use_bf16,
         precision_profile=precision_profile,
         role_dtype_map=role_dtype_map,
-        f_distribution=getattr(spreading, "f_distribution", "rademacher") if spreading else "rademacher",
+        f_distribution=getattr(spreading, "f_distribution", F_DISTRIBUTION_ISING) if spreading else F_DISTRIBUTION_ISING,
         adaptive_damping=config.algorithm_params.adaptive_damping,
         allow_intra_connection=getattr(spreading, "allow_intra_connection", False) if spreading else False,
         tensor_order=tensor_order,

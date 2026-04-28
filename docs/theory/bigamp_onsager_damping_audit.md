@@ -22,7 +22,7 @@ no-Onsager 路径切回 `bigamp_step_disjoint_union_flat_legacy_fast`。因此
 Onsager correction。目标是回答两个问题：
 
 1. 当前 Onsager 项打开后结果变差，是否只是 damping 没调好。
-2. 后续在 Gaussian teacher-student、Rademacher F、paper normalization、
+2. 后续在 Gaussian teacher-student、Ising F、paper normalization、
    cold start 下，应该怎样设计可验证的修正和实验。
 
 结论先行：当前问题不应首先归因于某个固定 damping 值没选对。更核心的
@@ -528,7 +528,7 @@ W_new = new_var * ((tau - tau_var_correction) * W + r)
 
 该实验是未来步骤，不是本文已执行内容。
 
-目标：Gaussian teacher-student，Rademacher F，paper_sparse_sampling
+目标：Gaussian teacher-student，Ising F，paper_sparse_sampling
 normalization，矩阵 spreading，完全 cold start。
 
 建议尺寸：
@@ -539,7 +539,7 @@ matrix:
   N2: 200
   M: 50
 spreading:
-  f_distribution: rademacher
+  f_distribution: ising
   onsager_correction: false/true
 algorithm_params:
   normalization_profile: paper_sparse_sampling
@@ -565,7 +565,7 @@ samples per alpha：`10`。
 
 - `Q_Y`
 - `Q_W` 和 `Q_X`
-- `Q_W_GRAM_ROOT` 和 `Q_X_GRAM_ROOT`
+- `Q_W_COS_ROOT` 和 `Q_X_COS_ROOT`
 - `Q_W_SIGN_ALIGNED` 和 `Q_X_SIGN_ALIGNED`
 - posthoc scale-gauge aligned `Q_W/Q_X`，或合并成一个 gauge diagnostic plot
 - damping diagnostics：`beta_history(alpha, step)`、pass rate、`zvar/pvar`
@@ -735,7 +735,7 @@ mf validate src/matrix_factorization/config.yaml
 ### 2026-04-28 diagnostic run 与 posthoc gauge
 
 已跑一次用户指定尺寸的 200x200x50 cold-start Gaussian teacher /
-Rademacher F diagnostic trial，但这只是 150-step smoke，不是最终论文曲线。
+Ising F diagnostic trial，但这只是 150-step smoke，不是最终论文曲线。
 最初 run 是：
 
 ```text
@@ -792,12 +792,12 @@ scale-gauge aligned `Q_WX` 与 sign-aligned 指标接近，median `|log |g||`
 
 ## 2026-04-28 05:30 追加核验：formal-size scan / compile / damping
 
-本轮目标是用户指定的 Gaussian teacher-student、Rademacher `F`、
+本轮目标是用户指定的 Gaussian teacher-student、Ising `F`、
 `N1=N2=200, M=50, S=100`、cold start。核心结论：
 
 - `no_onsager` 正式 2000-step baseline 可用；在
   `runs/20260428_043906_bgs_N200_M50_ons3-a41_S100_steps2000_a4258e`
-  中，`alpha=4.0` 时 `Q_Y_mean≈0.996`，sign-aligned 和 Gram-root
+  中，`alpha=4.0` 时 `Q_Y_mean≈0.996`，sign-aligned 和 Cos-root
   latent diagnostics 也接近 `1`。
 - `onsager_fixed_beta005` 正式组不是可用物理结果；`Q_Y_mean` 到
   `10^6-10^7` 量级，posthoc scale-gauge 也出现 non-finite 或巨大值。

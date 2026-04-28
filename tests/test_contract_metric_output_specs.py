@@ -148,7 +148,7 @@ def test_algorithm_metric_keys_include_legacy_flat_outputs():
     assert "Q_Y_mean" in keys
     assert "Q_Y_observed_mean" in keys
     assert "Q_Y_unobserved_mean" in keys
-    assert "Q_W_GRAM_ROOT_mean" in keys
+    assert "Q_W_COS_ROOT_mean" in keys
     assert "Q_W_prime_replica_mean" in keys
     assert "MSE" not in keys
 
@@ -167,7 +167,7 @@ def test_flat_metric_semantics_keep_qy_algorithm_context():
 def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
     dense_schema = get_metric_schema(
         "bigamp",
-        metric_keys=["Q_Y_mean", "Q_W_GRAM_ROOT_mean", "Q_W_SIGN_ALIGNED_mean"],
+        metric_keys=["Q_Y_mean", "Q_W_COS_ROOT_mean", "Q_W_SIGN_ALIGNED_mean"],
     )
     tensor_schema = get_metric_schema("bigamp_tensor_parallel", metric_keys=["Q_Y_mean"])
 
@@ -175,7 +175,7 @@ def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
     assert dense_schema["compatibility"]["legacy_flat_keys_preserved"] is True
     assert dense_schema["compatibility"]["projection_metric_migration"] is True
     assert dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
-    assert dense_schema["flat_key_index"]["Q_W_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_GRAM_ROOT"
+    assert dense_schema["flat_key_index"]["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
     assert dense_schema["flat_key_index"]["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_ALIGNED"
     assert tensor_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
     assert (
@@ -197,7 +197,7 @@ def test_active_algorithm_metric_keys_are_all_indexed_by_metric_schema():
 def test_metric_spec_adapter_validates_legacy_flat_payloads():
     check = MetricSpecAdapter.check_payload(
         "bigamp",
-        {"Q_Y_mean": 0.1, "Q_W_mean": 0.2, "Q_W_GRAM_ROOT_mean": 0.3},
+        {"Q_Y_mean": 0.1, "Q_W_mean": 0.2, "Q_W_COS_ROOT_mean": 0.3},
         source="runner_matrix_metrics",
     )
 
@@ -245,7 +245,7 @@ def test_matrix_metric_compute_adapter_produces_declared_flat_keys():
     assert metrics["Q_W_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_SIGN_ALIGNED_mean"] == pytest.approx(1.0)
     assert metrics["Q_X_SIGN_ALIGNED_mean"] == pytest.approx(1.0)
-    assert metrics["Q_W_GRAM_ROOT_mean"] == pytest.approx(1.0)
+    assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
     assert "matrix.full.Q_Y" in check.metric_specs
     assert "matrix.factor.Q_W" in check.metric_specs
 
@@ -433,10 +433,10 @@ def test_flat_key_metric_semantics_split_prime_projection_and_replica_variants()
     semantics = get_algorithm_metric_semantics("bigamp")
 
     assert semantics["Q_W_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_projection"
-    assert semantics["Q_W_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_GRAM_ROOT"
+    assert semantics["Q_W_COS_ROOT_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_COS_ROOT"
     assert semantics["Q_W_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.W.teacher_student.Q_W_SIGN_ALIGNED"
     assert semantics["Q_X_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_projection"
-    assert semantics["Q_X_GRAM_ROOT_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_GRAM_ROOT"
+    assert semantics["Q_X_COS_ROOT_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_COS_ROOT"
     assert semantics["Q_X_SIGN_ALIGNED_mean"][0]["canonical_key"] == "latent.X.teacher_student.Q_X_SIGN_ALIGNED"
     assert "physical_overlap_W_mean" not in semantics
     assert "MSE" not in semantics

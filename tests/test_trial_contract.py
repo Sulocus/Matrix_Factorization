@@ -20,7 +20,7 @@ def test_matrix_bigamp_quick_trial_validates_against_experiment_plan():
     assert 3 <= plan.experiment_plan.effective_parameters["scan.num_points"] <= 5
     assert "Q_Y_mean" in plan.to_dict()["available_metric_keys"]
     assert "MSE" not in plan.to_dict()["available_metric_keys"]
-    assert "Q_W_GRAM_ROOT_mean" in plan.to_dict()["available_metric_keys"]
+    assert "Q_W_COS_ROOT_mean" in plan.to_dict()["available_metric_keys"]
 
 
 def test_trial_expected_metrics_must_be_declared(tmp_path):

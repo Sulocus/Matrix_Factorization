@@ -77,7 +77,7 @@ class MixedPrecisionContext:
         """
         if tensor.dtype in (torch.float32, torch.float64):
             return tensor.to(self.storage_dtype)
-        return tensor  # Don't convert int8 (Rademacher F) or other types
+        return tensor  # Don't convert int8 (Ising F) or other exact types
     
     def to_compute(self, tensor: torch.Tensor) -> torch.Tensor:
         """

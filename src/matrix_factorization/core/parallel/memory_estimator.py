@@ -10,6 +10,8 @@ import json
 import logging
 import torch
 
+from matrix_factorization.core.distributions import is_ising_f_distribution
+
 from .execution_modes import EstimationParams, MemoryEstimate
 
 logger = logging.getLogger(__name__)
@@ -297,7 +299,7 @@ def _observation_dtype(params: EstimationParams) -> DType:
 
 
 def _f_dtype(params: EstimationParams) -> DType:
-    if params.f_distribution == "rademacher":
+    if is_ising_f_distribution(params.f_distribution):
         return DType.INT8
     return _role_storage_dtype(params, "F_gaussian", DType.FLOAT32)
 
@@ -878,7 +880,7 @@ def get_spreading_parallel_breakdown(params: EstimationParams) -> MemoryBreakdow
         name="F_flat",
         shape=(SC, M),
         shape_formula="(S*C_max, M)",
-        dtype=f_dtype,  # INT8 for Rademacher, FLOAT32 for Gaussian
+        dtype=f_dtype,  # INT8 for Ising, FLOAT32 for Gaussian
         notes="Spreading coefficients - dtype depends on f_distribution"
     ))
     supergraph.add(TensorSpec(
