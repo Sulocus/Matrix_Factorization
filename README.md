@@ -120,8 +120,9 @@ dev
 - `BiG-AMP Standard`: dense bipartite matrix-factorization AMP baseline.
 - `BiG-AMP Spreading`: active sparse-sampling matrix path with random spreading
   coefficients and optional Onsager correction.
-- `BiG-AMP Tensor Parallel`: active tensor implementation for tensor-order
-  experiments and memory-planning work.
+- `BiG-AMP Tensor / General-Graph routes`: AMP paths used when
+  `tensor_order = 1` for the general graph mode or `tensor_order >= 3` for
+  tensor-order experiments and memory-planning work.
 - `legacy` and experimental tensor variants: kept on `dev` for reference and
   parity audits, not treated as the primary display path.
 
