@@ -9,7 +9,7 @@ Key difference from standard metrics:
 """
 
 from dataclasses import dataclass
-from typing import Dict, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
@@ -590,6 +590,7 @@ def compute_all_metrics_spreading_parallel(
     X_students: torch.Tensor,
     spreading_data: 'SpreadingDataParallel',
     target_alpha_idx: int = None,
+    target_alpha_indices: Optional[List[int]] = None,
     edge_chunk_size: int = 32768,
     sample_chunk_size: int = 16,
 ) -> Dict[str, torch.Tensor]:
@@ -602,6 +603,9 @@ def compute_all_metrics_spreading_parallel(
         spreading_data: SpreadingDataParallel containing F and Y
         target_alpha_idx: If set, only compute metrics for this alpha index from spreading_data.
                          W_students/X_students assumed to have size 1 on axis 1.
+        target_alpha_indices: If set, compute metrics for these alpha indices from
+                         spreading_data while W_students/X_students contain only the
+                         corresponding local alpha factors in the same order.
 
     Returns:
         Dictionary of metrics averaged across samples.
@@ -620,7 +624,21 @@ def compute_all_metrics_spreading_parallel(
     alpha_values = spreading_data.alpha_values
     A = len(alpha_values)
 
-    if target_alpha_idx is not None:
+    if target_alpha_idx is not None and target_alpha_indices is not None:
+        raise ValueError("target_alpha_idx and target_alpha_indices are mutually exclusive")
+
+    if target_alpha_indices is not None:
+        actual_alpha_indices = [int(idx) for idx in target_alpha_indices]
+        for idx in actual_alpha_indices:
+            if idx < 0 or idx >= A:
+                raise ValueError(f"target_alpha_idx {idx} out of range [0, {A})")
+        local_alpha_indices = list(range(len(actual_alpha_indices)))
+        if W_students.shape[1] < len(local_alpha_indices) or X_students.shape[1] < len(local_alpha_indices):
+            raise ValueError(
+                "target_alpha_indices expects W_students/X_students to contain one local "
+                "factor per requested alpha"
+            )
+    elif target_alpha_idx is not None:
         if target_alpha_idx < 0 or target_alpha_idx >= A:
             raise ValueError(f"target_alpha_idx {target_alpha_idx} out of range [0, {A})")
         actual_alpha_indices = [int(target_alpha_idx)]

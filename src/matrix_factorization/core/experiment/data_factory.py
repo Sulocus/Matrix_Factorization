@@ -119,11 +119,12 @@ class DataFactory:
         
         # Create algorithm-specific data
         if getattr(config, 'is_spreading_algorithm', 'spreading' in config.algorithm_key):
+            spreading_alpha_values = self._spreading_graph_alpha_values(config, alpha_values)
             spreading_data = self.create_spreading_data(
                 config=config,
                 W_teacher=W_teacher,
                 X_teacher=X_teacher,
-                alpha_values=alpha_values,
+                alpha_values=spreading_alpha_values,
                 sample_context=sample_context,
             )
             return ExperimentData(
@@ -268,6 +269,67 @@ class DataFactory:
             masks[a] = mask_flat.reshape(N1, N2)
         
         return masks
+
+    @staticmethod
+    def _spreading_graph_alpha_values(config: 'ExperimentConfig', alpha_values: List[float]) -> List[float]:
+        """Use the scan-wide alpha domain for spreading graph/F data when available.
+
+        The actual computation may be folded into smaller alpha batches, but
+        spreading Q_Y metrics must be evaluated on one shared quenched
+        supergraph/F realization.  Otherwise the fold boundary changes C_max,
+        held-out edges, and therefore the metric definition.
+        """
+        local = [float(value) for value in alpha_values]
+        candidates: List[List[float]] = []
+
+        scan_spec = getattr(config, "scan_spec", None)
+        if isinstance(scan_spec, dict):
+            context = scan_spec.get("execution_context") or {}
+            if isinstance(context, dict):
+                for key in ("spreading_global_alpha_values", "global_alpha_values"):
+                    values = context.get(key)
+                    if isinstance(values, list):
+                        candidates.append([float(value) for value in values])
+
+            axes = scan_spec.get("axes") or {}
+            if isinstance(axes, dict):
+                for axis_name, axis_payload in axes.items():
+                    if not isinstance(axis_payload, dict):
+                        continue
+                    path = axis_payload.get("path", axis_name)
+                    if str(axis_name) == "alpha" or str(path) == "alpha":
+                        values = axis_payload.get("values")
+                        if isinstance(values, list):
+                            candidates.append([float(value) for value in values])
+
+        scan = getattr(config, "scan", None)
+        if getattr(scan, "dimension", None) == "alpha":
+            candidates.append([float(value) for value in getattr(scan, "values", [])])
+
+        for candidate in candidates:
+            if DataFactory._alpha_domain_contains(candidate, local):
+                return DataFactory._dedupe_preserve_order(candidate)
+        return local
+
+    @staticmethod
+    def _alpha_domain_contains(candidate: List[float], local: List[float], *, tol: float = 1e-9) -> bool:
+        if not candidate or not local:
+            return False
+        remaining = list(candidate)
+        for value in local:
+            match = next((idx for idx, other in enumerate(remaining) if abs(other - value) <= tol), None)
+            if match is None:
+                return False
+            remaining.pop(match)
+        return max(candidate) + tol >= max(local)
+
+    @staticmethod
+    def _dedupe_preserve_order(values: List[float], *, tol: float = 1e-9) -> List[float]:
+        result: List[float] = []
+        for value in values:
+            if not any(abs(value - existing) <= tol for existing in result):
+                result.append(float(value))
+        return result
     
     def create_spreading_data(
         self,

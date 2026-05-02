@@ -635,6 +635,91 @@ class BiGAMPSpreading(AlgorithmBase):
             batch_alpha_indices = list(range(spreading_data.A))
         return [float(spreading_data.alpha_values[idx].item()) for idx in batch_alpha_indices]
 
+    def _resolve_spreading_alpha_indices(
+        self,
+        spreading_data: SpreadingDataParallel,
+        alpha_values: List[float],
+        *,
+        tol: float = 1e-6,
+    ) -> List[int]:
+        """Map local runtime alpha values to indices in a scan-wide spreading_data."""
+        data_alphas = [float(value.item()) for value in spreading_data.alpha_values.reshape(-1)]
+        resolved: List[int] = []
+        used: set[int] = set()
+        for alpha in alpha_values:
+            alpha_f = float(alpha)
+            match_idx = None
+            best_diff = float("inf")
+            for idx, candidate in enumerate(data_alphas):
+                if idx in used:
+                    continue
+                diff = abs(candidate - alpha_f)
+                if diff < best_diff:
+                    best_diff = diff
+                    match_idx = idx
+            if match_idx is None or best_diff > tol:
+                raise ValueError(
+                    "spreading_data alpha domain does not contain runtime alpha "
+                    f"{alpha_f}; available={data_alphas}"
+                )
+            used.add(match_idx)
+            resolved.append(match_idx)
+        return resolved
+
+    def _slice_spreading_data_alpha_domain(
+        self,
+        spreading_data: SpreadingDataParallel,
+        alpha_indices: List[int],
+    ) -> SpreadingDataParallel:
+        """Create a compute view with local C_max while preserving global graph/F prefixes."""
+        if alpha_indices == list(range(spreading_data.A)):
+            return spreading_data
+
+        c_values = [spreading_data.supergraph.get_active_edges(idx) for idx in alpha_indices]
+        c_max = max(1, max(c_values) if c_values else 0)
+        index_tensor = torch.tensor(alpha_indices, device=spreading_data.alpha_values.device, dtype=torch.long)
+        alpha_values = spreading_data.alpha_values[index_tensor].clone()
+        c_per_alpha = spreading_data.supergraph.C_per_alpha[index_tensor].clone()
+        alpha_mask = spreading_data.supergraph.alpha_mask[index_tensor, :c_max].clone()
+        seeds = spreading_data.supergraph.seeds
+
+        if isinstance(spreading_data.supergraph, SuperGraphDataGeneral):
+            supergraph = SuperGraphDataGeneral(
+                a_idx=spreading_data.supergraph.a_idx[:, :c_max],
+                b_idx=spreading_data.supergraph.b_idx[:, :c_max],
+                edge_type=spreading_data.supergraph.edge_type[:, :c_max],
+                C_per_alpha=c_per_alpha,
+                alpha_mask=alpha_mask,
+                N1=spreading_data.supergraph.N1,
+                N2=spreading_data.supergraph.N2,
+                C_max=c_max,
+                seeds=seeds,
+                alpha_values=alpha_values,
+            )
+        else:
+            supergraph = SuperGraphData(
+                i_idx=spreading_data.supergraph.i_idx[:, :c_max],
+                j_idx=spreading_data.supergraph.j_idx[:, :c_max],
+                C_per_alpha=c_per_alpha,
+                alpha_mask=alpha_mask,
+                N1=spreading_data.supergraph.N1,
+                N2=spreading_data.supergraph.N2,
+                C_max=c_max,
+                seeds=seeds,
+                alpha_values=alpha_values,
+            )
+
+        return SpreadingDataParallel(
+            supergraph=supergraph,
+            F_super=spreading_data.F_super[:, :c_max],
+            Y_super=spreading_data.Y_super[:, :c_max],
+            M=spreading_data.M,
+            alpha_values=alpha_values,
+            W_teacher=spreading_data.W_teacher,
+            X_teacher=spreading_data.X_teacher,
+            f_distribution=spreading_data.f_distribution,
+        )
+
     def _randn_partitioned_spreading_flat(
         self,
         *,
@@ -2229,6 +2314,7 @@ class BiGAMPSpreading(AlgorithmBase):
         self._reset_metric_plateau_run_summaries()
 
         if spreading_data is not None:
+            runtime_alpha_indices = self._resolve_spreading_alpha_indices(spreading_data, alpha_values)
             continuation_active = (
                 initial_state is not None
                 or return_continuation_state
@@ -2238,14 +2324,20 @@ class BiGAMPSpreading(AlgorithmBase):
                 raise ValueError("provided spreading_data continuation path expects one alpha at a time")
             batch_alpha_indices = None
             if continuation_active:
-                alpha_index = 0
-                if isinstance(continuation_context, dict):
-                    alpha_index = int(continuation_context.get("alpha_index", 0))
+                alpha_index = runtime_alpha_indices[0] if runtime_alpha_indices else 0
+                if isinstance(continuation_context, dict) and "alpha_index" in continuation_context:
+                    requested_index = int(continuation_context.get("alpha_index", alpha_index))
+                    if 0 <= requested_index < spreading_data.A:
+                        alpha_index = requested_index
                 batch_alpha_indices = [alpha_index]
+                batch_spreading_data = self._slice_spreading_data_alpha_domain(
+                    spreading_data,
+                    batch_alpha_indices,
+                )
                 batch_seed = seed if self._uses_partition_invariant_seed_policy() else self._spreading_batch_seed(seed, 0)
                 W_batch, X_batch = self.train_full_parallel(
-                    spreading_data,
-                    batch_alpha_indices=batch_alpha_indices,
+                    batch_spreading_data,
+                    batch_alpha_indices=None,
                     verbose=False,
                     step_callback=step_callback,
                     max_steps=max_steps,
@@ -2282,7 +2374,7 @@ class BiGAMPSpreading(AlgorithmBase):
             W_result = torch.zeros(A, S, N1, M, device=self.device)
             X_result = torch.zeros(A, S, M, N2, device=self.device)
             for batch_idx, (alpha_start, alpha_end, _) in enumerate(dynamic_batches):
-                batch_alpha_indices = list(range(alpha_start, alpha_end))
+                batch_alpha_indices = runtime_alpha_indices[alpha_start:alpha_end]
                 batch_alpha_list = alpha_values[alpha_start:alpha_end]
                 if sample_callback is not None:
                     sample_callback(batch_idx, len(dynamic_batches), batch_alpha_list)
@@ -2291,9 +2383,13 @@ class BiGAMPSpreading(AlgorithmBase):
                     if self._uses_partition_invariant_seed_policy()
                     else self._spreading_batch_seed(seed, batch_idx)
                 )
-                W_batch, X_batch = self.train_full_parallel(
+                batch_spreading_data = self._slice_spreading_data_alpha_domain(
                     spreading_data,
-                    batch_alpha_indices=batch_alpha_indices,
+                    batch_alpha_indices,
+                )
+                W_batch, X_batch = self.train_full_parallel(
+                    batch_spreading_data,
+                    batch_alpha_indices=None,
                     verbose=False,
                     step_callback=step_callback,
                     max_steps=max_steps,
@@ -2309,7 +2405,7 @@ class BiGAMPSpreading(AlgorithmBase):
                     alpha_end=alpha_end,
                     alpha_values=batch_alpha_list,
                 )
-                del W_batch, X_batch
+                del W_batch, X_batch, batch_spreading_data
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
             self._contract_execution_metadata = self._build_spreading_execution_metadata(
@@ -2445,19 +2541,13 @@ class BiGAMPSpreading(AlgorithmBase):
 
             W_for_metrics = W_students.transpose(0, 1) if W_students.shape[0] == len(alpha_values) else W_students
             X_for_metrics = X_students.transpose(0, 1) if X_students.shape[0] == len(alpha_values) else X_students
+            metric_alpha_indices = self._resolve_spreading_alpha_indices(spreading_data, alpha_values)
             metric_start = time.perf_counter()
             metric_tensors = compute_all_metrics_spreading_parallel(
                 W_for_metrics,
                 X_for_metrics,
                 spreading_data,
-                target_alpha_idx=(
-                    int((kwargs.get("continuation_context") or {}).get("alpha_index"))
-                    if isinstance(kwargs.get("continuation_context"), dict)
-                    and "alpha_index" in kwargs.get("continuation_context")
-                    and len(alpha_values) == 1
-                    and len(spreading_data.alpha_values) > 1
-                    else None
-                ),
+                target_alpha_indices=metric_alpha_indices,
                 edge_chunk_size=min(max(int(getattr(self, "chunk_size", 0) or 8192), 1024), 8192),
                 sample_chunk_size=16,
             )
@@ -2471,6 +2561,9 @@ class BiGAMPSpreading(AlgorithmBase):
                 metadata={
                     "path": "bigamp_spreading_gpu_batch_metrics",
                     "materialization": "single_batch_cpu_transfer",
+                    "spreading_metric_domain": "scan_global_supergraph",
+                    "metric_alpha_indices": [int(idx) for idx in metric_alpha_indices],
+                    "metric_c_max": int(getattr(spreading_data, "C_max", 0)),
                 },
             )
             materialize_start = time.perf_counter()

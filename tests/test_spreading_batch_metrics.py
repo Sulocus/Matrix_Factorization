@@ -220,6 +220,29 @@ def test_spreading_full_qy_uses_stored_supergraph_not_equal_count_heldout():
     assert torch.allclose(metrics["Q_Y_unobserved_COS_mean"], expected["unobserved_cos"].mean(dim=0), atol=1e-5)
 
 
+def test_spreading_batch_metrics_accept_local_factors_with_global_alpha_domain():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data = _small_spreading_fixture(device)
+    torch.manual_seed(29)
+    w_students = torch.randn(data.S, data.A, data.W_teacher.shape[0], data.M, device=device)
+    x_students = torch.randn(data.S, data.A, data.M, data.X_teacher.shape[1], device=device)
+
+    full_metrics = compute_all_metrics_spreading_parallel(w_students, x_students, data)
+    local_metrics = compute_all_metrics_spreading_parallel(
+        w_students[:, 1:],
+        x_students[:, 1:],
+        data,
+        target_alpha_indices=[1],
+    )
+
+    assert torch.allclose(local_metrics["alpha_values"], full_metrics["alpha_values"][1:2])
+    for key, value in full_metrics.items():
+        if key == "alpha_values":
+            continue
+        if isinstance(value, torch.Tensor) and value.ndim == 1 and value.numel() == data.A:
+            assert torch.allclose(local_metrics[key], value[1:2], atol=1e-5), key
+
+
 def test_spreading_output_cosine_is_signed_and_separate_from_projection_scale():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = _small_spreading_fixture(device)
@@ -332,3 +355,40 @@ def test_bigamp_spreading_train_batch_result_precomputes_batch_metrics():
     assert set(result.metrics_by_alpha) == {float(value) for value in data.alpha_values.detach().cpu().tolist()}
     for metrics in result.metrics_by_alpha.values():
         assert abs(metrics["Q_Y_observed_mean"] - 1.0) < 1e-5
+
+
+def test_bigamp_spreading_train_batch_result_maps_folded_alpha_to_global_metrics():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data = _small_spreading_fixture(device)
+    algorithm = object.__new__(BiGAMPSpreading)
+    algorithm._contract_execution_metadata = {"path": "unit_fixture", "metadata_only": True}
+    alpha = float(data.alpha_values[1].item())
+
+    def fake_train_batch_alphas(**kwargs):
+        alpha_count = len(kwargs["alpha_values"])
+        samples = data.S
+        assert alpha_count == 1
+        return (
+            data.W_teacher.unsqueeze(0).unsqueeze(0).expand(alpha_count, samples, -1, -1).clone(),
+            data.X_teacher.unsqueeze(0).unsqueeze(0).expand(alpha_count, samples, -1, -1).clone(),
+        )
+
+    algorithm.train_batch_alphas = fake_train_batch_alphas
+
+    result = BiGAMPSpreading.train_batch_result(
+        algorithm,
+        algorithm_key="bigamp_spreading",
+        W_teacher=data.W_teacher,
+        X_teacher=data.X_teacher,
+        Y_teacher=torch.empty(0, device=device),
+        masks=None,
+        alpha_values=[alpha],
+        seed=17,
+        spreading_data=data,
+    )
+
+    assert set(result.metrics_by_alpha) == {alpha}
+    payload = result.diagnostics["batch_metric_payload"]
+    assert payload["spreading_metric_domain"] == "scan_global_supergraph"
+    assert payload["metric_alpha_indices"] == [1]
+    assert abs(result.metrics_by_alpha[alpha]["Q_Y_mean"] - 1.0) < 1e-5

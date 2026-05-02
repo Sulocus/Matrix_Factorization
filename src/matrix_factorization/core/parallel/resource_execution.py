@@ -635,6 +635,22 @@ def effective_config_for_scan_points(base_config: Any, points: List[ScanPoint]) 
     config = copy.deepcopy(base_config)
     if not points:
         return config
+    global_alpha_values: List[float] = []
+    base_scan_spec = getattr(base_config, "scan_spec", None)
+    if isinstance(base_scan_spec, dict):
+        axes = base_scan_spec.get("axes") or {}
+        if isinstance(axes, dict):
+            for axis_name, axis_payload in axes.items():
+                if not isinstance(axis_payload, dict):
+                    continue
+                path = axis_payload.get("path", axis_name)
+                if str(axis_name) == "alpha" or str(path) == "alpha":
+                    values = axis_payload.get("values")
+                    if isinstance(values, list):
+                        global_alpha_values = [float(value) for value in values]
+                        break
+    if not global_alpha_values and getattr(getattr(base_config, "scan", None), "dimension", None) == "alpha":
+        global_alpha_values = [float(value) for value in getattr(base_config.scan, "values", [])]
     group_overrides = dict(points[0].overrides)
     for path, value in group_overrides.items():
         if path == "alpha":
@@ -669,6 +685,11 @@ def effective_config_for_scan_points(base_config: Any, points: List[ScanPoint]) 
     else:
         suffix = points[0].group_id
     config.scan_spec = {"axes": {"alpha": {"path": "alpha", "values": list(config.scan.values)}}}
+    if global_alpha_values:
+        config.scan_spec["execution_context"] = {
+            "global_alpha_values": global_alpha_values,
+            "spreading_global_alpha_values": global_alpha_values,
+        }
     config.experiment_name = f"{base_config.experiment_name}_{suffix}".replace("|", "_").replace("=", "-")
     return config
 

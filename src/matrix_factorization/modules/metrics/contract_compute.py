@@ -48,20 +48,38 @@ def compute_spreading_metric_payload(
 
     # Check for single-alpha slice (when W has 1 alpha but spreading_data has many)
     target_alpha_idx = None
+    target_alpha_indices = None
     _, A_in_W = W_for_metrics.shape[:2]
     A_spreading = len(data.spreading_data.alpha_values)
 
     if A_in_W == 1 and A_spreading > 1 and data.alpha_values is not None and len(data.alpha_values) == 1:
         current_alpha = data.alpha_values[0]
-        diffs = [abs(a - current_alpha) for a in data.spreading_data.alpha_values]
+        diffs = [abs(float(a.item()) - float(current_alpha)) for a in data.spreading_data.alpha_values]
         best_idx = diffs.index(min(diffs))
         target_alpha_idx = int(best_idx)
+    elif (
+        A_spreading > A_in_W
+        and data.alpha_values is not None
+        and len(data.alpha_values) == A_in_W
+    ):
+        target_alpha_indices = []
+        used = set()
+        data_alphas = [float(a.item()) for a in data.spreading_data.alpha_values]
+        for current_alpha in data.alpha_values:
+            diffs = [
+                abs(alpha_value - float(current_alpha)) if idx not in used else float("inf")
+                for idx, alpha_value in enumerate(data_alphas)
+            ]
+            best_idx = diffs.index(min(diffs))
+            used.add(best_idx)
+            target_alpha_indices.append(int(best_idx))
 
     metrics_tensor = compute_all_metrics_spreading_parallel(
         W_for_metrics,
         X_for_metrics,
         data.spreading_data,
         target_alpha_idx=target_alpha_idx,
+        target_alpha_indices=target_alpha_indices,
     )
 
     result = {}
