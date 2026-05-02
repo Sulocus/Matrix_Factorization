@@ -86,6 +86,9 @@ Metric: `Q_Y^cos`
 Curves: `AGD`, `BiGAMP (F = 1)`,
 `BiGAMP (F = Ising, no Onsager)`, `BiGAMP (F = Ising, Onsager)`.
 
+For the two `F = Ising` curves, the output metric is computed on the same
+scan-wide supergraph/F domain across alpha folds.
+
 ### 2. N Sweep
 
 ![N sweep latent overlap](showcase_results/02_n_sweep_qw/n_sweep_qw.png)
