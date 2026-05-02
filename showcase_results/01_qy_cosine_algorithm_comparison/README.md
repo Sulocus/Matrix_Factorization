@@ -12,3 +12,5 @@ Files:
 
 - `qy_cos_algorithm_comparison.png`
 - `qy_cos_algorithm_comparison.csv`
+- `qw_algorithm_comparison.png`
+- `qw_algorithm_comparison.csv`
