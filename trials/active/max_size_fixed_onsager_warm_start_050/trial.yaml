@@ -1,9 +1,0 @@
-key: max_size_fixed_onsager_warm_start_050
-status: active
-runtime_class: gpu_heavy
-purpose: Maximum-size fixed Onsager warm-start smoke/calibration.
-owner_area: bigamp_onsager
-config: trials/active/max_size_fixed_onsager_warm_start_050/config.yaml
-artifact_policy: ignored_workspace
-output_root: artifacts/trials/max_size_fixed_onsager_warm_start_050
-notes: Existing calibration trial manifest added to satisfy trial inventory.

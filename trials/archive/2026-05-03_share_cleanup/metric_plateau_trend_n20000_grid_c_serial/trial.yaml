@@ -1,0 +1,16 @@
+key: metric_plateau_trend_n20000_grid_c_serial
+status: archived
+runtime_class: quick
+purpose: N=20000 grid-C serial-alpha trend-gate-v2 early-stop scan.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_trend_n20000_grid_c_serial/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_trend_n20000_grid_c_serial
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Full N=20000 alpha grid C scan; alpha folding disabled so each alpha stops
+  independently.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

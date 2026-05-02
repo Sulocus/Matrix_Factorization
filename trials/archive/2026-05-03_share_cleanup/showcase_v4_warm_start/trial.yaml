@@ -1,0 +1,18 @@
+key: showcase_v4_warm_start
+status: archived
+runtime_class: gpu_diagnostic
+purpose: Recompute the main warm-start showcase under metric schema v4.
+owner_area: metric_schema_v4
+config: trials/archive/2026-05-03_share_cleanup/showcase_v4_warm_start/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/showcase_v4_warm_start
+expected_metrics:
+- Q_Y_mean
+- NMSE_Y_mean
+- Q_W_mean
+- Q_W_SIGN_GAUGE_mean
+- Q_W_COS_ROOT_mean
+notes: 'N=1000,M=50,S=10,steps=5000; no-Onsager spreading with init-overlap scan.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

@@ -1,0 +1,15 @@
+key: metric_plateau_m_sweep_2k_grid_c
+status: archived
+runtime_class: quick
+purpose: Rank M sweep at N=2000 using grid C and metric plateau early stop.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_m_sweep_2k_grid_c/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_m_sweep_2k_grid_c
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Runs M=20,50,80,120,150 at N1=N2=2000 over alpha grid C.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

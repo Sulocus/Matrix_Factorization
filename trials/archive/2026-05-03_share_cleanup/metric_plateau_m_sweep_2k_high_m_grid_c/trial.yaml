@@ -1,0 +1,17 @@
+key: metric_plateau_m_sweep_2k_high_m_grid_c
+status: archived
+runtime_class: quick
+purpose: High-rank extension of the N=2000 M-sweep using grid C and metric plateau
+  early stop.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_m_sweep_2k_high_m_grid_c/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_m_sweep_2k_high_m_grid_c
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Extends the completed M=20..150 sweep with M=200,300,400 at N1=N2=2000; M=500
+  failed safe-precision preflight at 34.44 GB single-alpha requirement.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

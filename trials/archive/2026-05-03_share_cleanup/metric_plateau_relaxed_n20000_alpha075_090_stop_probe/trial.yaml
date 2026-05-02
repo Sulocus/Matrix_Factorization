@@ -1,0 +1,15 @@
+key: metric_plateau_relaxed_n20000_alpha075_090_stop_probe
+status: archived
+runtime_class: quick
+purpose: N=20000 alpha 0.75/0.90 relaxed self-convergence stop probe.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_relaxed_n20000_alpha075_090_stop_probe/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_relaxed_n20000_alpha075_090_stop_probe
+expected_metrics:
+- Q_W_mean
+notes: 'Not a formal sweep; reference step count is chosen after this early-stop run
+  finishes.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

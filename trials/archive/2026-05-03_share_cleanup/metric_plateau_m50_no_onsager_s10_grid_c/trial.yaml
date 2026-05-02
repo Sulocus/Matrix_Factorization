@@ -1,0 +1,16 @@
+key: metric_plateau_m50_no_onsager_s10_grid_c
+status: archived
+runtime_class: quick
+purpose: No-Onsager M=50 S=10 comparison curve for the N1=N2=2000 M-sweep grid C plot.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_m50_no_onsager_s10_grid_c/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_m50_no_onsager_s10_grid_c
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Uses the same grid C and metric plateau stop profile as the M sweep, but disables
+  spreading Onsager correction and uses S=10.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

@@ -9,6 +9,7 @@ uses them for validation and explanation without changing algorithm physics.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -2743,6 +2744,21 @@ def get_trial_source_inventory() -> Dict[str, SourceInventorySpec]:
         SourceInventorySpec("trials/active/spreading_low_alpha_step_diag_fixed_onsager/trial.yaml", "trial_manifest", "spreading_low_alpha_step_diag_fixed_onsager", "active_path"),
         SourceInventorySpec("trials/active/spreading_low_alpha_step_diag_fixed_onsager/config.yaml", "trial_config", "spreading_low_alpha_step_diag_fixed_onsager", "active_path"),
     ]
+    archive_root = Path("trials/archive")
+    if archive_root.exists():
+        for path in sorted(archive_root.rglob("*")):
+            if not path.is_file() or path.suffix not in {".md", ".yaml", ".yml"}:
+                continue
+            trial_key = path.parent.name
+            if path.name == "trial.yaml":
+                role = "trial_manifest"
+            elif path.name == "config.yaml":
+                role = "trial_config"
+            elif path.name == "summary.md":
+                role = "trial_summary"
+            else:
+                role = "trial_archive_note"
+            specs.append(SourceInventorySpec(str(path), role, trial_key, "archived"))
     return {spec.path: spec for spec in specs}
 
 

@@ -1,0 +1,15 @@
+key: metric_plateau_shape_n4m_alpha010
+status: archived
+runtime_class: quick
+purpose: Shape-ratio comparison at fixed N1*N2=4e6 with metric plateau early stop.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_shape_n4m_alpha010/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_shape_n4m_alpha010
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Compares 4000x1000 against 2000x2000 at M=50 over alpha=0.0..2.5 step 0.1.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

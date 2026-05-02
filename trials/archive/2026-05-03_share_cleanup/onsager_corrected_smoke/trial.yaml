@@ -1,0 +1,20 @@
+key: onsager_corrected_smoke
+status: archived
+runtime_class: quick
+purpose: Smoke-test corrected Onsager routing at N=200,M=50 before the S=20 skyline
+  run.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/onsager_corrected_smoke/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/onsager_corrected_smoke
+expected_metrics:
+- Q_Y_mean
+- Q_W_mean
+- Q_X_mean
+- Q_W_SIGN_GAUGE_mean
+- Q_X_SIGN_GAUGE_mean
+notes: 'S=5, steps=20, alpha=[0.5,1.0,2.0,4.0]; checks no/fixed/adaptive route stability
+  only.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

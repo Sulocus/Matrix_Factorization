@@ -31,6 +31,13 @@ smf/results/
 smf/test_output/
 src/matrix_factorization/Replica_results/
 
+# Local cleanup archives. Keep README/manifest files tracked, but never commit
+# archived experiment payloads or caches.
+_legacy/**/local_outputs/*
+!_legacy/**/local_outputs/README.md
+_legacy/**/local_cache/*
+!_legacy/**/local_cache/README.md
+
 # Large local artifacts
 *.pt
 !tests/fixtures/**/*.pt

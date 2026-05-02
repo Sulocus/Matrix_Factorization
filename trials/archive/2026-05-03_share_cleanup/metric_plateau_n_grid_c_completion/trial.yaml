@@ -1,0 +1,17 @@
+key: metric_plateau_n_grid_c_completion
+status: archived
+runtime_class: quick
+purpose: Complete square N-scan grid C with metric plateau early stop, reusing existing
+  N=20000 externally.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_n_grid_c_completion/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_n_grid_c_completion
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Runs N=200..10000 at M=50 over alpha grid C; N=20000 is reused from the prior
+  full grid C run in post-processing.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

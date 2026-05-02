@@ -1,0 +1,14 @@
+key: metric_plateau_relaxed_n200_n500_stop_probe
+status: archived
+runtime_class: quick
+purpose: Diagnostic relaxed self-convergence stop probe for N=200 and N=500.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_relaxed_n200_n500_stop_probe/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_relaxed_n200_n500_stop_probe
+expected_metrics:
+- Q_W_mean
+notes: 'Not a formal sweep; tests a looser profile for faster exploratory scans.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

@@ -1,0 +1,12 @@
+key: fixed_onsager_warm_start_m200_probe
+status: archived
+runtime_class: gpu_heavy
+purpose: Fixed Onsager warm-start probe for M=200 calibration.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/fixed_onsager_warm_start_m200_probe/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/fixed_onsager_warm_start_m200_probe
+notes: 'Existing calibration trial manifest added to satisfy trial inventory.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

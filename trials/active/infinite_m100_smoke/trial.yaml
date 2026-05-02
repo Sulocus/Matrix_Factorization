@@ -1,9 +1,0 @@
-key: infinite_m100_smoke
-status: active
-runtime_class: gpu_heavy
-purpose: Infinite-size-regime smoke check for M=100.
-owner_area: bigamp_onsager
-config: trials/active/infinite_m100_smoke/config.yaml
-artifact_policy: ignored_workspace
-output_root: artifacts/trials/infinite_m100_smoke
-notes: Existing smoke trial manifest added to satisfy trial inventory.

@@ -1,0 +1,25 @@
+key: spreading_low_alpha_step_diag_no_onsager
+status: archived
+runtime_class: medium
+purpose: Diagnose low-alpha no-Onsager spreading observed/full/unobserved Q_Y as a
+  function of steps
+owner_area: algorithm_comparison
+config: trials/archive/2026-05-03_share_cleanup/spreading_low_alpha_step_diag_no_onsager/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/spreading_low_alpha_step_diag_no_onsager
+artifact_roots:
+- artifacts/trials/spreading_low_alpha_step_diag_no_onsager
+expected_metrics:
+- Q_Y_mean
+- Q_Y_observed_mean
+- Q_Y_unobserved_mean
+- FIT_Y_mean
+- Q_W_mean
+- Q_X_mean
+promotion_target:
+- spreading_low_alpha_diagnostic
+notes: 'N1=N2=200, M=50, S=5, alpha=0.1, no Onsager, step scan for diagnosing observed-edge
+  memorization.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

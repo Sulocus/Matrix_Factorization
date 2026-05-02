@@ -1,0 +1,16 @@
+key: metric_plateau_shape_40k10k_alpha015
+status: archived
+runtime_class: quick
+purpose: Large rectangular 40000x10000 shape probe with metric plateau early stop.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_shape_40k10k_alpha015/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_shape_40k10k_alpha015
+expected_metrics:
+- Q_W_mean
+- Q_X_mean
+notes: 'Runs alpha=0.0..1.5 step 0.1 plus 2.5, for overlay against the existing 20000x20000
+  grid-C run. Alpha folding is disabled after a batched metrics CUDA failure.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

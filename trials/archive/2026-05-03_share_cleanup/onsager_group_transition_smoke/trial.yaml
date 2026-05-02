@@ -1,0 +1,19 @@
+key: onsager_group_transition_smoke
+status: archived
+runtime_class: quick
+purpose: End-to-end small scan for Onsager group routing, group plots, sign heatmaps,
+  and group-to-group CUDA state transitions.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/onsager_group_transition_smoke/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/onsager_group_transition_smoke
+expected_metrics:
+- Q_Y_mean
+- Q_W_mean
+- Q_X_mean
+- Q_W_SIGN_GAUGE_mean
+- Q_X_SIGN_GAUGE_mean
+notes: 'Small but output-complete path: save_tensors=true, heatmap=true, group_results=true.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

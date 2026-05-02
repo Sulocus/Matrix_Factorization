@@ -1,0 +1,14 @@
+key: metric_plateau_relaxed_n500_reference_10000
+status: archived
+runtime_class: quick
+purpose: Fixed-step N=500 10000-step reference for relaxed self-convergence diagnostics.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/metric_plateau_relaxed_n500_reference_10000/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_relaxed_n500_reference_10000
+expected_metrics:
+- Q_W_mean
+notes: 'Not a formal sweep; checks whether the 5000-step N=500 reference is too short.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

@@ -1,0 +1,12 @@
+key: fixed_onsager_warm_start_step_probe_qw
+status: archived
+runtime_class: gpu_heavy
+purpose: Fixed Onsager warm-start step-depth probe focused on Q_W.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/fixed_onsager_warm_start_step_probe_qw/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/fixed_onsager_warm_start_step_probe_qw
+notes: 'Existing calibration trial manifest added to satisfy trial inventory.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'

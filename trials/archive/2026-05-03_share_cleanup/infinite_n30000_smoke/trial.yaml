@@ -1,0 +1,12 @@
+key: infinite_n30000_smoke
+status: archived
+runtime_class: gpu_heavy
+purpose: Infinite-size-regime smoke check for N=30000.
+owner_area: bigamp_onsager
+config: trials/archive/2026-05-03_share_cleanup/infinite_n30000_smoke/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/infinite_n30000_smoke
+notes: 'Existing smoke trial manifest added to satisfy trial inventory.
+
+  Archived during 2026-05-03 share cleanup; retained for reproducibility, not active
+  trial surface.'
