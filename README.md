@@ -73,7 +73,7 @@ F_{c\mu} W_{i(c)\mu} X_{\mu j(c)} .
 
 ## Figures
 
-### 1. Algorithm Comparison
+### 1. Cosine Overlap of Y
 
 ![AGD/BiGAMP output cosine](showcase_results/01_qy_cosine_algorithm_comparison/qy_cos_algorithm_comparison.png)
 
@@ -89,11 +89,19 @@ Curves: `AGD`, `BiGAMP (F = 1)`,
 For the two `F = Ising` curves, the output metric is computed on the same
 scan-wide supergraph/F domain across alpha folds.
 
-The same folder also includes `qw_algorithm_comparison.png` and
-`qw_sign_gauge_algorithm_comparison.png`, plotted from the same runs as
-latent-overlap diagnostics.
+### 2. Sign-Aligned Overlap of W
 
-### 2. N Sweep
+![AGD/BiGAMP sign-aligned W overlap](showcase_results/01_qy_cosine_algorithm_comparison/qw_sign_gauge_algorithm_comparison.png)
+
+`N = 200 x 200`, `M = 50`
+
+`initialization = cold start`, `teacher = Gaussian`
+
+Metric: `Q_W_SIGN_GAUGE`
+
+Curves: same runs as Figure 1.
+
+### 3. N Sweep
 
 ![N sweep latent overlap](showcase_results/02_n_sweep_qw/n_sweep_qw.png)
 
@@ -104,7 +112,7 @@ latent-overlap diagnostics.
 
 Metric: `Q_W`
 
-### 3. M Sweep
+### 4. M Sweep
 
 ![M sweep latent overlap](showcase_results/03_m_sweep_qw/m_sweep_qw.png)
 
