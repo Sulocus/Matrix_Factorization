@@ -1,6 +1,5 @@
-# Lightweight local-GPU showcase preset for the current main display.
 tensor_order: 2
-algorithm: bigamp_spreading
+algorithm: bigamp
 teacher: standard
 
 teacher_config:
@@ -44,28 +43,16 @@ algorithm_params:
   dtype_fallback_policy: allow
   use_tf32: true
   seed_partition_policy: partition_invariant
-  adaptive_damping: false
-  init_mode: random
-  init_overlap: 0.0
-  use_metric_plateau_stop: false
-
-spreading:
-  f_distribution: ising
-  onsager_correction: false
-  allow_intra_connection: false
-  seed: 12345
-  chunk_size: 262144
-  tensor_order: 2
 
 output:
-  name: qy_compare_200_m50_spreading
+  name: qy_compare_200_m50_bigamp
   storage_mode: lightweight
   save_tensors: false
   enable_heatmap: false
   plots:
     - x: alpha
       y: Q_Y_COS_mean
-      filename: qy_cos_spreading.png
+      filename: qy_cos_bigamp.png
   group_results:
     enabled: false
     save_tensors: false

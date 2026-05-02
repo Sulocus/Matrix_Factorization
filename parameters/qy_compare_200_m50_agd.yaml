@@ -1,6 +1,5 @@
-# Lightweight local-GPU showcase preset for the current main display.
 tensor_order: 2
-algorithm: bigamp_spreading
+algorithm: agd
 teacher: standard
 
 teacher_config:
@@ -23,8 +22,8 @@ scan:
 
 training:
   samples_per_alpha: 5
-  max_steps: 5000
-  max_epochs: 5000
+  max_steps: 200000
+  max_epochs: 200000
   num_workers: 1
 
 seeds:
@@ -33,39 +32,27 @@ seeds:
   spreading_seed: 12345
 
 algorithm_params:
+  learning_rate: 0.005
   damping: 0.5
   noise_var: 1.0e-6
   normalization_profile: paper_sparse_sampling
   precision_profile: safe
   precision_fallback_policy: allow
-  use_compile: true
-  compile_fallback_policy: allow
   use_bf16: false
   dtype_fallback_policy: allow
   use_tf32: true
   seed_partition_policy: partition_invariant
-  adaptive_damping: false
-  init_mode: random
-  init_overlap: 0.0
-  use_metric_plateau_stop: false
-
-spreading:
-  f_distribution: ising
-  onsager_correction: false
-  allow_intra_connection: false
-  seed: 12345
-  chunk_size: 262144
-  tensor_order: 2
+  use_early_stop: false
 
 output:
-  name: qy_compare_200_m50_spreading
+  name: qy_compare_200_m50_agd
   storage_mode: lightweight
   save_tensors: false
   enable_heatmap: false
   plots:
     - x: alpha
       y: Q_Y_COS_mean
-      filename: qy_cos_spreading.png
+      filename: qy_cos_agd.png
   group_results:
     enabled: false
     save_tensors: false

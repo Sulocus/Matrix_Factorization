@@ -1,137 +1,111 @@
 # Matrix_Factorization
 
-This branch is the lightweight display branch for the research project. The full
-codebase, experiment runners, tests, theory notes, and local GPU workflow live
-on the `dev` branch.
+这个分支是项目的轻量展示分支，适合发给同学快速查看结果和复现实验入口。完整源码、测试、实验 runner、理论审计和 GPU trial 配置都在 `dev` 分支。
 
-## Display Contents
+## 展示内容
 
 ```text
 Matrix_Factorization/
 ├── README.md
 ├── parameters/
-│   └── current_local_gpu.yaml
-├── results/
-│   └── latest/
-│       ├── index.json
-│       ├── 20260206_0523_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
-│       ├── 20260206_0505_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
-│       └── 20260206_0458_bigamp_tensor_parallel_standard_200x200_M50_tensor_n3/
+│   ├── current_local_gpu.yaml
+│   ├── qy_compare_200_m50_agd.yaml
+│   ├── qy_compare_200_m50_bigamp.yaml
+│   └── qy_compare_200_m50_spreading_no_onsager.yaml
+├── results/latest/                 # 旧轻量 summary，保留作历史参考
 └── showcase_results/
-    ├── README.md
-    ├── 01_warm_start/
-    ├── 02_fixed_onsager_vs_no_onsager/
-    └── 03_warm_start_onsager/
+    ├── 01_qy_cosine_algorithm_comparison/
+    ├── 02_n_sweep_qy_cosine/
+    ├── 03_m_sweep_qy_cosine/
+    ├── 04_spreading_ablation/
+    └── legacy_202602/
 ```
 
-`results/latest/` contains tracked lightweight summaries only. Large tensors,
-checkpoints, caches, full experiment artifacts, and local run directories are
-intentionally excluded from `main`.
+`runs/`、完整 `results/`、`artifacts/`、tensor checkpoint 和 `.pt` 大文件不放在 `main`。`results/latest/` 只保留旧轻量 summary；当前展示图只保留 PNG、CSV 和必要参数快照。
 
-## Current Dev Snapshot
+## 当前主指标
 
-The active research configuration on `dev` has moved back to the spreading
-matrix-factorization path used for the sparse-sampling paper audit:
+当前展示优先使用输出层 cosine overlap：
 
-- tensor order: `2`
-- algorithm: `bigamp_spreading`
-- teacher: `standard` Gaussian factors
-- matrix size: `N1=200`, `N2=200`, `M=50`
-- scan: `onsager_policy` groups crossed with alpha from `0.0` to `4.0` in
-  increments of `0.1`
-- samples per alpha: `20`
-- max steps: `2000`
-- spreading coefficients: Ising / `+-1`
-- normalization profile: `paper_sparse_sampling`
-- precision profile: `aggressive`, with fallback allowed
-- default initialization: cold start
-- heatmap metric: `Q_W_SIGN_ALIGNED`
+$$
+Q_Y^{\cos}
+= \frac{\langle \hat Y, Y^\star\rangle}
+{\|\hat Y\|_2\|Y^\star\|_2}.
+$$
 
-The tracked parameter snapshot is stored in
-`parameters/current_local_gpu.yaml`. It is a local-GPU research preset, not a
-Codex web smoke test.
+其中 \(Y^\star\) 是 teacher output，\(\hat Y\) 是 student output。dense matrix 路线中 \(\hat Y=\hat W\hat X\)；spreading 路线中 \(\hat Y\) 是使用同一组 spreading 系数 \(F\) 计算的 full-supergraph measurement。
 
-## Recent Dev Updates
+同时保留 projection 形式的 \(Q_Y\) 作为诊断：
 
-The latest `dev` work since the previous display refresh is mostly research
-infrastructure and convention hardening:
+$$
+Q_Y
+= \frac{|\langle \hat Y, Y^\star\rangle|}
+{\langle Y^\star,Y^\star\rangle}.
+$$
 
-- Sparse-sampling paper convention map: latent variables use unit variance,
-  interactions use the paper-style `1/sqrt(M)` scale, and the old internal
-  `1/M` latent convention is kept only as an explicit legacy profile.
-- Formal metric naming: `Q_Y` is an absolute projection, `Q_W` and `Q_X` are
-  coordinate projections, and old cosine-style `Q_Y`, MSE, and generalization
-  error are not formal metrics.
-- Gauge-aware views: sign-aligned `Q_W/Q_X`, cos-root overlaps, and
-  posthoc scale-gauge aligned factor views are integrated into plotting
-  and result handling.
-- Canonical scan output: group-level plots are generated for individual scan
-  groups, while cross-group comparison plots remain part of the full scan
-  output.
-- Onsager routing: no-Onsager spreading uses the legacy fast no-feedback route;
-  fixed/adaptive Onsager use the corrected BiG-AMP message convention.
-- Alpha continuation: `scan.continuation` can run alpha in descending order and
-  pass full algorithm state from a high-alpha fixed point to the next lower
-  alpha.
-- Precision profile audit: `safe`, `fast`, and `aggressive` are exposed through
-  the contract, but memory and speed gains still depend on actual runtime dtype
-  roles and the dominant buffers in each algorithm route.
+它不裁切；如果 \(\hat Y=2Y^\star\)，则 \(Q_Y=2\)，但 \(Q_Y^{\cos}=1\)。因此展示曲线优先看 \(Q_Y^{\cos}\)，避免把整体 scale mismatch 误读成输出方向恢复。
 
-## Full Project Structure on `dev`
+latent overlap 使用固定分母定义：
 
-```text
-dev
-├── src/matrix_factorization/
-│   ├── cli.py
-│   ├── config.yaml
-│   ├── core/
-│   │   ├── contracts.py       # hard-interface specs and registries
-│   │   ├── experiment/        # config, runner, result schema, continuation
-│   │   └── parallel/          # scan resource planning and memory execution
-│   ├── modules/
-│   │   ├── algorithms/
-│   │   │   ├── agd.py
-│   │   │   └── bigamp/
-│   │   │       ├── standard.py
-│   │   │       ├── spreading.py
-│   │   │       ├── step.py
-│   │   │       └── tensor_spreading_parallel.py
-│   │   ├── graphs/
-│   │   ├── metrics/
-│   │   └── outputs/
-│   └── ui/
-├── configs/
-│   ├── manual_onsager_groups/
-│   ├── smoke/
-│   └── local_gpu/
-├── scripts/
-├── tests/
-├── docs/
-│   ├── METRICS_GUIDE.md
-│   ├── scan_system_contract.md
-│   └── theory/
-│       ├── alpha_descending_continuation.md
-│       ├── bigamp_onsager_damping_audit.md
-│       └── code_vs_sparse_sampling_paper.md
-├── trials/
-└── runs/                     # ignored local experiment outputs
-```
+$$
+Q_W
+= \frac{1}{N_1M}\sum_{i,\mu}\hat W_{i\mu}W^\star_{i\mu},
+\qquad
+Q_X
+= \frac{1}{MN_2}\sum_{\mu,j}\hat X_{\mu j}X^\star_{\mu j}.
+$$
 
-## Algorithm Map
+\(Q_W\) 和 \(Q_X\) 的语义相同，只是分别作用在左右两个 latent factor 上。它们不是 teacher-norm projection；Gaussian teacher 完美恢复时有限尺寸下通常接近 1，但不强制等于 1。
 
-- `AGD`: alternating-gradient matrix baseline.
-- `BiG-AMP Standard`: dense bipartite matrix-factorization AMP baseline.
-- `BiG-AMP Spreading`: active sparse-sampling matrix path with random spreading
-  coefficients and optional Onsager correction.
-- `BiG-AMP Tensor / General-Graph routes`: AMP paths used when
-  `tensor_order = 1` for the general graph mode or `tensor_order >= 3` for
-  tensor-order experiments and memory-planning work.
-- `legacy` and experimental tensor variants: kept on `dev` for reference and
-  parity audits, not treated as the primary display path.
+## 主要图片
 
-## Branch Roles
+### 1. AGD / BiGAMP / Spreading 的输出 cosine 对比
 
-- `main`: compact English display branch with lightweight results and the
-  current parameter snapshot.
-- `dev`: complete research branch for source code, tests, documentation,
-  Codex work, local trials, and GPU experiments.
+![AGD/BiGAMP output cosine](showcase_results/01_qy_cosine_algorithm_comparison/qy_cos_agd_bigamp_spreading.png)
+
+这张图重新跑自 `dev` 上的 schema v6 metric。三条曲线分别是：
+
+- `AGD`：\(200\times200, M=50, S=5\)，200000 step。
+- `Dense BiGAMP`：同尺寸，5000 step。
+- `Spreading BiGAMP, no Onsager`：同尺寸，Ising spreading，5000 step。
+
+这里的 \(Q_Y^{\cos}\) 是原生 `Q_Y_COS_mean`，不是旧 metric 派生值。
+
+### 2. N sweep 的输出 cosine 趋势
+
+![N sweep output cosine](showcase_results/02_n_sweep_qy_cosine/n_sweep_qy_cosine_proxy.png)
+
+这张图来自早停版本的 \(N\) 方向扫描，固定 \(M=50\)，alpha 使用拐点附近更密的 grid C。原始 scan 是 schema v5，只保存了 \(Q_Y\) projection 和 `FIT_Y/NMSE_Y`，因此图中 \(Q_Y^{\cos}\) 是展示用 proxy：
+
+$$
+Q_{Y,\mathrm{proxy}}^{\cos}
+\approx
+\frac{Q_Y}{\sqrt{\mathrm{NMSE}_Y-1+2Q_Y}},
+\qquad
+\mathrm{NMSE}_Y=1-\mathrm{FIT}_Y.
+$$
+
+它只用于展示尺寸趋势；不能和 schema v6 的原生 `Q_Y_COS_mean` 当作完全同一数据源混比。
+
+### 3. M sweep 的输出 cosine 趋势
+
+![M sweep output cosine](showcase_results/03_m_sweep_qy_cosine/m_sweep_qy_cosine_proxy.png)
+
+这张图固定 \(N_1=N_2=2000\)，比较多个 rank \(M\) 的 spreading BiGAMP 结果，并加入一条 `M=50, no Onsager, S=10` 诊断曲线。它同样由 schema v5 的 \(Q_Y\)+`NMSE_Y` 派生 \(Q_Y^{\cos}\) proxy。`M=200` 当时只留下了 \(Q_W\) 诊断 summary，没有完整 \(Q_Y\) final metrics，因此没有放入这张 \(Q_Y^{\cos}\) 图。
+
+### 4. Spreading 更新假设的临时消融
+
+![Spreading ablation cosine](showcase_results/04_spreading_ablation/qy_cosine_with_no_gaussian_posterior_temp.png)
+
+这两张诊断图比较了 production no-Onsager spreading 和一个临时 in-process ablation：在单次运行里去掉高斯 posterior shrinkage 假设，其它配置不变。这个实验没有修改主程序源码，运行后 monkey patch 已恢复。projection 版本也保存在同目录。
+
+## 版本说明
+
+- 当前 `dev` 已把 dense matrix 路线的 `Q_Y_COS_mean` 注册为正式 metric，并通过 contract 测试。
+- spreading 路线的 full `Q_Y`/`Q_Y_COS` 是 full-supergraph F-aware measurement，不再使用旧 equal-count heldout full 语义。
+- schema v3/v4/v5 的同名 `Q_Y_mean` 不应和当前 schema v6 静默比较；需要同时查看 `metric_schema.schema_version` 和 `metric_definition_profile`。
+
+## 分支角色
+
+- `main`：轻量展示分支，保留图片、CSV、参数快照和简短说明。
+- `dev`：完整研究分支，包含源码、测试、文档、trial 配置、GPU 运行流程和最新 metric contract。

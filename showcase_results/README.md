@@ -1,47 +1,34 @@
 # Showcase Results
 
-Selected lightweight plots from local `dev` runs. Large tensors and checkpoints
-are not included.
+这里放的是可以直接打开查看的轻量展示图。完整 trial 输出和大 tensor 不在 `main` 分支。
 
-## Folders
+## 当前主展示
 
-- `01_warm_start`: warm-start comparison.
-- `02_fixed_onsager_vs_no_onsager`: fixed Onsager vs no Onsager.
-- `03_warm_start_onsager`: fixed Onsager with warm-start overlap `0.2`.
+- `01_qy_cosine_algorithm_comparison/`：AGD、dense BiGAMP、spreading BiGAMP no-Onsager 的 \(Q_Y^{\cos}\) 对比。数据来自 2026-05-03 重新运行的 schema v6 metrics。
+- `02_n_sweep_qy_cosine/`：固定 \(M=50\) 的 \(N\) scan 趋势图。原始 scan 是 schema v5，因此图中的 \(Q_Y^{\cos}\) 是由 \(Q_Y\)+`FIT_Y` 派生的 proxy。
+- `03_m_sweep_qy_cosine/`：固定 \(N_1=N_2=2000\) 的 \(M\) scan 趋势图。原始 scan 是 schema v5，因此图中的 \(Q_Y^{\cos}\) 是由 \(Q_Y\)+`NMSE_Y` 派生的 proxy。
+- `04_spreading_ablation/`：临时去掉 Gaussian posterior shrinkage 假设的 spreading no-Onsager 消融诊断图；主程序源码没有保留该改动。
 
-## Metrics
+## Legacy
 
-For each scan point and each sample, the code first computes an absolute
-teacher projection, then the plotted curve uses the sample mean:
+`legacy_202602/` 保留旧展示分支里的 warm-start 和 Onsager 相关图片。这些图的 metric 语义早于当前 schema v6，作为历史参考保留，不作为当前主结论。
 
-$$
-q_Y^{(s)}=\frac{|\langle Y_s^{(s)},Y_t^{(s)}\rangle|}
-{\langle Y_t^{(s)},Y_t^{(s)}\rangle},
-\qquad
-Q_Y=\frac{1}{S}\sum_{s=1}^S q_Y^{(s)}.
-$$
+## Metric Notes
 
-The same convention is used for `Q_W`, with `W_student` projected onto
-`W_teacher`. Projection values are not clipped, so values above `1` can reflect
-scale mismatch.
-
-## Gauge Views
-
-The factorization has a per-channel scale freedom
-`W[:,m] -> k_m W[:,m]`, `X[m,:] -> k_m^{-1} X[m,:]`.
-
-- `qw_sign`: ignores the magnitude of `k_m` and aligns only the sign of each
-  W-channel inner product.
-- `qwqx_gauge`: fits one scalar per channel by the objective
+当前主图优先看：
 
 $$
-g_m^\star=\arg\min_{g\ne0}
-\left[
-\|gW_{s,:m}-W_{t,:m}\|^2+
-\|g^{-1}X_{s,m:}-X_{t,m:}\|^2
-\right].
+Q_Y^{\cos}
+= \frac{\langle \hat Y,Y^\star\rangle}
+{\|\hat Y\|_2\|Y^\star\|_2}.
 $$
 
-These gauge views are diagnostics only. They do not prove that early training is
-physically correct; they only remove later sign/scale mismatch between teacher
-and student factors.
+旧 scan proxy 使用：
+
+$$
+Q_{Y,\mathrm{proxy}}^{\cos}
+\approx
+\frac{Q_Y}{\sqrt{\mathrm{NMSE}_Y-1+2Q_Y}}.
+$$
+
+这个 proxy 用于展示旧 scan 的曲线形状，不替代 schema v6 的原生 `Q_Y_COS_mean`。

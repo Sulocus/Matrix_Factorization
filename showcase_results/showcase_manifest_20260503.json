@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-05-03T01:25:00+09:00",
+  "figures": [
+    {
+      "file": "01_qy_cos_agd_bigamp_spreading.png",
+      "metric": "native schema-v6 Q_Y_COS_mean",
+      "note": "AGD/dense BiGAMP/spreading no Onsager rerun after dense Q_Y_COS interface registration."
+    },
+    {
+      "file": "02_n_sweep_qy_cosine_proxy.png",
+      "metric": "derived Q_Y cosine proxy",
+      "note": "Schema-v5 N scan; proxy derived from Q_Y projection and FIT."
+    },
+    {
+      "file": "03_m_sweep_qy_cosine_proxy.png",
+      "metric": "derived Q_Y cosine proxy",
+      "note": "Schema-v5 M scan; M200 omitted because no final QY metrics were saved."
+    },
+    {
+      "file": "04_qy_projection_with_no_gaussian_posterior_temp.png",
+      "metric": "Q_Y projection",
+      "note": "Temporary in-process no-Gaussian-posterior ablation; source code was restored after run."
+    },
+    {
+      "file": "05_qy_cosine_with_no_gaussian_posterior_temp.png",
+      "metric": "Q_Y cosine",
+      "note": "Temporary in-process no-Gaussian-posterior ablation; source code was restored after run."
+    }
+  ]
+}

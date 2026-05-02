@@ -1,4 +1,3 @@
-# Lightweight local-GPU showcase preset for the current main display.
 tensor_order: 2
 algorithm: bigamp_spreading
 teacher: standard
