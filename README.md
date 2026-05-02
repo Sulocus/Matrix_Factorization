@@ -89,8 +89,9 @@ Curves: `AGD`, `BiGAMP (F = 1)`,
 For the two `F = Ising` curves, the output metric is computed on the same
 scan-wide supergraph/F domain across alpha folds.
 
-The same folder also includes `qw_algorithm_comparison.png`, plotted from the
-same runs as a latent-overlap diagnostic.
+The same folder also includes `qw_algorithm_comparison.png` and
+`qw_sign_gauge_algorithm_comparison.png`, plotted from the same runs as
+latent-overlap diagnostics.
 
 ### 2. N Sweep
 
