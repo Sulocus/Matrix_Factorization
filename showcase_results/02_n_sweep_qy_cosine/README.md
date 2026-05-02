@@ -1,17 +1,18 @@
 # N Sweep Output Cosine
 
-![N sweep QY cosine proxy](n_sweep_qy_cosine_proxy.png)
+![N sweep QY cosine](n_sweep_qy_cosine.png)
 
-这张图固定 \(M=50\)，比较不同 \(N_1=N_2=N\) 下的 spreading BiGAMP 曲线。alpha grid 在转折区域更密，平台区域更稀疏。
+This figure fixes `M=50` and compares spreading BiGAMP curves for
+`N1=N2=N`. The alpha grid is denser near the transition region and sparser on
+the plateaus.
 
-原始 scan 是 schema v5，没有原生 `Q_Y_COS_mean`，因此这里使用展示用 proxy：
+The plotted column is `Q_Y_COS`:
 
-$$
-Q_{Y,\mathrm{proxy}}^{\cos}
-\approx
-\frac{Q_Y}{\sqrt{\mathrm{NMSE}_Y-1+2Q_Y}},
-\qquad
-\mathrm{NMSE}_Y=1-\mathrm{FIT}_Y.
-$$
+```math
+Q_Y^{\cos}
+= \frac{\langle \hat Y,Y^\star\rangle}
+{\|\hat Y\|_2\|Y^\star\|_2}.
+```
 
-它只用于观察尺寸扫描的曲线形状；不能替代 schema v6 的原生 full-supergraph `Q_Y_COS_mean`。
+The CSV also includes `Q_Y_mean`, `FIT_Y_mean`, `Q_W_mean`, and `Q_X_mean` for
+cross-checks.
