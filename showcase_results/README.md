@@ -6,25 +6,42 @@ redrawn without loading large tensors.
 
 ## Included Figures
 
-- `01_qy_cosine_algorithm_comparison/`: output cosine comparison for AGD, dense
-  BiGAMP, and no-Onsager spreading BiGAMP.
-- `02_n_sweep_qy_cosine/`: output cosine trend as the square size `N` changes
-  at fixed `M=50`.
-- `03_m_sweep_qy_cosine/`: output cosine trend as the latent rank `M` changes
-  at fixed `N1=N2=2000`, with one no-Onsager spreading diagnostic curve.
-- `04_spreading_ablation/`: no-Gaussian-posterior spreading ablation used to
-  diagnose the no-Onsager update.
+- `01_qy_cosine_algorithm_comparison/`: output cosine comparison for `AGD`,
+  `BiGAMP (F = 1)`, `BiGAMP (F = Ising, no Onsager)`, and
+  `BiGAMP (F = Ising, Onsager)`.
+- `02_n_sweep_qw/`: `Q_W` as the square size changes at fixed `M = 50`.
+- `03_m_sweep_qw/`: `Q_W` as the latent rank changes at fixed
+  `N = 2000 x 2000`.
 
-## Metric
-
-The main displayed metric is:
+## Metrics
 
 ```math
 Q_Y^{\cos}
-= \frac{\langle \hat Y,Y^\star\rangle}
-{\|\hat Y\|_2\|Y^\star\|_2}.
+=
+\frac{
+\sum_a Y_a Y^{*}_a
+}{
+\sqrt{
+\left(\sum_a Y_a^2\right)
+\left(\sum_a (Y^{*}_a)^2\right)
+}
+}
 ```
 
-For the N and M sweep plots, the CSV column `Q_Y_COS` stores the exact value
-used by the figure. It is computed from the saved output projection and
-output-error summaries.
+```math
+Q_W
+=
+\frac{1}{N_1 M}
+\sum_{i=1}^{N_1}
+\sum_{\mu=1}^{M}
+W_{i\mu} W^{*}_{i\mu}
+```
+
+```math
+Q_X
+=
+\frac{1}{M N_2}
+\sum_{\mu=1}^{M}
+\sum_{j=1}^{N_2}
+X_{\mu j} X^{*}_{\mu j}
+```
