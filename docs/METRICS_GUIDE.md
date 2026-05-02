@@ -45,8 +45,9 @@ Q_Y_COS = <Y_student, Y_teacher> / (||Y_student|| ||Y_teacher||)
 ```
 
 它不吸收 scale 错误；例如 `Y_student = 2 Y_teacher` 时，`Q_Y=2` 而
-`Q_Y_COS=1`。spreading 同时输出 full/observed/unobserved 三个 scope 的
-`Q_Y_COS`。
+`Q_Y_COS=1`。dense matrix 路线（`agd`/`bigamp`）和 spreading 路线都输出
+full/observed/unobserved 三个 scope 的 `Q_Y_COS`；spreading 的三个 scope
+仍然使用同一套 F-aware supergraph measurement 语义。
 
 ### `Q_W` / `Q_X`
 

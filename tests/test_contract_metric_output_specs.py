@@ -156,14 +156,24 @@ def test_algorithm_metric_keys_include_legacy_flat_outputs():
     assert "MSE" not in keys
 
 
+def test_dense_algorithm_metric_keys_include_qy_cosine_outputs():
+    keys = get_algorithm_metric_keys("bigamp")
+
+    assert "Q_Y_COS_mean" in keys
+    assert "Q_Y_observed_COS_mean" in keys
+    assert "Q_Y_unobserved_COS_mean" in keys
+
+
 def test_flat_metric_semantics_keep_qy_algorithm_context():
     dense_semantics = get_algorithm_metric_semantics("bigamp")["Q_Y_mean"][0]
+    dense_cos_semantics = get_algorithm_metric_semantics("bigamp")["Q_Y_COS_mean"][0]
     tensor_semantics = get_algorithm_metric_semantics("bigamp_tensor_parallel")["Q_Y_mean"][0]
 
     assert dense_semantics["space"] == "measurement"
     assert tensor_semantics["space"] == "measurement"
     assert dense_semantics["metric_spec"] != tensor_semantics["metric_spec"]
     assert dense_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
+    assert dense_cos_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_COS"
     assert tensor_semantics["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"
 
 
@@ -244,6 +254,7 @@ def test_matrix_metric_compute_adapter_produces_declared_flat_keys():
     )
 
     assert metrics["Q_Y_mean"] == pytest.approx(1.0)
+    assert metrics["Q_Y_COS_mean"] == pytest.approx(1.0)
     assert "MSE" not in metrics
     assert metrics["Q_W_mean"] == pytest.approx(0.5)
     assert metrics["Q_W_PROJ_ABS_mean"] == pytest.approx(1.0)
@@ -251,6 +262,7 @@ def test_matrix_metric_compute_adapter_produces_declared_flat_keys():
     assert metrics["Q_X_SIGN_GAUGE_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
     assert "matrix.full.Q_Y" in check.metric_specs
+    assert "matrix.full.Q_Y_COS" in check.metric_specs
     assert "matrix.factor.Q_W" in check.metric_specs
 
 
