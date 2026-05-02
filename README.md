@@ -12,16 +12,14 @@ Matrix_Factorization/
 │   ├── qy_compare_200_m50_agd.yaml
 │   ├── qy_compare_200_m50_bigamp.yaml
 │   └── qy_compare_200_m50_spreading_no_onsager.yaml
-├── results/latest/                 # 旧轻量 summary，保留作历史参考
 └── showcase_results/
     ├── 01_qy_cosine_algorithm_comparison/
     ├── 02_n_sweep_qy_cosine/
     ├── 03_m_sweep_qy_cosine/
-    ├── 04_spreading_ablation/
-    └── legacy_202602/
+    └── 04_spreading_ablation/
 ```
 
-`runs/`、完整 `results/`、`artifacts/`、tensor checkpoint 和 `.pt` 大文件不放在 `main`。`results/latest/` 只保留旧轻量 summary；当前展示图只保留 PNG、CSV 和必要参数快照。
+`runs/`、`results/`、`artifacts/`、tensor checkpoint、`.pt` 大文件和旧 showcase 归档都不放在 `main`。当前展示图只保留 PNG、CSV 和必要参数快照。
 
 ## 当前主指标
 

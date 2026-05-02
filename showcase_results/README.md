@@ -9,10 +9,6 @@
 - `03_m_sweep_qy_cosine/`：固定 \(N_1=N_2=2000\) 的 \(M\) scan 趋势图。原始 scan 是 schema v5，因此图中的 \(Q_Y^{\cos}\) 是由 \(Q_Y\)+`NMSE_Y` 派生的 proxy。
 - `04_spreading_ablation/`：临时去掉 Gaussian posterior shrinkage 假设的 spreading no-Onsager 消融诊断图；主程序源码没有保留该改动。
 
-## Legacy
-
-`legacy_202602/` 保留旧展示分支里的 warm-start 和 Onsager 相关图片。这些图的 metric 语义早于当前 schema v6，作为历史参考保留，不作为当前主结论。
-
 ## Metric Notes
 
 当前主图优先看：
