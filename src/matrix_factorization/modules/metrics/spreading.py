@@ -3,7 +3,8 @@ Evaluation metrics for random spreading model.
 
 Key difference from standard metrics:
 - Q_Y uses the same F coefficients for both teacher and student.
-- Formal Q_Y is FIT = 1 - NMSE on the configured measurement set.
+- Formal Q_Y is absolute projection on the configured measurement set.
+- Q_Y_COS is a signed cosine diagnostic on the same measurement set.
 - Q_W/Q_X are fixed-denominator physical overlaps; Cos-root metrics are diagnostics.
 """
 
@@ -11,8 +12,6 @@ from dataclasses import dataclass
 from typing import Dict, TYPE_CHECKING
 import numpy as np
 import torch
-
-from matrix_factorization.core.distributions import F_DISTRIBUTION_ISING
 
 from ..teachers.random_spreading import SpreadingData, compute_sparse_Y
 from .overlap import normalized_mse_and_fit, physical_overlap_fixed, projection_abs, sign_gauge_overlap_fixed
@@ -59,6 +58,16 @@ def _projection_abs_values(student: torch.Tensor, teacher: torch.Tensor) -> torc
     if float(norm_teacher_sq.abs().item()) < PROJECTION_NORM_EPS:
         return torch.zeros((), device=student.device, dtype=torch.float32)
     return ((student.flatten() * teacher.flatten()).sum().abs() / (norm_teacher_sq + PROJECTION_NORM_EPS)).float()
+
+
+@torch.no_grad()
+def _cosine_values(student: torch.Tensor, teacher: torch.Tensor) -> torch.Tensor:
+    student_flat = student.flatten()
+    teacher_flat = teacher.flatten()
+    denom = student_flat.norm() * teacher_flat.norm()
+    if float(denom.abs().item()) < PROJECTION_NORM_EPS:
+        return torch.zeros((), device=student.device, dtype=torch.float32)
+    return ((student_flat * teacher_flat).sum() / (denom + PROJECTION_NORM_EPS)).float()
 
 
 @torch.no_grad()
@@ -130,6 +139,20 @@ def _projection_abs_from_sums(dot: torch.Tensor, norm_teacher_sq: torch.Tensor) 
 
 
 @torch.no_grad()
+def _cosine_from_sums(
+    dot: torch.Tensor,
+    norm_teacher_sq: torch.Tensor,
+    norm_student_sq: torch.Tensor,
+) -> torch.Tensor:
+    denom = torch.sqrt(torch.clamp(norm_teacher_sq * norm_student_sq, min=0.0))
+    return torch.where(
+        denom < PROJECTION_NORM_EPS,
+        torch.zeros_like(dot, dtype=torch.float32),
+        (dot / (denom + PROJECTION_NORM_EPS)).float(),
+    )
+
+
+@torch.no_grad()
 def _fit_from_sums(sse: torch.Tensor, norm_teacher_sq: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     nmse = torch.where(
         norm_teacher_sq.abs() < PROJECTION_NORM_EPS,
@@ -140,7 +163,7 @@ def _fit_from_sums(sse: torch.Tensor, norm_teacher_sq: torch.Tensor) -> tuple[to
 
 
 @torch.no_grad()
-def _observed_edge_projection_sums(
+def _edge_measurement_sums(
     W_a: torch.Tensor,
     X_a_t: torch.Tensor,
     i_idx: torch.Tensor,
@@ -151,12 +174,13 @@ def _observed_edge_projection_sums(
     sqrt_m_inv: float,
     edge_chunk_size: int,
     sample_chunk_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Accumulate spreading measurement projection sums on GPU in edge chunks."""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Accumulate F-aware spreading measurement sums on GPU in edge chunks."""
 
     S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
     dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
+    norm_student_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     sse = torch.zeros(S, device=W_a.device, dtype=torch.float32)
     chunk = max(1, int(edge_chunk_size))
     sample_chunk = max(1, min(int(sample_chunk_size), S))
@@ -178,59 +202,10 @@ def _observed_edge_projection_sums(
             Y_teacher_chunk = Y_teacher[sample_start:sample_stop, start:stop]
             dot[sample_start:sample_stop] += (Y_student * Y_teacher_chunk).sum(dim=-1).float()
             norm_teacher_sq[sample_start:sample_stop] += (Y_teacher_chunk * Y_teacher_chunk).sum(dim=-1).float()
+            norm_student_sq[sample_start:sample_stop] += (Y_student * Y_student).sum(dim=-1).float()
             diff = Y_student - Y_teacher_chunk
             sse[sample_start:sample_stop] += (diff * diff).sum(dim=-1).float()
-    return dot, norm_teacher_sq, sse
-
-
-@torch.no_grad()
-def _heldout_edge_projection_sums(
-    W_a: torch.Tensor,
-    X_a_t: torch.Tensor,
-    W_teacher: torch.Tensor,
-    X_teacher_t: torch.Tensor,
-    i_idx: torch.Tensor,
-    j_idx: torch.Tensor,
-    F_values: torch.Tensor,
-    *,
-    sqrt_m_inv: float,
-    edge_chunk_size: int,
-    sample_chunk_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Accumulate heldout spreading measurement projection sums on GPU."""
-
-    S, C = int(i_idx.shape[0]), int(i_idx.shape[1])
-    dot = torch.zeros(S, device=W_a.device, dtype=torch.float32)
-    norm_teacher_sq = torch.zeros(S, device=W_a.device, dtype=torch.float32)
-    sse = torch.zeros(S, device=W_a.device, dtype=torch.float32)
-    chunk = max(1, int(edge_chunk_size))
-    sample_chunk = max(1, min(int(sample_chunk_size), S))
-    for sample_start in range(0, S, sample_chunk):
-        sample_stop = min(S, sample_start + sample_chunk)
-        block = sample_stop - sample_start
-        W_block = W_a[sample_start:sample_stop]
-        X_block = X_a_t[sample_start:sample_stop]
-        for start in range(0, C, chunk):
-            stop = min(C, start + chunk)
-            i_chunk = i_idx[sample_start:sample_stop, start:stop]
-            j_chunk = j_idx[sample_start:sample_stop, start:stop]
-            F_chunk = F_values[sample_start:sample_stop, start:stop]
-            if not torch.is_floating_point(F_chunk):
-                F_chunk = F_chunk.float()
-
-            W_teacher_chunk = W_teacher[i_chunk]
-            X_teacher_chunk = X_teacher_t[j_chunk]
-            Y_teacher = sqrt_m_inv * (F_chunk * W_teacher_chunk * X_teacher_chunk).sum(dim=-1)
-
-            W_student_chunk = W_block.gather(1, i_chunk.unsqueeze(-1).expand(block, stop - start, W_block.shape[-1]))
-            X_student_chunk = X_block.gather(1, j_chunk.unsqueeze(-1).expand(block, stop - start, X_block.shape[-1]))
-            Y_student = sqrt_m_inv * (F_chunk * W_student_chunk * X_student_chunk).sum(dim=-1)
-
-            dot[sample_start:sample_stop] += (Y_student * Y_teacher).sum(dim=-1).float()
-            norm_teacher_sq[sample_start:sample_stop] += (Y_teacher * Y_teacher).sum(dim=-1).float()
-            diff = Y_student - Y_teacher
-            sse[sample_start:sample_stop] += (diff * diff).sum(dim=-1).float()
-    return dot, norm_teacher_sq, sse
+    return dot, norm_teacher_sq, norm_student_sq, sse
 
 
 @torch.no_grad()
@@ -264,22 +239,26 @@ def _cos_root_and_replica_by_alpha(
     """Return teacher-student Cos-root and student-student Gram diagnostics.
 
     factors is (S, N, M) for W when use_left=True, or (S, M, N) for X when
-    use_left=False.  The computation stays on the device and vectorizes the
-    former S^2 Python pair loop.
+    use_left=False.  The Gram cosine is evaluated through the low-rank identity
+    <AA^T, BB^T>_F = ||A^T B||_F^2, avoiding N-by-N Gram materialization for
+    large rectangular scans.
     """
+    factors_f = factors.float()
+    teacher_f = teacher.float()
     if use_left:
-        grams = torch.matmul(factors, factors.transpose(-1, -2))
-        teacher_gram = teacher @ teacher.T
+        student_small = torch.matmul(factors_f.transpose(-1, -2), factors_f)
+        teacher_small = torch.matmul(teacher_f.T, teacher_f)
+        cross = torch.matmul(factors_f.transpose(-1, -2), teacher_f)
         n, m = int(factors.shape[-2]), int(factors.shape[-1])
     else:
-        grams = torch.matmul(factors.transpose(-1, -2), factors)
-        teacher_gram = teacher.T @ teacher
+        student_small = torch.matmul(factors_f, factors_f.transpose(-1, -2))
+        teacher_small = torch.matmul(teacher_f, teacher_f.T)
+        cross = torch.matmul(factors_f, teacher_f.T)
         n, m = int(factors.shape[-1]), int(factors.shape[-2])
 
-    flat = grams.reshape(grams.shape[0], -1).float()
-    teacher_flat = teacher_gram.reshape(-1).float()
-    teacher_norm = teacher_flat.norm() + PROJECTION_NORM_EPS
-    q = (flat * teacher_flat).sum(dim=1) / ((flat.norm(dim=1) * teacher_norm) + PROJECTION_NORM_EPS)
+    student_norm = student_small.square().sum(dim=(-2, -1)).sqrt()
+    teacher_norm = teacher_small.square().sum().sqrt()
+    q = cross.square().sum(dim=(-2, -1)) / ((student_norm * teacher_norm) + PROJECTION_NORM_EPS)
     baseline = float(m) / float(m + n + 1)
     corrected = ((q - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
     cos_root = corrected.sqrt()
@@ -288,14 +267,23 @@ def _cos_root_and_replica_by_alpha(
         zero = torch.zeros((), device=factors.device, dtype=torch.float32)
         return cos_root.float(), zero, zero
 
-    normalized = flat / (flat.norm(dim=1, keepdim=True) + PROJECTION_NORM_EPS)
-    pair_cos = normalized @ normalized.T
+    pair_cos_values = []
+    for i in range(int(factors.shape[0])):
+        for j in range(i + 1, int(factors.shape[0])):
+            if use_left:
+                pair_cross = torch.matmul(factors_f[i].T, factors_f[j])
+            else:
+                pair_cross = torch.matmul(factors_f[i], factors_f[j].T)
+            pair_cos_values.append(
+                pair_cross.square().sum()
+                / ((student_norm[i] * student_norm[j]) + PROJECTION_NORM_EPS)
+            )
+    pair_cos = torch.stack(pair_cos_values)
     pair_corrected = ((pair_cos - baseline) / (1.0 - baseline + PROJECTION_NORM_EPS)).clamp(0.0, 1.0)
-    upper = torch.triu_indices(factors.shape[0], factors.shape[0], offset=1, device=factors.device)
     return (
         cos_root.float(),
-        pair_cos[upper[0], upper[1]].mean().float(),
-        pair_corrected[upper[0], upper[1]].mean().float(),
+        pair_cos.mean().float(),
+        pair_corrected.mean().float(),
     )
 
 
@@ -393,68 +381,6 @@ def _scale_gauge_projection_batch(
     gauge_tensor = torch.as_tensor(gauge_mag, dtype=torch.float32, device=device)
     return q_w_tensor, q_x_tensor, q_wx_tensor, gauge_tensor
 
-
-@torch.no_grad()
-def _deterministic_heldout_edges(
-    *,
-    N1: int,
-    N2: int,
-    observed_i: torch.Tensor,
-    observed_j: torch.Tensor,
-    count: int,
-    seed: int,
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample deterministic heldout matrix edges outside the observed set."""
-    total = int(N1) * int(N2)
-    if count <= 0 or total <= 0:
-        empty = torch.empty(0, dtype=torch.long, device=device)
-        return empty, empty
-
-    observed_keys = (observed_i.long() * int(N2) + observed_j.long()).unique()
-    available = max(0, total - int(observed_keys.numel()))
-    target = min(int(count), available)
-    if target <= 0:
-        empty = torch.empty(0, dtype=torch.long, device=device)
-        return empty, empty
-
-    gen = torch.Generator(device=device).manual_seed(int(seed))
-    selected: list[torch.Tensor] = []
-    selected_count = 0
-    attempts = 0
-    while selected_count < target and attempts < 32:
-        attempts += 1
-        draw = max(64, 3 * (target - selected_count))
-        candidates = torch.randint(0, total, (draw,), generator=gen, device=device)
-        mask = ~torch.isin(candidates, observed_keys)
-        if selected:
-            mask &= ~torch.isin(candidates, torch.cat(selected))
-        unique_candidates = candidates[mask].unique()
-        if unique_candidates.numel() == 0:
-            continue
-        take = unique_candidates[: target - selected_count]
-        selected.append(take)
-        selected_count += int(take.numel())
-
-    if selected_count < target:
-        # Deterministic fallback for dense regimes where rejection sampling stalls.
-        all_keys = torch.arange(total, device=device)
-        mask = ~torch.isin(all_keys, observed_keys)
-        if selected:
-            mask &= ~torch.isin(all_keys, torch.cat(selected))
-        fallback = all_keys[mask][: target - selected_count]
-        if fallback.numel() > 0:
-            selected.append(fallback)
-            selected_count += int(fallback.numel())
-
-    if not selected:
-        empty = torch.empty(0, dtype=torch.long, device=device)
-        return empty, empty
-
-    keys = torch.cat(selected)[:target].long()
-    return keys // int(N2), keys % int(N2)
-
-
 @torch.no_grad()
 def compute_qy_spreading(
     W_student: torch.Tensor,
@@ -467,7 +393,7 @@ def compute_qy_spreading(
     Both teacher Y and student Y are computed at observed positions
     using the SAME F coefficients. This ensures fair comparison.
 
-    Q_Y = 1 - ||Y_student - Y_teacher||^2 / ||Y_teacher||^2
+    Q_Y = |<Y_student, Y_teacher>| / <Y_teacher, Y_teacher>
 
     Args:
         W_student: (N1, M) or (S, N1, M) student W matrix
@@ -475,7 +401,7 @@ def compute_qy_spreading(
         spreading_data: SpreadingData with F and teacher Y_values
 
     Returns:
-        Output fit, not clipped.
+        Absolute projection overlap, not clipped.
 
     Note:
         If W_student has batch dimension, returns mean Q_Y across samples.
@@ -638,15 +564,21 @@ def compute_all_metrics_spreading(
     results['Q_X_COS_ROOT'] = cos_overlap_root(X_s, X_teacher, use_left=False)
 
     # Spreading-aware Q_Y
-    _, fit_y = normalized_mse_and_fit(
+    Y_student_values = (
         compute_sparse_Y(W_s, X_s, spreading_data.F, spreading_data.i_idx, spreading_data.j_idx)
-        if W_s.dim() == 2 else torch.zeros((), device=W_s.device),
+        if W_s.dim() == 2 else torch.zeros((), device=W_s.device)
+    )
+    _, fit_y = normalized_mse_and_fit(
+        Y_student_values,
         spreading_data.Y_values,
     ) if W_s.dim() == 2 else (1.0, 0.0)
     results['Q_Y'] = compute_qy_spreading(W_student, X_student, spreading_data)
     results['Q_Y_observed'] = results['Q_Y']
     results['Q_Y_PROJ_ABS'] = compute_physical_overlap_spreading(W_student, X_student, spreading_data)
     results['Q_Y_observed_PROJ_ABS'] = results['Q_Y_PROJ_ABS']
+    q_y_cos = float(_cosine_values(Y_student_values, spreading_data.Y_values)) if W_s.dim() == 2 else 0.0
+    results['Q_Y_COS'] = q_y_cos
+    results['Q_Y_observed_COS'] = q_y_cos
     results['FIT_Y'] = fit_y
     results['FIT_Y_observed'] = fit_y
 
@@ -739,6 +671,9 @@ def compute_all_metrics_spreading_parallel(
     Q_Y_observed_all = torch.zeros(S, output_A, device=device)
     Q_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     Q_Y_full_all = torch.zeros(S, output_A, device=device)
+    Q_Y_observed_cos_all = torch.zeros(S, output_A, device=device)
+    Q_Y_unobserved_cos_all = torch.zeros(S, output_A, device=device)
+    Q_Y_full_cos_all = torch.zeros(S, output_A, device=device)
     FIT_Y_observed_all = torch.zeros(S, output_A, device=device)
     FIT_Y_unobserved_all = torch.zeros(S, output_A, device=device)
     FIT_Y_full_all = torch.zeros(S, output_A, device=device)
@@ -757,102 +692,68 @@ def compute_all_metrics_spreading_parallel(
     i_idx_all = spreading_data.supergraph.i_idx.long()
     j_idx_all = spreading_data.supergraph.j_idx.long()
     F_super = spreading_data.F_super
+    C_max = int(getattr(spreading_data, "C_max", F_super.shape[1]))
 
     for out_idx, (actual_alpha_idx, local_alpha_idx) in enumerate(zip(actual_alpha_indices, local_alpha_indices)):
         C_k = spreading_data.supergraph.get_active_edges(actual_alpha_idx)
-        if C_k > 0:
-            i_current = i_idx_all[:, :C_k]
-            j_current = j_idx_all[:, :C_k]
-            F_current = F_super[:, :C_k]
-            W_a = W_students[:, local_alpha_idx]
-            X_a_t = X_students[:, local_alpha_idx].transpose(1, 2)
+        W_a = W_students[:, local_alpha_idx]
+        X_a_t = X_students[:, local_alpha_idx].transpose(1, 2)
 
-            Y_teacher_obs = spreading_data.Y_super[:, :C_k]
-            dot_obs, norm_obs, sse_obs = _observed_edge_projection_sums(
+        dot_full, norm_full, student_norm_full, sse_full = _edge_measurement_sums(
+            W_a,
+            X_a_t,
+            i_idx_all[:, :C_max],
+            j_idx_all[:, :C_max],
+            F_super[:, :C_max],
+            spreading_data.Y_super[:, :C_max],
+            sqrt_m_inv=sqrt_m_inv,
+            edge_chunk_size=edge_chunk_size,
+            sample_chunk_size=sample_chunk_size,
+        )
+        fit_full, nmse_full = _fit_from_sums(sse_full, norm_full)
+        Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_full, norm_full)
+        Q_Y_full_cos_all[:, out_idx] = _cosine_from_sums(dot_full, norm_full, student_norm_full)
+        FIT_Y_full_all[:, out_idx] = fit_full
+        NMSE_Y_full_all[:, out_idx] = nmse_full
+        Q_Y_full_proj_abs_all[:, out_idx] = Q_Y_full_all[:, out_idx]
+
+        if C_k > 0:
+            dot_obs, norm_obs, student_norm_obs, sse_obs = _edge_measurement_sums(
                 W_a,
                 X_a_t,
-                i_current,
-                j_current,
-                F_current,
-                Y_teacher_obs,
+                i_idx_all[:, :C_k],
+                j_idx_all[:, :C_k],
+                F_super[:, :C_k],
+                spreading_data.Y_super[:, :C_k],
                 sqrt_m_inv=sqrt_m_inv,
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
             fit_obs, nmse_obs = _fit_from_sums(sse_obs, norm_obs)
             Q_Y_observed_all[:, out_idx] = _projection_abs_from_sums(dot_obs, norm_obs)
+            Q_Y_observed_cos_all[:, out_idx] = _cosine_from_sums(dot_obs, norm_obs, student_norm_obs)
             FIT_Y_observed_all[:, out_idx] = fit_obs
             NMSE_Y_observed_all[:, out_idx] = nmse_obs
             Q_Y_observed_proj_abs_all[:, out_idx] = Q_Y_observed_all[:, out_idx]
 
-            N1, N2 = int(spreading_data.supergraph.N1), int(spreading_data.supergraph.N2)
-            h_i_all = torch.empty(S, C_k, dtype=torch.long, device=device)
-            h_j_all = torch.empty(S, C_k, dtype=torch.long, device=device)
-            f_dtype = torch.float32 if str(getattr(spreading_data, "f_distribution", F_DISTRIBUTION_ISING)) == "gaussian" else torch.int8
-            F_holdout = torch.empty(S, C_k, spreading_data.M, dtype=f_dtype, device=device)
-            valid_samples = torch.ones(S, dtype=torch.bool, device=device)
-            for s in range(S):
-                seed_base = int(spreading_data.supergraph.seeds[s].item())
-                h_i, h_j = _deterministic_heldout_edges(
-                    N1=N1,
-                    N2=N2,
-                    observed_i=i_current[s],
-                    observed_j=j_current[s],
-                    count=int(C_k),
-                    seed=seed_base + 7919 * (int(actual_alpha_idx) + 1),
-                    device=device,
-                )
-                if h_i.numel() < C_k:
-                    valid_samples[s] = False
-                    if h_i.numel() == 0:
-                        h_i = torch.zeros(C_k, dtype=torch.long, device=device)
-                        h_j = torch.zeros(C_k, dtype=torch.long, device=device)
-                    else:
-                        pad = C_k - h_i.numel()
-                        h_i = torch.cat([h_i, h_i[-1:].expand(pad)])
-                        h_j = torch.cat([h_j, h_j[-1:].expand(pad)])
-                h_i_all[s] = h_i[:C_k]
-                h_j_all[s] = h_j[:C_k]
-                gen = torch.Generator(device=device).manual_seed(seed_base + 104729 * (int(actual_alpha_idx) + 1))
-                if str(getattr(spreading_data, "f_distribution", F_DISTRIBUTION_ISING)) == "gaussian":
-                    F_holdout[s].normal_(0, 1, generator=gen)
-                else:
-                    F_holdout[s] = torch.randint(
-                        0,
-                        2,
-                        (C_k, spreading_data.M),
-                        generator=gen,
-                        device=device,
-                        dtype=torch.int8,
-                    ) * 2 - 1
-
-            dot_unobs, norm_unobs, sse_unobs = _heldout_edge_projection_sums(
+        if C_k < C_max:
+            dot_unobs, norm_unobs, student_norm_unobs, sse_unobs = _edge_measurement_sums(
                 W_a,
                 X_a_t,
-                W_teacher,
-                X_teacher.T,
-                h_i_all,
-                h_j_all,
-                F_holdout,
+                i_idx_all[:, C_k:C_max],
+                j_idx_all[:, C_k:C_max],
+                F_super[:, C_k:C_max],
+                spreading_data.Y_super[:, C_k:C_max],
                 sqrt_m_inv=sqrt_m_inv,
                 edge_chunk_size=edge_chunk_size,
                 sample_chunk_size=sample_chunk_size,
             )
             fit_unobs, nmse_unobs = _fit_from_sums(sse_unobs, norm_unobs)
-            q_unobs_proj = _projection_abs_from_sums(dot_unobs, norm_unobs)
-            Q_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, q_unobs_proj, torch.zeros_like(q_unobs_proj))
-            FIT_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, fit_unobs, torch.zeros_like(fit_unobs))
-            NMSE_Y_unobserved_all[:, out_idx] = torch.where(valid_samples, nmse_unobs, torch.ones_like(nmse_unobs))
-            Q_Y_unobserved_proj_abs_all[:, out_idx] = torch.where(
-                valid_samples,
-                q_unobs_proj,
-                torch.zeros_like(q_unobs_proj),
-            )
-            fit_full, nmse_full = _fit_from_sums(sse_obs + sse_unobs, norm_obs + norm_unobs)
-            Q_Y_full_all[:, out_idx] = _projection_abs_from_sums(dot_obs + dot_unobs, norm_obs + norm_unobs)
-            FIT_Y_full_all[:, out_idx] = fit_full
-            NMSE_Y_full_all[:, out_idx] = nmse_full
-            Q_Y_full_proj_abs_all[:, out_idx] = Q_Y_full_all[:, out_idx]
+            Q_Y_unobserved_all[:, out_idx] = _projection_abs_from_sums(dot_unobs, norm_unobs)
+            Q_Y_unobserved_cos_all[:, out_idx] = _cosine_from_sums(dot_unobs, norm_unobs, student_norm_unobs)
+            FIT_Y_unobserved_all[:, out_idx] = fit_unobs
+            NMSE_Y_unobserved_all[:, out_idx] = nmse_unobs
+            Q_Y_unobserved_proj_abs_all[:, out_idx] = Q_Y_unobserved_all[:, out_idx]
 
         w_root, w_replica, w_prime = _cos_root_and_replica_by_alpha(
             W_students[:, local_alpha_idx],
@@ -874,6 +775,9 @@ def compute_all_metrics_spreading_parallel(
     qy_mean, qy_std = _mean_std(Q_Y_full_all, dim=0)
     qy_obs_mean, qy_obs_std = _mean_std(Q_Y_observed_all, dim=0)
     qy_unobs_mean, qy_unobs_std = _mean_std(Q_Y_unobserved_all, dim=0)
+    qy_cos_mean, qy_cos_std = _mean_std(Q_Y_full_cos_all, dim=0)
+    qy_obs_cos_mean, qy_obs_cos_std = _mean_std(Q_Y_observed_cos_all, dim=0)
+    qy_unobs_cos_mean, qy_unobs_cos_std = _mean_std(Q_Y_unobserved_cos_all, dim=0)
     nmse_y_mean, nmse_y_std = _mean_std(NMSE_Y_full_all, dim=0)
     nmse_y_obs_mean, nmse_y_obs_std = _mean_std(NMSE_Y_observed_all, dim=0)
     nmse_y_unobs_mean, nmse_y_unobs_std = _mean_std(NMSE_Y_unobserved_all, dim=0)
@@ -907,18 +811,24 @@ def compute_all_metrics_spreading_parallel(
     return {
         'Q_Y_mean': qy_mean,
         'Q_Y_std': qy_std,
+        'Q_Y_COS_mean': qy_cos_mean,
+        'Q_Y_COS_std': qy_cos_std,
         'NMSE_Y_mean': nmse_y_mean,
         'NMSE_Y_std': nmse_y_std,
         'FIT_Y_mean': fit_y_mean,
         'FIT_Y_std': fit_y_std,
         'Q_Y_observed_mean': qy_obs_mean,
         'Q_Y_observed_std': qy_obs_std,
+        'Q_Y_observed_COS_mean': qy_obs_cos_mean,
+        'Q_Y_observed_COS_std': qy_obs_cos_std,
         'NMSE_Y_observed_mean': nmse_y_obs_mean,
         'NMSE_Y_observed_std': nmse_y_obs_std,
         'FIT_Y_observed_mean': fit_y_obs_mean,
         'FIT_Y_observed_std': fit_y_obs_std,
         'Q_Y_unobserved_mean': qy_unobs_mean,
         'Q_Y_unobserved_std': qy_unobs_std,
+        'Q_Y_unobserved_COS_mean': qy_unobs_cos_mean,
+        'Q_Y_unobserved_COS_std': qy_unobs_cos_std,
         'NMSE_Y_unobserved_mean': nmse_y_unobs_mean,
         'NMSE_Y_unobserved_std': nmse_y_unobs_std,
         'FIT_Y_unobserved_mean': fit_y_unobs_mean,

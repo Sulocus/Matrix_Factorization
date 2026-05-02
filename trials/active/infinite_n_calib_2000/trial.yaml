@@ -1,0 +1,9 @@
+key: infinite_n_calib_2000
+status: active
+runtime_class: gpu_heavy
+purpose: Infinite-size-regime finite-time calibration for N=2000.
+owner_area: bigamp_onsager
+config: trials/active/infinite_n_calib_2000/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/infinite_n_calib_2000
+notes: Existing calibration trial manifest added to satisfy trial inventory.

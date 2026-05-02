@@ -1,0 +1,11 @@
+key: metric_plateau_trend_n200_reference
+status: active
+runtime_class: quick
+purpose: N=200 fixed-step reference for trend-decay self-convergence stop probe.
+owner_area: bigamp_onsager
+config: trials/active/metric_plateau_trend_n200_reference/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_trend_n200_reference
+expected_metrics:
+  - Q_W_mean
+notes: Reference steps are ceil(1.5 * 8000 / 100) * 100 = 12000 from the current trend-decay probe.

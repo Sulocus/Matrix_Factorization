@@ -24,6 +24,8 @@ def test_parameter_specs_cover_core_yaml_fields():
         "training.num_workers",
         "spreading.seed",
         "algorithm_params.use_compile",
+        "algorithm_params.use_metric_plateau_stop",
+        "algorithm_params.plateau_signal",
         "output.enable_heatmap",
     ]:
         assert path in specs
@@ -500,6 +502,159 @@ output:
     assert chain["algorithm_params.precision_profile"]["consumption_status"] == "effective"
     assert chain["algorithm_params.use_compile"]["active_in_current_plan"] is False
     assert chain["algorithm_params.use_compile"]["consumption_status"] == "inactive_current_route"
+
+
+def test_metric_plateau_params_are_effective_only_for_flat_spreading(tmp_path):
+    config_path = tmp_path / "plateau_flat_spreading.yaml"
+    config_path.write_text(
+        """
+tensor_order: 2
+algorithm: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
+algorithm_params:
+  use_metric_plateau_stop: true
+  plateau_check_interval: 1
+  plateau_window_steps: 1
+  plateau_patience: 1
+  plateau_abs_tol: 0.003
+  plateau_rel_tol: 0.01
+  plateau_min_steps: 0
+  plateau_signal: teacher_latent_overlap
+  plateau_monitor: teacher_latent_overlap_qw_qx
+spreading:
+  f_distribution: 1
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+
+    assert config.algorithm_key == "bigamp_spreading"
+    assert config.spreading.allow_intra_connection is False
+    assert chain["algorithm_params.use_metric_plateau_stop"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.plateau_rel_tol"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.plateau_monitor"]["consumption_status"] == "effective"
+    assert chain["algorithm_params.plateau_window_steps"]["consumption_status"] == "effective"
+    assert plan.resource_plan["config_effective"]["metric_plateau_stop"]["enabled"] is True
+    assert plan.resource_plan["config_effective"]["metric_plateau_stop"]["teacher_assisted"] is True
+    assert plan.resource_plan["config_effective"]["metric_plateau_stop"]["strategy"] == "self_convergence_window_trend_decay"
+    assert plan.resource_plan["config_effective"]["metric_plateau_stop"]["effective_window_steps"] == 1
+
+
+def test_metric_plateau_params_are_inactive_for_general_spreading(tmp_path):
+    config_path = tmp_path / "plateau_general_spreading.yaml"
+    config_path.write_text(
+        """
+tensor_order: 1
+algorithm: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
+algorithm_params:
+  use_metric_plateau_stop: true
+  plateau_check_interval: 1
+  plateau_window_steps: 1
+  plateau_patience: 1
+  plateau_abs_tol: 0.003
+  plateau_rel_tol: 0.01
+  plateau_min_steps: 0
+  plateau_signal: teacher_latent_overlap
+  plateau_monitor: teacher_latent_overlap_qw_qx
+spreading:
+  f_distribution: 1
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path)
+    chain = {item["path"]: item for item in plan.parameter_chain()}
+
+    assert config.algorithm_key == "bigamp_spreading"
+    assert config.spreading.allow_intra_connection is True
+    assert chain["algorithm_params.use_metric_plateau_stop"]["active_in_current_plan"] is False
+    assert chain["algorithm_params.use_metric_plateau_stop"]["consumption_status"] == "inactive_current_route"
+    assert any(
+        "algorithm_params.use_metric_plateau_stop 在当前 algorithm/scan 路由下不会生效" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_strict_mode_rejects_metric_plateau_on_general_spreading(tmp_path):
+    config_path = tmp_path / "strict_plateau_general_spreading.yaml"
+    config_path.write_text(
+        """
+tensor_order: 1
+algorithm: 2
+matrix:
+  N1: 4
+  N2: 4
+  M: 2
+training:
+  samples_per_alpha: 1
+  max_steps: 2
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 0.0
+        step: 1.0
+algorithm_params:
+  use_metric_plateau_stop: true
+  plateau_check_interval: 1
+  plateau_window_steps: 1
+  plateau_patience: 1
+  plateau_abs_tol: 0.003
+  plateau_rel_tol: 0.01
+  plateau_min_steps: 0
+  plateau_signal: teacher_latent_overlap
+  plateau_monitor: teacher_latent_overlap_qw_qx
+spreading:
+  f_distribution: 1
+output:
+  enable_heatmap: false
+""",
+        encoding="utf-8",
+    )
+    config, output_options, raw_yaml = load_yaml_config(config_path)
+    plan = build_experiment_plan(config, output_options, raw_yaml, config_path, strict=True)
+
+    assert any(
+        "strict mode: algorithm_params.use_metric_plateau_stop 在当前 algorithm/scan 路由下不会生效" in error
+        for error in plan.errors
+    )
 
 
 def test_strict_mode_rejects_inactive_current_route_parameters(tmp_path):

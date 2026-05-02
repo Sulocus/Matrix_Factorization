@@ -9,6 +9,7 @@ from matrix_factorization.modules.graphs.supergraph import create_supergraph
 from matrix_factorization.modules.metrics.spreading import (
     BatchMetricPayload,
     compute_all_metrics_spreading_parallel,
+    _cos_root_and_replica_by_alpha,
 )
 from matrix_factorization.modules.teachers.random_spreading import SpreadingDataParallel
 
@@ -53,6 +54,101 @@ def _small_spreading_fixture(device: torch.device) -> SpreadingDataParallel:
     )
 
 
+def _direct_supergraph_measurement_metrics(
+    w_students: torch.Tensor,
+    x_students: torch.Tensor,
+    data: SpreadingDataParallel,
+) -> dict[str, torch.Tensor]:
+    """Reference implementation over stored supergraph edges only."""
+
+    samples, alpha_count = int(w_students.shape[0]), int(w_students.shape[1])
+    c_max = int(data.C_max)
+    sqrt_m_inv = float(data.M) ** -0.5
+    result = {
+        "full_projection": torch.zeros(samples, alpha_count, device=w_students.device),
+        "observed_projection": torch.zeros(samples, alpha_count, device=w_students.device),
+        "unobserved_projection": torch.zeros(samples, alpha_count, device=w_students.device),
+        "full_cos": torch.zeros(samples, alpha_count, device=w_students.device),
+        "observed_cos": torch.zeros(samples, alpha_count, device=w_students.device),
+        "unobserved_cos": torch.zeros(samples, alpha_count, device=w_students.device),
+    }
+
+    for sample_idx in range(samples):
+        for alpha_idx in range(alpha_count):
+            c_k = int(data.supergraph.get_active_edges(alpha_idx))
+            x_t = x_students[sample_idx, alpha_idx].T
+            for prefix, start, stop in [
+                ("full", 0, c_max),
+                ("observed", 0, c_k),
+                ("unobserved", c_k, c_max),
+            ]:
+                if stop <= start:
+                    continue
+                i_idx = data.supergraph.i_idx[sample_idx, start:stop].long()
+                j_idx = data.supergraph.j_idx[sample_idx, start:stop].long()
+                f_values = data.F_super[sample_idx, start:stop].to(w_students.dtype)
+                y_student = sqrt_m_inv * (
+                    f_values
+                    * w_students[sample_idx, alpha_idx, i_idx]
+                    * x_t[j_idx]
+                ).sum(dim=-1)
+                y_teacher = data.Y_super[sample_idx, start:stop].to(w_students.dtype)
+                dot = (y_student * y_teacher).sum()
+                teacher_norm = (y_teacher * y_teacher).sum()
+                student_norm = (y_student * y_student).sum()
+                result[f"{prefix}_projection"][sample_idx, alpha_idx] = dot.abs() / (teacher_norm + 1e-12)
+                result[f"{prefix}_cos"][sample_idx, alpha_idx] = dot / torch.sqrt(
+                    teacher_norm * student_norm + 1e-12
+                )
+    return result
+
+
+def _legacy_cos_root_and_replica_by_alpha(
+    factors: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    use_left: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if use_left:
+        grams = torch.matmul(factors, factors.transpose(-1, -2))
+        teacher_gram = teacher @ teacher.T
+        n, m = int(factors.shape[-2]), int(factors.shape[-1])
+    else:
+        grams = torch.matmul(factors.transpose(-1, -2), factors)
+        teacher_gram = teacher.T @ teacher
+        n, m = int(factors.shape[-1]), int(factors.shape[-2])
+    flat = grams.reshape(grams.shape[0], -1).float()
+    teacher_flat = teacher_gram.reshape(-1).float()
+    teacher_norm = teacher_flat.norm() + 1e-12
+    q = (flat * teacher_flat).sum(dim=1) / ((flat.norm(dim=1) * teacher_norm) + 1e-12)
+    baseline = float(m) / float(m + n + 1)
+    corrected = ((q - baseline) / (1.0 - baseline + 1e-12)).clamp(0.0, 1.0)
+    cos_root = corrected.sqrt()
+    normalized = flat / (flat.norm(dim=1, keepdim=True) + 1e-12)
+    pair_cos = normalized @ normalized.T
+    pair_corrected = ((pair_cos - baseline) / (1.0 - baseline + 1e-12)).clamp(0.0, 1.0)
+    upper = torch.triu_indices(factors.shape[0], factors.shape[0], offset=1, device=factors.device)
+    return cos_root.float(), pair_cos[upper[0], upper[1]].mean().float(), pair_corrected[upper[0], upper[1]].mean().float()
+
+
+def test_spreading_cos_root_uses_low_rank_equivalent_formula():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(19)
+    w_factors = torch.randn(3, 7, 4, device=device)
+    w_teacher = torch.randn(7, 4, device=device)
+    x_factors = torch.randn(3, 4, 9, device=device)
+    x_teacher = torch.randn(4, 9, device=device)
+
+    for factors, teacher, use_left in [
+        (w_factors, w_teacher, True),
+        (x_factors, x_teacher, False),
+    ]:
+        actual = _cos_root_and_replica_by_alpha(factors, teacher, use_left=use_left)
+        expected = _legacy_cos_root_and_replica_by_alpha(factors, teacher, use_left=use_left)
+        for actual_value, expected_value in zip(actual, expected):
+            assert torch.allclose(actual_value, expected_value, atol=5e-4, rtol=5e-4)
+
+
 def test_spreading_batch_metrics_perfect_teacher_recovery():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = _small_spreading_fixture(device)
@@ -63,10 +159,19 @@ def test_spreading_batch_metrics_perfect_teacher_recovery():
 
     metrics = compute_all_metrics_spreading_parallel(w_students, x_students, data)
 
+    expected_unobserved = torch.tensor(
+        [
+            1.0 if data.supergraph.get_active_edges(alpha_idx) < data.C_max else 0.0
+            for alpha_idx in range(alphas)
+        ],
+        device=device,
+    )
+
     for key in [
         "Q_Y_mean",
         "Q_Y_observed_mean",
-        "Q_Y_unobserved_mean",
+        "Q_Y_COS_mean",
+        "Q_Y_observed_COS_mean",
         "Q_W_COS_ROOT_mean",
         "Q_X_COS_ROOT_mean",
         "Q_W_replica_mean",
@@ -75,6 +180,8 @@ def test_spreading_batch_metrics_perfect_teacher_recovery():
         "Q_X_prime_replica_mean",
     ]:
         assert torch.allclose(metrics[key], torch.ones_like(metrics[key]), atol=1e-5), key
+    assert torch.allclose(metrics["Q_Y_unobserved_mean"], expected_unobserved, atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_unobserved_COS_mean"], expected_unobserved, atol=1e-5)
     w_self = (data.W_teacher * data.W_teacher).mean()
     x_self = (data.X_teacher * data.X_teacher).mean()
     assert torch.allclose(metrics["Q_W_mean"], torch.full_like(metrics["Q_W_mean"], float(w_self)), atol=1e-5)
@@ -93,6 +200,59 @@ def test_spreading_batch_metrics_perfect_teacher_recovery():
         torch.zeros_like(metrics["median_abs_log_k_mean"]),
         atol=1e-5,
     )
+
+
+def test_spreading_full_qy_uses_stored_supergraph_not_equal_count_heldout():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data = _small_spreading_fixture(device)
+    torch.manual_seed(23)
+    w_students = torch.randn(data.S, data.A, data.W_teacher.shape[0], data.M, device=device)
+    x_students = torch.randn(data.S, data.A, data.M, data.X_teacher.shape[1], device=device)
+
+    metrics = compute_all_metrics_spreading_parallel(w_students, x_students, data)
+    expected = _direct_supergraph_measurement_metrics(w_students, x_students, data)
+
+    assert torch.allclose(metrics["Q_Y_mean"], expected["full_projection"].mean(dim=0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_observed_mean"], expected["observed_projection"].mean(dim=0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_unobserved_mean"], expected["unobserved_projection"].mean(dim=0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_COS_mean"], expected["full_cos"].mean(dim=0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_observed_COS_mean"], expected["observed_cos"].mean(dim=0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_unobserved_COS_mean"], expected["unobserved_cos"].mean(dim=0), atol=1e-5)
+
+
+def test_spreading_output_cosine_is_signed_and_separate_from_projection_scale():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data = _small_spreading_fixture(device)
+    samples = data.S
+    alphas = data.A
+    w_students = (
+        2.0
+        * data.W_teacher.unsqueeze(0).unsqueeze(0).expand(samples, alphas, -1, -1).clone()
+    )
+    x_students = data.X_teacher.unsqueeze(0).unsqueeze(0).expand(samples, alphas, -1, -1).clone()
+
+    metrics = compute_all_metrics_spreading_parallel(w_students, x_students, data)
+    expected_unobserved_projection = torch.tensor(
+        [
+            2.0 if data.supergraph.get_active_edges(alpha_idx) < data.C_max else 0.0
+            for alpha_idx in range(alphas)
+        ],
+        device=device,
+    )
+    expected_unobserved_cos = torch.tensor(
+        [
+            1.0 if data.supergraph.get_active_edges(alpha_idx) < data.C_max else 0.0
+            for alpha_idx in range(alphas)
+        ],
+        device=device,
+    )
+
+    assert torch.allclose(metrics["Q_Y_mean"], torch.full_like(metrics["Q_Y_mean"], 2.0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_observed_mean"], torch.full_like(metrics["Q_Y_observed_mean"], 2.0), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_unobserved_mean"], expected_unobserved_projection, atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_COS_mean"], torch.ones_like(metrics["Q_Y_COS_mean"]), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_observed_COS_mean"], torch.ones_like(metrics["Q_Y_observed_COS_mean"]), atol=1e-5)
+    assert torch.allclose(metrics["Q_Y_unobserved_COS_mean"], expected_unobserved_cos, atol=1e-5)
 
 
 def test_spreading_batch_metrics_separate_coordinate_and_sign_aligned_overlap():

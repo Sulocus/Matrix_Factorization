@@ -53,6 +53,11 @@ from .step import (
     forward_disjoint_union_flat_corrected,
     clear_step_cache
 )
+from .plateau import (
+    MetricPlateauStopConfig,
+    MetricPlateauStopper,
+    compute_teacher_latent_snapshot,
+)
 
 
 # ============================================================================
@@ -202,6 +207,19 @@ class BiGAMPSpreading(AlgorithmBase):
                 f"Invalid f_distribution='{self.f_distribution}'. "
                 f"Available: {list(F_GENERATORS.keys())}"
             )
+
+        self.metric_plateau_stop_config = MetricPlateauStopConfig.from_algorithm_params(
+            config.algorithm_params
+        )
+        if self.metric_plateau_stop_config.enabled and self.allow_intra_connection:
+            raise ValueError(
+                "algorithm_params.use_metric_plateau_stop is only supported by the flat "
+                "bigamp_spreading route; spreading.allow_intra_connection=true uses the "
+                "general graph route."
+            )
+        self._metric_plateau_stop_batch_summaries: List[Dict[str, Any]] = []
+        self._metric_plateau_stop_run_summary: Optional[Dict[str, Any]] = None
+        self._last_metric_plateau_stop_summary: Optional[Dict[str, Any]] = None
 
         # torch.compile for kernel fusion.  The spreading flat routes keep the
         # legacy fast tensor algebra, but avoid reduce-overhead CUDA graph
@@ -428,6 +446,7 @@ class BiGAMPSpreading(AlgorithmBase):
             "compile_status": self._compile_status_for_spreading_path(),
             "compile_cuda_graphs_enabled": bool(getattr(self, "compile_cuda_graphs_enabled", False)),
             "compile_disabled_reason": getattr(self, "compile_disabled_reason", ""),
+            "metric_plateau_stop": self._metric_plateau_execution_metadata(),
             "compile_attempts": list(getattr(self, "compile_attempts", [])),
             "requested_use_tf32": bool(getattr(self, "requested_use_tf32", True)),
             "tf32_matmul_enabled": torch.backends.cuda.matmul.allow_tf32,
@@ -454,6 +473,146 @@ class BiGAMPSpreading(AlgorithmBase):
             ),
             "metadata_only": True,
             "notes": "Spreading execution metadata only; chunk_size is manual config and no auto tuning is applied.",
+        }
+
+    def _metric_plateau_execution_metadata(self) -> Dict[str, Any]:
+        config = getattr(self, "metric_plateau_stop_config", MetricPlateauStopConfig())
+        metadata: Dict[str, Any] = {
+            "enabled": bool(config.enabled),
+            "teacher_assisted": bool(config.enabled),
+            "config": config.to_dict(),
+            "supported_route": "flat_bigamp_spreading",
+            "route_active": not bool(getattr(self, "allow_intra_connection", False)),
+        }
+        run_summary = getattr(self, "_metric_plateau_stop_run_summary", None)
+        if run_summary is not None:
+            metadata["last_run"] = run_summary
+        return metadata
+
+    def _new_metric_plateau_stopper(self, alpha_values: List[float]) -> Optional[MetricPlateauStopper]:
+        config = getattr(self, "metric_plateau_stop_config", MetricPlateauStopConfig())
+        if not config.enabled:
+            return None
+        if self.allow_intra_connection:
+            raise ValueError(
+                "metric plateau stop is only supported by flat bigamp_spreading, "
+                "not the general graph route."
+            )
+        return MetricPlateauStopper(config=config, alpha_values=[float(alpha) for alpha in alpha_values])
+
+    def _record_metric_plateau_initial_snapshot(
+        self,
+        stopper: Optional[MetricPlateauStopper],
+        *,
+        W_flat: torch.Tensor,
+        X_flat: torch.Tensor,
+        spreading_data: SpreadingDataParallel,
+        S: int,
+        N1: int,
+        N2: int,
+        M: int,
+    ) -> None:
+        if stopper is None:
+            return
+        stopper.observe(
+            compute_teacher_latent_snapshot(
+                step=0,
+                W_flat=W_flat,
+                X_flat=X_flat,
+                W_teacher=spreading_data.W_teacher,
+                X_teacher=spreading_data.X_teacher,
+                S=S,
+                N1=N1,
+                N2=N2,
+                M=M,
+            )
+        )
+
+    def _metric_plateau_check_after_step(
+        self,
+        stopper: Optional[MetricPlateauStopper],
+        *,
+        step_number: int,
+        W_flat: torch.Tensor,
+        X_flat: torch.Tensor,
+        spreading_data: SpreadingDataParallel,
+        S: int,
+        N1: int,
+        N2: int,
+        M: int,
+    ) -> bool:
+        if stopper is None:
+            return False
+        if step_number % stopper.config.check_interval != 0:
+            return False
+        result = stopper.observe(
+            compute_teacher_latent_snapshot(
+                step=step_number,
+                W_flat=W_flat,
+                X_flat=X_flat,
+                W_teacher=spreading_data.W_teacher,
+                X_teacher=spreading_data.X_teacher,
+                S=S,
+                N1=N1,
+                N2=N2,
+                M=M,
+            )
+        )
+        return bool(result.stop)
+
+    def _finalize_metric_plateau_summary(
+        self,
+        stopper: Optional[MetricPlateauStopper],
+        *,
+        steps_run: int,
+        configured_max_steps: int,
+        alpha_values: List[float],
+    ) -> Optional[Dict[str, Any]]:
+        if stopper is None:
+            self._last_metric_plateau_stop_summary = None
+            return None
+        summary = stopper.summary(
+            steps_run=steps_run,
+            configured_max_steps=configured_max_steps,
+        )
+        summary["alpha_values"] = [float(alpha) for alpha in alpha_values]
+        self._last_metric_plateau_stop_summary = summary
+        return summary
+
+    def _reset_metric_plateau_run_summaries(self) -> None:
+        self._metric_plateau_stop_batch_summaries = []
+        self._metric_plateau_stop_run_summary = None
+        self._last_metric_plateau_stop_summary = None
+
+    def _append_metric_plateau_batch_summary(
+        self,
+        *,
+        batch_idx: int,
+        alpha_start: int,
+        alpha_end: int,
+        alpha_values: List[float],
+    ) -> None:
+        summary = getattr(self, "_last_metric_plateau_stop_summary", None)
+        if not isinstance(summary, dict):
+            return
+        batch_summary = dict(summary)
+        batch_summary.update({
+            "batch_idx": int(batch_idx),
+            "alpha_start": int(alpha_start),
+            "alpha_end": int(alpha_end),
+            "alpha_values": [float(alpha) for alpha in alpha_values],
+        })
+        self._metric_plateau_stop_batch_summaries.append(batch_summary)
+        self._metric_plateau_stop_run_summary = {
+            "enabled": bool(self.metric_plateau_stop_config.enabled),
+            "teacher_assisted": bool(self.metric_plateau_stop_config.enabled),
+            "config": self.metric_plateau_stop_config.to_dict(),
+            "num_batches": len(self._metric_plateau_stop_batch_summaries),
+            "any_stopped_early": any(
+                item.get("stop_reason") in {"metric_plateau", "metric_self_convergence"}
+                for item in self._metric_plateau_stop_batch_summaries
+            ),
+            "batches": list(self._metric_plateau_stop_batch_summaries),
         }
 
     def _uses_partition_invariant_seed_policy(self) -> bool:
@@ -1092,6 +1251,18 @@ class BiGAMPSpreading(AlgorithmBase):
 
         # Use provided max_steps or fall back to config
         steps = max_steps if max_steps is not None else self.max_steps
+        steps_run = 0
+        metric_plateau = self._new_metric_plateau_stopper(effective_alpha_values)
+        self._record_metric_plateau_initial_snapshot(
+            metric_plateau,
+            W_flat=W_flat,
+            X_flat=X_flat,
+            spreading_data=spreading_data,
+            S=S,
+            N1=N1,
+            N2=N2,
+            M=M,
+        )
 
         # BiG-AMP iterations with optimized flat function
         for step in range(steps):
@@ -1173,8 +1344,33 @@ class BiGAMPSpreading(AlgorithmBase):
             if verbose and (step + 1) % 100 == 0:
                 print(f"  Step {step + 1}/{steps}")
 
+            steps_run = step + 1
+            stop_requested = self._metric_plateau_check_after_step(
+                metric_plateau,
+                step_number=steps_run,
+                W_flat=W_flat,
+                X_flat=X_flat,
+                spreading_data=spreading_data,
+                S=S,
+                N1=N1,
+                N2=N2,
+                M=M,
+            )
+
             if step_callback:
-                step_callback(step + 1, steps)
+                step_callback(steps_run, steps)
+
+            if stop_requested:
+                if verbose:
+                    print(f"  [MetricPlateauStop] stopped at step {steps_run}/{steps}")
+                break
+
+        self._finalize_metric_plateau_summary(
+            metric_plateau,
+            steps_run=steps_run,
+            configured_max_steps=steps,
+            alpha_values=effective_alpha_values,
+        )
 
         # ===== Only reshape at the END for output =====
         # (B, S*N1, M) -> (B, S, N1, M) -> (S, B, N1, M)
@@ -1196,7 +1392,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 N1=N1,
                 N2=N2,
                 M=M,
-                steps=steps,
+                steps=steps_run,
                 alpha_values=effective_alpha_values,
                 W_teacher=spreading_data.W_teacher,
                 X_teacher=spreading_data.X_teacher,
@@ -1389,6 +1585,18 @@ class BiGAMPSpreading(AlgorithmBase):
         damp_history = None
         if self.debug_verbose and batch_alpha_values is not None:
             damp_history = torch.zeros(steps, B, dtype=torch.float32, device=self.device)
+        steps_run = 0
+        metric_plateau = self._new_metric_plateau_stopper(effective_alpha_values)
+        self._record_metric_plateau_initial_snapshot(
+            metric_plateau,
+            W_flat=W_flat,
+            X_flat=X_flat,
+            spreading_data=spreading_data,
+            S=S,
+            N1=N1,
+            N2=N2,
+            M=M,
+        )
 
         for step in range(steps):
             beta_current = damping
@@ -1613,14 +1821,39 @@ class BiGAMPSpreading(AlgorithmBase):
                 
             if step < 20:            
                  pass # print(f"DEBUG: Step {step}: damp_mean={damping.mean().item():.3f}, pass_cnt={pass_mask.sum().item()}/{B}")
-            
+
+            steps_run = step + 1
+            stop_requested = self._metric_plateau_check_after_step(
+                metric_plateau,
+                step_number=steps_run,
+                W_flat=W_flat,
+                X_flat=X_flat,
+                spreading_data=spreading_data,
+                S=S,
+                N1=N1,
+                N2=N2,
+                M=M,
+            )
+
             # [UI FIX] Restore Progress Bar Callback
             if step_callback:
-                step_callback(step + 1, steps)
+                step_callback(steps_run, steps)
 
             # Record Damping History (GPU-side copy)
             if damp_history is not None:
                 damp_history[step] = damping.detach().float()
+
+            if stop_requested:
+                if verbose:
+                    print(f"  [MetricPlateauStop] stopped at step {steps_run}/{steps}")
+                break
+
+        self._finalize_metric_plateau_summary(
+            metric_plateau,
+            steps_run=steps_run,
+            configured_max_steps=steps,
+            alpha_values=effective_alpha_values,
+        )
         
         # Save Debug Data if recorded
         if damp_history is not None:
@@ -1655,7 +1888,7 @@ class BiGAMPSpreading(AlgorithmBase):
                 N1=N1,
                 N2=N2,
                 M=M,
-                steps=steps,
+                steps=steps_run,
                 alpha_values=effective_alpha_values,
                 W_teacher=spreading_data.W_teacher,
                 X_teacher=spreading_data.X_teacher,
@@ -1993,6 +2226,7 @@ class BiGAMPSpreading(AlgorithmBase):
         N2 = X_teacher.shape[1]
         A = len(alpha_values)
         alpha_max = max(alpha_values) if alpha_values else 4.0
+        self._reset_metric_plateau_run_summaries()
 
         if spreading_data is not None:
             continuation_active = (
@@ -2021,6 +2255,16 @@ class BiGAMPSpreading(AlgorithmBase):
                     initial_state=initial_state,
                     return_continuation_state=return_continuation_state,
                     continuation_context=continuation_context,
+                )
+                self._append_metric_plateau_batch_summary(
+                    batch_idx=0,
+                    alpha_start=0,
+                    alpha_end=len(alpha_values),
+                    alpha_values=alpha_values,
+                )
+                self._contract_execution_metadata = self._build_spreading_execution_metadata(
+                    alpha_values,
+                    [(0, len(alpha_values), alpha_max)] if alpha_values else [],
                 )
                 return W_batch.transpose(0, 1), X_batch.transpose(0, 1)
 
@@ -2059,9 +2303,19 @@ class BiGAMPSpreading(AlgorithmBase):
                 )
                 W_result[alpha_start:alpha_end] = W_batch.transpose(0, 1)
                 X_result[alpha_start:alpha_end] = X_batch.transpose(0, 1)
+                self._append_metric_plateau_batch_summary(
+                    batch_idx=batch_idx,
+                    alpha_start=alpha_start,
+                    alpha_end=alpha_end,
+                    alpha_values=batch_alpha_list,
+                )
                 del W_batch, X_batch
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
+            self._contract_execution_metadata = self._build_spreading_execution_metadata(
+                alpha_values,
+                dynamic_batches,
+            )
             return W_result, X_result
 
         dynamic_batches = self._compute_internal_spreading_alpha_batches(
@@ -2124,11 +2378,21 @@ class BiGAMPSpreading(AlgorithmBase):
             # Store results: transpose (S, B, ...) -> (B, S, ...)
             W_result[alpha_start:alpha_end] = W_batch.transpose(0, 1)
             X_result[alpha_start:alpha_end] = X_batch.transpose(0, 1)
+            self._append_metric_plateau_batch_summary(
+                batch_idx=batch_idx,
+                alpha_start=alpha_start,
+                alpha_end=alpha_end,
+                alpha_values=batch_alpha_list,
+            )
 
             # Clear cache between batches
             if batch_idx < num_batches - 1:
                 torch.cuda.empty_cache()
 
+        self._contract_execution_metadata = self._build_spreading_execution_metadata(
+            alpha_values,
+            dynamic_batches,
+        )
         return W_result, X_result
 
     def train_batch_result(
@@ -2224,6 +2488,12 @@ class BiGAMPSpreading(AlgorithmBase):
                 "metric_gpu_wall": 0.0,
                 "metric_materialize_cpu": 0.0,
             }
+        plateau_summary = getattr(self, "_metric_plateau_stop_run_summary", None)
+        if isinstance(plateau_summary, dict):
+            result.diagnostics["metric_plateau_stop"] = plateau_summary
+            execution_metadata = result.metadata.setdefault("execution_metadata", {})
+            if isinstance(execution_metadata, dict):
+                execution_metadata["metric_plateau_stop"] = self._metric_plateau_execution_metadata()
         if kwargs.get("return_continuation_state", False):
             result.continuation_state = getattr(self, "_last_continuation_state", None)
         return result

@@ -47,7 +47,8 @@
   - `Q_W/Q_X`：matrix latent coordinate projection。
   - `Q_N`：tensor latent node/spin/factor projection。
   - `Q_W_COS_ROOT/Q_X_COS_ROOT`：Gram diagnostic，不是 coordinate projection。
-- Formal schema 不再把 `MSE / Gen_Error / Q_Y_COS / physical_overlap_* / Q_W_prime / Q_X_prime` 当 active metric。
+- Formal schema 不再把 `MSE / Gen_Error / physical_overlap_* / Q_W_prime / Q_X_prime` 当 active metric；
+  spreading schema v6 重新注册了 F-aware `Q_Y_COS` 作为 signed cosine diagnostic。
 - 旧 result schema `<3` 的 `Q_Y_mean` 会标记为 legacy cosine/proxy；schema `3` 的 `Q_Y_mean` 标记为 absolute projection。
 - `projection_policy` 记录 degenerate teacher norm 约定：teacher norm 过小时返回 0。
 - 手算 fixture 已覆盖 projection helper、matrix observed/unobserved/full、Cos-root 分离、spreading observed perfect teacher、tensor observed/Q_N。

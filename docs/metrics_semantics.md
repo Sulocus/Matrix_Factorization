@@ -8,14 +8,17 @@
 - `MetricSemanticClass`：metric 的 canonical 语义类。
 - `get_metric_schema()`：生成写入 `metrics.json` 的 result schema metadata。
 
-## Schema v5: `projection_qy_physical_latent_v2`
+## Schema v6: `projection_qy_supergraph_full_cos_v3`
 
-当前 active schema v5 使用这些 canonical keys：
+当前 active schema v6 使用这些 canonical keys：
 
 ```text
 measurement.full.teacher_student.Q_Y_projection
 measurement.observed.teacher_student.Q_Y_projection
 measurement.unobserved.teacher_student.Q_Y_projection
+measurement.full.teacher_student.Q_Y_COS
+measurement.observed.teacher_student.Q_Y_COS
+measurement.unobserved.teacher_student.Q_Y_COS
 measurement.full.teacher_student.FIT_Y
 measurement.observed.teacher_student.FIT_Y
 measurement.unobserved.teacher_student.FIT_Y
@@ -43,7 +46,10 @@ latent.N.teacher_student.Q_N_overlap
 `Q_Y_mean` 是 output absolute projection。`FIT_Y_mean` 是 `1 - NMSE_Y`
 reconstruction fit。`Q_W_mean`、`Q_X_mean`、`Q_N_mean` 是固定分母
 coordinate overlap。`*_PROJ_ABS` 是旧 schema v3 absolute projection
-diagnostic；在 v5 中 `Q_Y_PROJ_ABS` 与 `Q_Y` 语义相同但保留为迁移显式字段。
+diagnostic；在 v6 中 `Q_Y_PROJ_ABS` 与 `Q_Y` 语义相同但保留为迁移显式字段。
+spreading 的 full `Q_Y` 是完整 supergraph F-aware measurement set
+`0:C_max`，不同于 schema v5 之前的 equal-count heldout full 诊断。
+`Q_Y_COS` 是同一 scope 上的 signed cosine diagnostic。
 
 ## 读法
 
@@ -65,11 +71,32 @@ order_parameter_status: candidate / diagnostic / not_order_parameter / review
 ### output_similarity.full
 
 ```text
+matrix.full.teacher_student.Q_Y_projection
+  legacy aliases: Q_Y_mean, Q_Y_std
+  appears in: agd, bigamp
+  meaning: dense matrix full-output absolute projection
+  status: candidate order parameter
+  risk: medium
+
+spreading.full.teacher_student.Q_Y_projection
+  legacy aliases: Q_Y_mean, Q_Y_std
+  appears in: bigamp_spreading
+  meaning: full supergraph F-aware measurement absolute projection over 0:C_max
+  status: formal output diagnostic
+  risk: high
+
+spreading.full.teacher_student.Q_Y_COS
+  legacy aliases: Q_Y_COS_mean, Q_Y_COS_std
+  appears in: bigamp_spreading
+  meaning: signed cosine on the full supergraph F-aware measurement set
+  status: diagnostic
+  risk: medium
+
 matrix.full.teacher_student.output_cosine
   legacy aliases: Q_Y_mean, Q_Y_std
-  appears in: agd, bigamp, bigamp_spreading
-  meaning: dense matrix full-output cosine
-  status: candidate order parameter
+  appears in: legacy matrix results
+  meaning: historical dense matrix full-output cosine class; active schema uses Q_Y_projection
+  status: legacy
   risk: medium
 
 tensor.full.teacher_student.cp_tensor_cosine
@@ -92,11 +119,25 @@ matrix.observed.teacher_student.output_cosine
   status: diagnostic
   risk: medium
 
-spreading.observed.teacher_student.F_aware_output_cosine
+spreading.observed.teacher_student.Q_Y_projection
   legacy aliases: Q_Y_observed_mean, Q_Y_observed_std
   appears in: bigamp_spreading
-  meaning: observed graph metric using the same quenched F
+  meaning: observed graph absolute projection using the same quenched F over 0:C_k
   status: candidate order parameter
+  risk: high
+
+spreading.observed.teacher_student.Q_Y_COS
+  legacy aliases: Q_Y_observed_COS_mean, Q_Y_observed_COS_std
+  appears in: bigamp_spreading
+  meaning: signed cosine on observed graph measurements over 0:C_k
+  status: diagnostic
+  risk: medium
+
+spreading.observed.teacher_student.F_aware_output_cosine
+  legacy aliases: Q_Y_observed_mean, Q_Y_observed_std
+  appears in: legacy spreading results
+  meaning: historical observed F-aware output cosine class; active schema uses Q_Y_projection plus Q_Y_COS
+  status: legacy
   risk: high
 
 tensor.observed.teacher_student.serial_reconstruction_quality
@@ -126,11 +167,25 @@ matrix.unobserved.teacher_student.output_cosine
   status: candidate order parameter
   risk: medium
 
-spreading.unobserved.teacher_student.dense_output_cosine
+spreading.unobserved.teacher_student.Q_Y_projection
   legacy aliases: Q_Y_unobserved_mean, Q_Y_unobserved_std
   appears in: bigamp_spreading
-  meaning: dense-output diagnostic induced by spreading mask
+  meaning: unobserved graph absolute projection using the same quenched F over C_k:C_max
   status: diagnostic
+  risk: high
+
+spreading.unobserved.teacher_student.Q_Y_COS
+  legacy aliases: Q_Y_unobserved_COS_mean, Q_Y_unobserved_COS_std
+  appears in: bigamp_spreading
+  meaning: signed cosine on unobserved graph measurements over C_k:C_max
+  status: diagnostic
+  risk: medium
+
+spreading.unobserved.teacher_student.dense_output_cosine
+  legacy aliases: Q_Y_unobserved_mean, Q_Y_unobserved_std
+  appears in: legacy spreading results
+  meaning: historical dense-output diagnostic induced by spreading mask; active schema uses F-aware supergraph suffix C_k:C_max
+  status: legacy
   risk: high
 ```
 
@@ -298,8 +353,9 @@ Heatmap 的每个 entry 使用 `overlap_matrix_metric` 指定的 metric，例如
 
 ## 同名不同义风险
 
-- schema v4 之后，active `Q_Y_mean` 统一解释为 `1 - NMSE_Y`。
-- schema v3 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 是 absolute projection，不能和 schema v4 的同名字段混合比较。
+- schema v6 的 active `Q_Y_mean` 解释为 output absolute projection，`FIT_Y_mean` 才是 `1 - NMSE_Y`。
+- schema v4/v5/v6 的 `Q_Y_mean/Q_W_mean/Q_X_mean` 不能和更旧 schema 的同名字段混合比较。
+- schema v5 的 spreading full `Q_Y_mean` 不能静默比较到 schema v6 full supergraph `Q_Y_mean`。
 - 旧 schema `<3` 的 `Q_Y_mean` 仍可能是 cosine 或 reconstruction-quality diagnostic。
 
 ## 同义不同名风险

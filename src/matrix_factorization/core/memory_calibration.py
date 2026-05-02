@@ -830,6 +830,9 @@ def estimation_params_from_config(config: ExperimentConfig) -> EstimationParams:
         tensor_dims=tensor_dims,
         seed_partition_policy=config.algorithm_params.seed_partition_policy,
         chunk_size=getattr(spreading, "chunk_size", None) if spreading else None,
+        use_metric_plateau_stop=bool(
+            getattr(config.algorithm_params, "use_metric_plateau_stop", False)
+        ),
     )
 
 

@@ -1,0 +1,60 @@
+tensor_order: 2
+algorithm: agd
+teacher: standard
+
+teacher_config:
+  init_distribution: gaussian
+  mean_scale: 0.0
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 4.0
+        step: 0.1
+
+training:
+  samples_per_alpha: 5
+  max_steps: 200000
+  max_epochs: 200000
+  num_workers: 1
+
+seeds:
+  model: 42
+  data: 12345
+  spreading_seed: 12345
+
+algorithm_params:
+  learning_rate: 0.005
+  damping: 0.5
+  noise_var: 1.0e-6
+  normalization_profile: paper_sparse_sampling
+  precision_profile: safe
+  precision_fallback_policy: allow
+  use_bf16: false
+  dtype_fallback_policy: allow
+  use_tf32: true
+  seed_partition_policy: partition_invariant
+  use_early_stop: false
+
+output:
+  name: qy_compare_200_m50_agd
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      filename: qy_agd.png
+  group_results:
+    enabled: false
+    save_tensors: false
+    enable_heatmap: false
+    write_plots: false

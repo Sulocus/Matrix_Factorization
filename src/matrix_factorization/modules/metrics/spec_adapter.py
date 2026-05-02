@@ -43,8 +43,10 @@ class MetricPayloadCheck:
             "semantic_keys": dict(self.semantic_keys),
             "unexpected_keys": list(self.unexpected_keys),
             "metric_definition_policy": {
-                "metric_definition_profile": "projection_qy_physical_latent_v2",
+                "metric_definition_profile": "projection_qy_supergraph_full_cos_v3",
                 "Q_Y_formula": "absolute_projection_teacher_norm_squared",
+                "spreading_Q_Y_full_scope": "full_supergraph_F_aware_measurements_0_Cmax",
+                "spreading_Q_Y_cosine_suffix": "_COS",
                 "Q_W_Q_X_normalization": "fixed_coordinate_count",
                 "legacy_projection_suffix": "_PROJ_ABS",
                 "teacher_norm_epsilon": 1e-12,

@@ -42,6 +42,7 @@ from ..parallel import (
 )
 from ..parallel.batch_checkpoint import CheckpointManager, config_to_dict
 from ..parallel.memory_guard import MemoryAbortException
+from ..gpu_monitor import GPUComputeSampler
 
 if TYPE_CHECKING:
     from ...modules.algorithms.base import AlgorithmBase
@@ -1023,8 +1024,12 @@ class ExperimentRunner:
             #     print(f"  Batch {batch_idx+1}/{total_batches}: alpha {alpha_range}")
             
             try:
+                compute_sampler = self._compute_sampler_for_batch(batch)
+                batch_algorithm_result = None
+
                 # Create a localized step callback for this batch
                 def internal_step_callback(step, total, metrics=None):
+                    compute_sampler.mark_step(step)
                     # Check memory abort flag every step (no algorithm modification needed)
                     if self._memory_guard and self._memory_guard.is_running:
                         self._memory_guard.check_abort()
@@ -1039,12 +1044,25 @@ class ExperimentRunner:
                 # Run algorithm for this batch
                 sample_sharded = len(self._effective_sample_shard_ranges(config)) > 1
                 if sample_sharded:
-                    batch_algorithm_result = self._run_algorithm_result_sample_sharded(
-                        config=config,
-                        alpha_values=batch_alpha_values,
-                        step_callback=internal_step_callback,
-                        output_options=output_options,
-                    )
+                    compute_sampler.start()
+                    try:
+                        batch_algorithm_result = self._run_algorithm_result_sample_sharded(
+                            config=config,
+                            alpha_values=batch_alpha_values,
+                            step_callback=internal_step_callback,
+                            output_options=output_options,
+                        )
+                    finally:
+                        compute_report = compute_sampler.stop(
+                            steps_run=self._steps_run_from_algorithm_result(batch_algorithm_result, config),
+                            configured_max_steps=config.training.max_steps,
+                        )
+                    if compute_sampler.enabled:
+                        self._attach_compute_calibration_report(
+                            batch_algorithm_result,
+                            batch=batch,
+                            report=compute_report,
+                        )
                     data = ExperimentData(
                         W_teacher=result.W_teacher,
                         X_teacher=result.X_teacher,
@@ -1062,12 +1080,25 @@ class ExperimentRunner:
                     
                     if output_options:
                         setattr(algorithm, 'heatmap_metric', output_options.get('heatmap_metric', 'Q_Y'))
-                    batch_algorithm_result = self._run_algorithm_result(
-                        algorithm=algorithm,
-                        config=config,
-                        data=data,
-                        step_callback=internal_step_callback,
-                    )
+                    compute_sampler.start()
+                    try:
+                        batch_algorithm_result = self._run_algorithm_result(
+                            algorithm=algorithm,
+                            config=config,
+                            data=data,
+                            step_callback=internal_step_callback,
+                        )
+                    finally:
+                        compute_report = compute_sampler.stop(
+                            steps_run=self._steps_run_from_algorithm_result(batch_algorithm_result, config),
+                            configured_max_steps=config.training.max_steps,
+                        )
+                    if compute_sampler.enabled:
+                        self._attach_compute_calibration_report(
+                            batch_algorithm_result,
+                            batch=batch,
+                            report=compute_report,
+                        )
                 self._record_algorithm_result_summary(
                     result=result,
                     batch_idx=batch_idx,
@@ -1564,8 +1595,11 @@ class ExperimentRunner:
         metric_lines = []
         for metric_key in [
             "Q_Y_mean",
+            "Q_Y_COS_mean",
             "Q_Y_observed_mean",
+            "Q_Y_observed_COS_mean",
             "Q_Y_unobserved_mean",
+            "Q_Y_unobserved_COS_mean",
             "Q_W_COS_ROOT_mean",
             "Q_X_COS_ROOT_mean",
             "Q_W_SIGN_GAUGE_mean",
@@ -1640,6 +1674,7 @@ class ExperimentRunner:
             confidence=float(getattr(resource_batch, "confidence", 0.0) or 0.0),
             persistent_tensors=dict(getattr(resource_batch, "persistent_tensors", {}) or {}),
             transient_peak_tensors=dict(getattr(resource_batch, "transient_peak_tensors", {}) or {}),
+            batching_metadata=dict(getattr(resource_batch, "batching_metadata", {}) or {}),
         )
         return ExecutionPlan(
             mode=ParallelMode.HYBRID if len(alpha_values) > 1 else ParallelMode.LINEAR,
@@ -1852,6 +1887,9 @@ class ExperimentRunner:
             tensor_dims=tensor_dims,
             seed_partition_policy=config.algorithm_params.seed_partition_policy,
             chunk_size=getattr(config.spreading, "chunk_size", None) if config.spreading else None,
+            use_metric_plateau_stop=bool(
+                getattr(config.algorithm_params, "use_metric_plateau_stop", False)
+            ),
         )
 
     def _runtime_resource_plan_report(
@@ -1933,6 +1971,7 @@ class ExperimentRunner:
                     },
                     "persistent_tensors": dict(getattr(batch, "persistent_tensors", {}) or {}),
                     "transient_peak_tensors": dict(getattr(batch, "transient_peak_tensors", {}) or {}),
+                    "batching_metadata": dict(getattr(batch, "batching_metadata", {}) or {}),
                 }
                 for idx, batch in enumerate(getattr(plan, "batches", []) or [])
             ],
@@ -2602,6 +2641,64 @@ class ExperimentRunner:
         return runtime_step_callback
 
     @staticmethod
+    def _compute_sampler_for_batch(batch: Any) -> GPUComputeSampler:
+        metadata = dict(getattr(batch, "batching_metadata", {}) or {})
+        calibration = dict(metadata.get("compute_calibration") or {})
+        enabled = bool(calibration.get("enabled", False))
+        return GPUComputeSampler(
+            enabled=enabled,
+            target_gpu_utilization=float(calibration.get("target_gpu_utilization", 0.88)),
+            warmup_steps=int(calibration.get("warmup_steps", 20)),
+            measure_steps=int(calibration.get("measure_steps", 100)),
+            sample_interval_s=float(calibration.get("sample_interval_s", 0.5)),
+            min_samples=int(calibration.get("min_samples", 5)),
+            min_measure_seconds=float(calibration.get("min_measure_seconds", 3.0)),
+        )
+
+    @staticmethod
+    def _steps_run_from_algorithm_result(
+        algorithm_result: Optional[AlgorithmResult],
+        config: ExperimentConfig,
+    ) -> int:
+        if algorithm_result is None:
+            return 0
+        diagnostics = dict(getattr(algorithm_result, "diagnostics", {}) or {})
+        plateau = diagnostics.get("metric_plateau_stop")
+        if isinstance(plateau, dict):
+            batches = plateau.get("batches")
+            if isinstance(batches, list) and batches:
+                values = [
+                    int(item.get("steps_run", 0))
+                    for item in batches
+                    if isinstance(item, dict) and item.get("steps_run") is not None
+                ]
+                if values:
+                    return max(values)
+        return int(getattr(config.training, "max_steps", 0) or 0)
+
+    @staticmethod
+    def _attach_compute_calibration_report(
+        algorithm_result: Optional[AlgorithmResult],
+        *,
+        batch: Any,
+        report: Dict[str, Any],
+    ) -> None:
+        if algorithm_result is None:
+            return
+        diagnostics = getattr(algorithm_result, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            diagnostics["compute_calibration_runtime"] = dict(report)
+        metadata = getattr(algorithm_result, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        execution_metadata = metadata.setdefault("execution_metadata", {})
+        if isinstance(execution_metadata, dict):
+            execution_metadata["compute_calibration_runtime"] = dict(report)
+        batching_metadata = dict(getattr(batch, "batching_metadata", {}) or {})
+        if batching_metadata:
+            metadata["batching_metadata"] = batching_metadata
+
+    @staticmethod
     def _record_algorithm_result_summary(
         *,
         result: ExperimentResult,
@@ -2638,6 +2735,7 @@ class ExperimentRunner:
             "execution_metadata",
             "tensor_execution",
             "internal_alpha_batch_plan",
+            "batching_metadata",
         ]:
             value = metadata.get(key)
             if isinstance(value, dict):

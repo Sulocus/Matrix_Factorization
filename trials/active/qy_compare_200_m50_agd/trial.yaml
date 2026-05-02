@@ -1,0 +1,17 @@
+key: qy_compare_200_m50_agd
+status: active
+runtime_class: medium
+purpose: 200x200 M=50 AGD alpha scan for Q_Y comparison against BiGAMP and spreading
+owner_area: algorithm_comparison
+config: trials/active/qy_compare_200_m50_agd/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/qy_compare_200_m50_agd
+artifact_roots:
+  - artifacts/trials/qy_compare_200_m50_agd
+expected_metrics:
+  - Q_Y_mean
+  - Q_W_mean
+  - Q_X_mean
+promotion_target:
+  - qy_algorithm_compare
+notes: N1=N2=200, M=50, S=5, alpha=0.0..4.0 step 0.1. AGD uses 200000 epochs for the longer-step comparison.

@@ -1,0 +1,9 @@
+key: infinite_n_sweep_qw_64000
+status: active
+runtime_class: gpu_heavy
+purpose: Partial reference N sweep at 64000 steps; do not merge into new grid C sweep.
+owner_area: bigamp_onsager
+config: trials/active/infinite_n_sweep_qw_64000/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/infinite_n_sweep_qw_64000
+notes: Interrupted reference trial only; kept registered for inventory hygiene.

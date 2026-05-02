@@ -1,0 +1,102 @@
+tensor_order: 2
+algorithm: 2
+teacher: 2
+
+teacher_config:
+  init_distribution: 1
+  mean_scale: 0.0
+
+matrix:
+  N1: 20000
+  N2: 20000
+  M: 50
+
+scan:
+  axes:
+    experiment_policy:
+      kind: composite
+      values:
+        fixed_onsager_warm_start_050:
+          spreading.onsager_correction: true
+          algorithm_params.adaptive_damping: false
+          algorithm_params.damping: 0.05
+          algorithm_params.init_mode: teacher
+          algorithm_params.init_overlap: 0.5
+    max_steps:
+      path: max_steps
+      values: [500, 1000, 2000, 4000, 8000]
+    alpha:
+      path: alpha
+      values: [1.0, 1.5, 1.8, 2.0, 2.1]
+  continuation:
+    enabled: false
+    axis: alpha
+    order: descending
+    state_transfer: full_algorithm_state
+    observation_policy: nested_prefix
+    strict_state: true
+    adaptive_controller_state: reset
+  sample_sharding:
+    enabled: true
+    max_samples_per_shard: 1
+
+training:
+  samples_per_alpha: 1
+  max_steps: 2000
+
+seeds:
+  model: 42
+  data: 42
+
+algorithm_params:
+  damping: 0.05
+  noise_var: 1.0e-5
+  learning_rate: 0.01
+  use_compile: true
+  normalization_profile: paper_sparse_sampling
+  precision_profile: safe
+  precision_fallback_policy: allow
+  use_bf16: false
+  seed_partition_policy: partition_invariant
+  use_early_stop: false
+  target_loss_threshold: 1.0e-08
+  default_alpha: 1.0
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
+  adaptive_restart: false
+  restart_patience: 50
+  restart_noise: 0.1
+  acceptance_tolerance: 0.0
+  init_mode: teacher
+  init_overlap: 0.5
+  debug_verbose: false
+
+spreading:
+  f_distribution: 1
+  seed: 12345
+  onsager_correction: true
+  chunk_size: 8192
+
+output:
+  name: "step_probe_qw"
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  rsb_ordering: true
+  heatmap_metric: "Q_W_SIGN_GAUGE"
+  uniform_colormap: true
+  plots:
+    - x: alpha
+      y: Q_W_mean
+      series_by: [max_steps]
+      filename: qw_by_max_steps.png
+  group_results:
+    enabled: false
+    save_tensors: false
+    enable_heatmap: false
+    write_plots: false

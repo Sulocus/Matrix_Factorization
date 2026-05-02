@@ -1,0 +1,115 @@
+tensor_order: 2
+algorithm: 2
+teacher: 2
+
+teacher_config:
+  init_distribution: 1
+  mean_scale: 0.0
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  execution:
+    allowed_fold_axes: [alpha]
+    auto_rebatch: preflight_only
+  axes:
+    size:
+      kind: composite
+      values:
+        N200:
+          matrix.N1: 200
+          matrix.N2: 200
+        N500:
+          matrix.N1: 500
+          matrix.N2: 500
+    alpha:
+      path: alpha
+      values: [0.30, 0.75, 0.90, 1.05, 1.50, 2.50]
+  continuation:
+    enabled: false
+    axis: alpha
+    order: descending
+    state_transfer: full_algorithm_state
+    observation_policy: nested_prefix
+    strict_state: true
+    adaptive_controller_state: reset
+  sample_sharding:
+    enabled: false
+    max_samples_per_shard: null
+
+training:
+  samples_per_alpha: 1
+  max_steps: 15000
+
+seeds:
+  model: 42
+  data: 42
+  base_seed: 42
+  teacher_seed: 42
+  spreading_seed: 12345
+  student_seed: 0
+
+algorithm_params:
+  damping: 0.05
+  noise_var: 1.0e-5
+  learning_rate: 0.01
+  use_compile: true
+  normalization_profile: paper_sparse_sampling
+  precision_profile: safe
+  precision_fallback_policy: allow
+  use_bf16: false
+  seed_partition_policy: partition_invariant
+  use_early_stop: false
+  target_loss_threshold: 1.0e-08
+  default_alpha: 1.0
+  adaptive_damping: false
+  step_min: 0.05
+  step_max: 0.5
+  step_incr: 1.1
+  step_decr: 0.5
+  step_window: 1
+  max_bad_steps: 10
+  adaptive_restart: false
+  restart_patience: 50
+  restart_noise: 0.1
+  acceptance_tolerance: 0.0
+  init_mode: teacher
+  init_overlap: 0.5
+  use_metric_plateau_stop: true
+  plateau_check_interval: 100
+  plateau_window_steps: 500
+  plateau_patience: 100000
+  plateau_abs_tol: 0.01
+  plateau_rel_tol: 0.05
+  plateau_min_steps: 0
+  plateau_signal: teacher_latent_overlap
+  plateau_monitor: teacher_latent_overlap_qw_qx
+  debug_verbose: false
+
+spreading:
+  f_distribution: 1
+  seed: 12345
+  onsager_correction: true
+  chunk_size: 8192
+
+output:
+  name: "metric_plateau_slope_decay_probe"
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  rsb_ordering: false
+  heatmap_metric: "Q_W_SIGN_GAUGE"
+  uniform_colormap: true
+  plots:
+    - x: alpha
+      y: Q_W_mean
+      series_by: [size]
+      filename: qw_slope_decay_probe_final.png
+  group_results:
+    enabled: false
+    save_tensors: false
+    enable_heatmap: false
+    write_plots: false

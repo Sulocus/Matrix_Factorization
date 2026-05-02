@@ -1,0 +1,17 @@
+key: qy_compare_200_m50_spreading
+status: active
+runtime_class: medium
+purpose: 200x200 M=50 matrix spreading alpha scan for Q_Y comparison against AGD and dense BiGAMP
+owner_area: algorithm_comparison
+config: trials/active/qy_compare_200_m50_spreading/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/qy_compare_200_m50_spreading
+artifact_roots:
+  - artifacts/trials/qy_compare_200_m50_spreading
+expected_metrics:
+  - Q_Y_mean
+  - Q_W_mean
+  - Q_X_mean
+promotion_target:
+  - qy_algorithm_compare
+notes: N1=N2=200, M=50, S=5, alpha=0.0..4.0 step 0.1. Matrix spreading route with Ising F and no Onsager correction.

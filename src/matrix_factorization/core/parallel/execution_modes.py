@@ -57,6 +57,7 @@ class EstimationParams:
     tensor_dims: Optional[Tuple[int, ...]] = None
     seed_partition_policy: str = "legacy"
     chunk_size: Optional[int] = None
+    use_metric_plateau_stop: bool = False
 
     def __post_init__(self):
         self.f_distribution = normalize_f_distribution(self.f_distribution)
@@ -101,6 +102,7 @@ class EstimationParams:
             "tensor_dims": [int(dim) for dim in self.tensor_dims] if self.tensor_dims else None,
             "seed_partition_policy": self.seed_partition_policy,
             "chunk_size": int(self.chunk_size) if self.chunk_size is not None else None,
+            "use_metric_plateau_stop": bool(self.use_metric_plateau_stop),
         }
 
     @classmethod
@@ -128,6 +130,7 @@ class EstimationParams:
                 int(payload["chunk_size"])
                 if payload.get("chunk_size") is not None else None
             ),
+            use_metric_plateau_stop=bool(payload.get("use_metric_plateau_stop", False)),
         )
 
 
@@ -169,6 +172,7 @@ class BatchConfig:
     confidence: float = 0.0
     persistent_tensors: Dict[str, float] = field(default_factory=dict)
     transient_peak_tensors: Dict[str, float] = field(default_factory=dict)
+    batching_metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
     def num_samples(self) -> int:

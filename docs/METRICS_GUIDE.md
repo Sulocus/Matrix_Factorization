@@ -1,8 +1,9 @@
 # Metric Guide
 
-本文档记录当前 active path 的正式指标。schema v5 的 profile 是
-`projection_qy_physical_latent_v2`：`Q_W/Q_X/Q_N` 是固定分母 latent
-overlap，`Q_Y` 是 output absolute projection，`FIT_Y` 是输出重构 fit。
+本文档记录当前 active path 的正式指标。schema v6 的 profile 是
+`projection_qy_supergraph_full_cos_v3`：`Q_W/Q_X/Q_N` 是固定分母 latent
+overlap，`Q_Y` 是 output absolute projection，`FIT_Y` 是输出重构 fit，
+`Q_Y_COS` 是 signed output cosine diagnostic。
 旧 schema 的同名字段必须靠 `metric_schema.schema_version` 解释。
 
 ## Formal Metrics
@@ -30,7 +31,22 @@ FIT_Y = 1 - NMSE_Y
 - 若 evaluation set 为空或 teacher norm 小于 `1e-12`，`Q_Y=0`、`NMSE_Y=1`、`FIT_Y=0`。
 - `Q_Y_observed` 表示 observed/training measurement set。
 - `Q_Y_unobserved` 表示 heldout 或 unobserved measurement set。
+- spreading 路线中，`Q_Y` 的 full scope 是完整 supergraph F-aware
+  measurement set，即 `0:C_max`；`observed` 是 `0:C_k`，`unobserved`
+  是 `C_k:C_max`。旧 equal-count heldout full 语义不能和 schema v6 混用。
 - `Q_Y_PROJ_ABS` 是旧 absolute projection diagnostic，不是正式 `Q_Y`。
+
+### `Q_Y_COS`
+
+`Q_Y_COS` 是同一 measurement set 上的 signed cosine：
+
+```text
+Q_Y_COS = <Y_student, Y_teacher> / (||Y_student|| ||Y_teacher||)
+```
+
+它不吸收 scale 错误；例如 `Y_student = 2 Y_teacher` 时，`Q_Y=2` 而
+`Q_Y_COS=1`。spreading 同时输出 full/observed/unobserved 三个 scope 的
+`Q_Y_COS`。
 
 ### `Q_W` / `Q_X`
 
@@ -95,21 +111,25 @@ scale gauge 的大小。这个 diagnostic 不改变训练轨迹。
 - `Q_Y_PROJ_ABS / Q_W_PROJ_ABS / Q_X_PROJ_ABS`：schema v3 absolute projection。
 - `Q_W_GRAM_ROOT / Q_X_GRAM_ROOT`：旧名，alias 到 `Q_W_COS_ROOT/Q_X_COS_ROOT`。
 - `median_abs_log_g`：旧名，alias 到 `median_abs_log_k`。
-- `MSE / Gen_Error / physical_overlap_* / Q_Y_COS`：legacy/debug，不进入正式 metric surface。
+- `MSE / Gen_Error / physical_overlap_*`：legacy/debug，不进入正式 metric surface。
 
 ## Result Schema
 
-新 run 的 `metrics.json.metric_schema.schema_version` 为 `5`，并包含：
+新 run 的 `metrics.json.metric_schema.schema_version` 为 `6`，并包含：
 
 ```text
-metric_definition_profile = projection_qy_physical_latent_v2
+metric_definition_profile = projection_qy_supergraph_full_cos_v3
 compatibility.physical_overlap_metric_migration = true
+compatibility.schema_v5_spreading_equal_count_full_not_comparable = true
 metric_policy.Q_Y_formula = absolute_projection_teacher_norm_squared
 metric_policy.Q_W_Q_X_normalization = fixed_coordinate_count
+metric_policy.spreading_Q_Y_full_scope = full_supergraph_F_aware_measurements_0_Cmax
+metric_policy.spreading_Q_Y_cosine_suffix = _COS
 metric_policy.legacy_projection_suffix = _PROJ_ABS
 metric_policy.clipped = false
 ```
 
 `FIT_Y_mean` 另外保存 `1 - NMSE_Y`。因此 schema v3/v4 的
-`Q_Y_mean/Q_W_mean/Q_X_mean` 不能重解释成 schema v5 的同名字段；必须同时查看
-`metric_schema.schema_version` 和 `metric_definition_profile`。
+`Q_Y_mean/Q_W_mean/Q_X_mean` 不能重解释成 schema v6 的同名字段；spreading 的
+schema v5 full `Q_Y` 也不能静默重解释成 schema v6 full supergraph `Q_Y`。
+必须同时查看 `metric_schema.schema_version` 和 `metric_definition_profile`。

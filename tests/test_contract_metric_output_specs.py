@@ -148,6 +148,9 @@ def test_algorithm_metric_keys_include_legacy_flat_outputs():
     assert "Q_Y_mean" in keys
     assert "Q_Y_observed_mean" in keys
     assert "Q_Y_unobserved_mean" in keys
+    assert "Q_Y_COS_mean" in keys
+    assert "Q_Y_observed_COS_mean" in keys
+    assert "Q_Y_unobserved_COS_mean" in keys
     assert "Q_W_COS_ROOT_mean" in keys
     assert "Q_W_prime_replica_mean" in keys
     assert "MSE" not in keys
@@ -171,7 +174,7 @@ def test_metric_schema_preserves_flat_keys_but_indexes_semantic_classes():
     )
     tensor_schema = get_metric_schema("bigamp_tensor_parallel", metric_keys=["Q_Y_mean"])
 
-    assert dense_schema["schema_version"] == 5
+    assert dense_schema["schema_version"] == 6
     assert dense_schema["compatibility"]["legacy_flat_keys_preserved"] is True
     assert dense_schema["compatibility"]["physical_overlap_metric_migration"] is True
     assert dense_schema["flat_key_index"]["Q_Y_mean"][0]["canonical_key"] == "measurement.full.teacher_student.Q_Y_projection"

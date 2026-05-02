@@ -103,6 +103,31 @@ def compute_matrix_metric_payload(
     import math
     import numpy as np
 
+    def signed_cosine(student: torch.Tensor, teacher: torch.Tensor, eps: float = 1e-12) -> float:
+        student_flat = student.flatten().float()
+        teacher_flat = teacher.flatten().float()
+        if student_flat.numel() == 0 or teacher_flat.numel() == 0:
+            return 0.0
+        denom = student_flat.norm() * teacher_flat.norm()
+        if float(denom.abs().item()) < eps:
+            return 0.0
+        value = (student_flat * teacher_flat).sum() / (denom + eps)
+        if not torch.isfinite(value):
+            return 0.0
+        return float(value)
+
+    def signed_cosine_masked(
+        student: torch.Tensor,
+        teacher: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        observed: bool,
+    ) -> float:
+        if mask.dim() == 3:
+            mask = mask[0]
+        selection_mask = mask > 0.5 if observed else mask < 0.5
+        return signed_cosine(student[selection_mask], teacher[selection_mask])
+
     if W_students.dim() == 4:
         W_for_metrics = W_students.mean(dim=0)
         X_for_metrics = X_students.mean(dim=0)
@@ -129,10 +154,13 @@ def compute_matrix_metric_payload(
     Q_X_cos_root_list = []
     # Y metrics
     Q_Y_list = []
+    Q_Y_COS_list = []
     NMSE_Y_list = []
     FIT_Y_list = []
     Q_Y_observed_list = []
     Q_Y_unobserved_list = []
+    Q_Y_observed_COS_list = []
+    Q_Y_unobserved_COS_list = []
     NMSE_Y_observed_list = []
     NMSE_Y_unobserved_list = []
     FIT_Y_observed_list = []
@@ -174,6 +202,7 @@ def compute_matrix_metric_payload(
         nmse_y, fit_y = normalized_mse_and_fit(Y_students[s], Y_teacher)
         NMSE_Y_list.append(nmse_y)
         Q_Y_list.append(projection_abs(Y_students[s], Y_teacher))
+        Q_Y_COS_list.append(signed_cosine(Y_students[s], Y_teacher))
         Q_Y_proj_abs_list.append(Q_Y_list[-1])
         FIT_Y_list.append(fit_y)
 
@@ -193,6 +222,8 @@ def compute_matrix_metric_payload(
             Q_Y_unobserved_proj_abs_list.append(_compute_qy_masked(Y_students[s], Y_teacher, mask, observed=False))
             Q_Y_observed_list.append(Q_Y_observed_proj_abs_list[-1])
             Q_Y_unobserved_list.append(Q_Y_unobserved_proj_abs_list[-1])
+            Q_Y_observed_COS_list.append(signed_cosine_masked(Y_students[s], Y_teacher, mask, observed=True))
+            Q_Y_unobserved_COS_list.append(signed_cosine_masked(Y_students[s], Y_teacher, mask, observed=False))
 
     # Replica metrics (Student-Student)
     Q_W_replica_list = []
@@ -231,6 +262,8 @@ def compute_matrix_metric_payload(
         "Q_X_SIGN_ALIGNED_std": float(np.std(Q_X_sign_gauge_list, ddof=1)) if len(Q_X_sign_gauge_list) > 1 else 0.0,
         "Q_Y_mean": float(np.mean(Q_Y_list)),
         "Q_Y_std": float(np.std(Q_Y_list, ddof=1)) if len(Q_Y_list) > 1 else 0.0,
+        "Q_Y_COS_mean": float(np.mean(Q_Y_COS_list)),
+        "Q_Y_COS_std": float(np.std(Q_Y_COS_list, ddof=1)) if len(Q_Y_COS_list) > 1 else 0.0,
         "NMSE_Y_mean": float(np.mean(NMSE_Y_list)),
         "NMSE_Y_std": float(np.std(NMSE_Y_list, ddof=1)) if len(NMSE_Y_list) > 1 else 0.0,
         "FIT_Y_mean": float(np.mean(FIT_Y_list)) if FIT_Y_list else 0.0,
@@ -262,6 +295,8 @@ def compute_matrix_metric_payload(
     if Q_Y_observed_list:
         result["Q_Y_observed_mean"] = float(np.mean(Q_Y_observed_list))
         result["Q_Y_observed_std"] = float(np.std(Q_Y_observed_list, ddof=1)) if len(Q_Y_observed_list) > 1 else 0.0
+        result["Q_Y_observed_COS_mean"] = float(np.mean(Q_Y_observed_COS_list))
+        result["Q_Y_observed_COS_std"] = float(np.std(Q_Y_observed_COS_list, ddof=1)) if len(Q_Y_observed_COS_list) > 1 else 0.0
         result["NMSE_Y_observed_mean"] = float(np.mean(NMSE_Y_observed_list))
         result["NMSE_Y_observed_std"] = float(np.std(NMSE_Y_observed_list, ddof=1)) if len(NMSE_Y_observed_list) > 1 else 0.0
         result["FIT_Y_observed_mean"] = float(np.mean(FIT_Y_observed_list)) if FIT_Y_observed_list else 0.0
@@ -271,6 +306,8 @@ def compute_matrix_metric_payload(
     if Q_Y_unobserved_list:
         result["Q_Y_unobserved_mean"] = float(np.mean(Q_Y_unobserved_list))
         result["Q_Y_unobserved_std"] = float(np.std(Q_Y_unobserved_list, ddof=1)) if len(Q_Y_unobserved_list) > 1 else 0.0
+        result["Q_Y_unobserved_COS_mean"] = float(np.mean(Q_Y_unobserved_COS_list))
+        result["Q_Y_unobserved_COS_std"] = float(np.std(Q_Y_unobserved_COS_list, ddof=1)) if len(Q_Y_unobserved_COS_list) > 1 else 0.0
         result["NMSE_Y_unobserved_mean"] = float(np.mean(NMSE_Y_unobserved_list))
         result["NMSE_Y_unobserved_std"] = float(np.std(NMSE_Y_unobserved_list, ddof=1)) if len(NMSE_Y_unobserved_list) > 1 else 0.0
         result["FIT_Y_unobserved_mean"] = float(np.mean(FIT_Y_unobserved_list)) if FIT_Y_unobserved_list else 0.0

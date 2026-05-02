@@ -1,0 +1,20 @@
+key: qy_compare_200_m50_spreading_onsager
+status: active
+runtime_class: medium
+purpose: 200x200 M=50 matrix spreading fixed Onsager alpha scan for Q_Y comparison
+owner_area: algorithm_comparison
+config: trials/active/qy_compare_200_m50_spreading_onsager/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/qy_compare_200_m50_spreading_onsager
+artifact_roots:
+  - artifacts/trials/qy_compare_200_m50_spreading_onsager
+expected_metrics:
+  - Q_Y_mean
+  - Q_Y_observed_mean
+  - Q_Y_unobserved_mean
+  - FIT_Y_mean
+  - Q_W_mean
+  - Q_X_mean
+promotion_target:
+  - qy_algorithm_compare
+notes: Same 200x200 M=50 S=5 alpha scan as no-Onsager spreading, but with corrected fixed Onsager and beta=0.05.

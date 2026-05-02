@@ -106,6 +106,9 @@
 | `measurement.full.teacher_student.Q_Y_projection` | `Q_Y_mean`, `Q_Y_std` | Q_Y | approved | output absolute projection，full scope。 |
 | `measurement.observed.teacher_student.Q_Y_projection` | `Q_Y_observed_mean`, `Q_Y_observed_std` | Q_Y observed | approved | observed/training measurement projection。 |
 | `measurement.unobserved.teacher_student.Q_Y_projection` | `Q_Y_unobserved_mean`, `Q_Y_unobserved_std` | Q_Y unobserved | approved | heldout/unobserved measurement projection。 |
+| `measurement.full.teacher_student.Q_Y_COS` | `Q_Y_COS_mean`, `Q_Y_COS_std` | Q_Y cosine | approved | signed output/measurement cosine；spreading 中使用 full supergraph F-aware scope。 |
+| `measurement.observed.teacher_student.Q_Y_COS` | `Q_Y_observed_COS_mean`, `Q_Y_observed_COS_std` | Q_Y observed cosine | approved | observed/training measurement signed cosine。 |
+| `measurement.unobserved.teacher_student.Q_Y_COS` | `Q_Y_unobserved_COS_mean`, `Q_Y_unobserved_COS_std` | Q_Y unobserved cosine | approved | heldout/unobserved measurement signed cosine。 |
 | `measurement.full.teacher_student.FIT_Y` | `FIT_Y_mean`, `FIT_Y_std` | FIT_Y | approved | output fit `1 - NMSE_Y`，full scope diagnostic。 |
 | `measurement.observed.teacher_student.FIT_Y` | `FIT_Y_observed_mean`, `FIT_Y_observed_std` | FIT_Y observed | approved | observed output fit diagnostic。 |
 | `measurement.unobserved.teacher_student.FIT_Y` | `FIT_Y_unobserved_mean`, `FIT_Y_unobserved_std` | FIT_Y unobserved | approved | heldout/unobserved output fit diagnostic。 |

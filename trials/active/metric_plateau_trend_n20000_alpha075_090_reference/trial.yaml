@@ -1,0 +1,11 @@
+key: metric_plateau_trend_n20000_alpha075_090_reference
+status: active
+runtime_class: quick
+purpose: N=20000 alpha 0.75/0.90 fixed-step reference for trend-decay stop probe.
+owner_area: bigamp_onsager
+config: trials/active/metric_plateau_trend_n20000_alpha075_090_reference/config.yaml
+artifact_policy: ignored_workspace
+output_root: artifacts/trials/metric_plateau_trend_n20000_alpha075_090_reference
+expected_metrics:
+  - Q_W_mean
+notes: Reference steps are ceil(1.5 * 13300 / 100) * 100 = 20000 from the trend-decay probe.

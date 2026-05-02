@@ -87,11 +87,14 @@ def test_matrix_projection_payload_matches_hand_calculation():
     assert metrics["Q_W_PROJ_ABS_mean"] == pytest.approx(2.0)
     assert metrics["Q_X_PROJ_ABS_mean"] == pytest.approx(1.0)
     assert metrics["Q_Y_mean"] == pytest.approx(2.0)
+    assert metrics["Q_Y_COS_mean"] == pytest.approx(1.0)
     assert metrics["FIT_Y_mean"] == pytest.approx(0.0)
     assert metrics["NMSE_Y_mean"] == pytest.approx(1.0)
     assert metrics["Q_Y_PROJ_ABS_mean"] == pytest.approx(2.0)
     assert metrics["Q_Y_observed_mean"] == pytest.approx(2.0)
+    assert metrics["Q_Y_observed_COS_mean"] == pytest.approx(1.0)
     assert metrics["Q_Y_unobserved_mean"] == pytest.approx(2.0)
+    assert metrics["Q_Y_unobserved_COS_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_COS_ROOT_mean"] == pytest.approx(1.0)
     assert metrics["Q_X_COS_ROOT_mean"] == pytest.approx(1.0)
     assert metrics["Q_W_mean"] != metrics["Q_W_COS_ROOT_mean"]
@@ -134,6 +137,8 @@ def test_spreading_perfect_teacher_has_observed_projection_one():
 
     assert metrics["Q_Y"] == pytest.approx(1.0)
     assert metrics["Q_Y_observed"] == pytest.approx(1.0)
+    assert metrics["Q_Y_COS"] == pytest.approx(1.0)
+    assert metrics["Q_Y_observed_COS"] == pytest.approx(1.0)
     assert metrics["Q_W"] == pytest.approx(2.5)
     assert metrics["Q_X"] == pytest.approx(12.5)
     assert metrics["Q_W_PROJ_ABS"] == pytest.approx(1.0)

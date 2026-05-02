@@ -927,6 +927,21 @@ def _path_active_in_current_plan(plan: ExperimentPlan, path: str) -> bool:
     }:
         return algorithm_key in {"agd", "agd_tensor"}
     if path in {
+        "algorithm_params.use_metric_plateau_stop",
+        "algorithm_params.plateau_check_interval",
+        "algorithm_params.plateau_window_steps",
+        "algorithm_params.plateau_patience",
+        "algorithm_params.plateau_abs_tol",
+        "algorithm_params.plateau_rel_tol",
+        "algorithm_params.plateau_min_steps",
+        "algorithm_params.plateau_signal",
+        "algorithm_params.plateau_monitor",
+    }:
+        spreading = getattr(plan.config, "spreading", None)
+        return algorithm_key == "bigamp_spreading" and not bool(
+            getattr(spreading, "allow_intra_connection", False)
+        )
+    if path in {
         "algorithm_params.damping",
         "algorithm_params.noise_var",
         "algorithm_params.adaptive_damping",
@@ -1203,6 +1218,15 @@ def _effective_parameter_summary(
         "algorithm_params.dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
         "algorithm_params.use_tf32": getattr(algorithm_params, "use_tf32", None),
         "algorithm_params.seed_partition_policy": getattr(algorithm_params, "seed_partition_policy", None),
+        "algorithm_params.use_metric_plateau_stop": getattr(algorithm_params, "use_metric_plateau_stop", None),
+        "algorithm_params.plateau_check_interval": getattr(algorithm_params, "plateau_check_interval", None),
+        "algorithm_params.plateau_window_steps": getattr(algorithm_params, "plateau_window_steps", None),
+        "algorithm_params.plateau_patience": getattr(algorithm_params, "plateau_patience", None),
+        "algorithm_params.plateau_abs_tol": getattr(algorithm_params, "plateau_abs_tol", None),
+        "algorithm_params.plateau_rel_tol": getattr(algorithm_params, "plateau_rel_tol", None),
+        "algorithm_params.plateau_min_steps": getattr(algorithm_params, "plateau_min_steps", None),
+        "algorithm_params.plateau_signal": getattr(algorithm_params, "plateau_signal", None),
+        "algorithm_params.plateau_monitor": getattr(algorithm_params, "plateau_monitor", None),
         "algorithm_params.init_mode": getattr(algorithm_params, "init_mode", None),
         "algorithm_params.init_overlap": getattr(algorithm_params, "init_overlap", None),
         "algorithm_params.adaptive_restart": getattr(algorithm_params, "adaptive_restart", None),
@@ -1312,6 +1336,47 @@ def _build_resource_plan(plan: ExperimentPlan) -> None:
             "dtype_fallback_policy": getattr(algorithm_params, "dtype_fallback_policy", None),
             "use_tf32": getattr(algorithm_params, "use_tf32", None),
             "seed_partition_policy": getattr(algorithm_params, "seed_partition_policy", None),
+            "metric_plateau_stop": {
+                "enabled": getattr(algorithm_params, "use_metric_plateau_stop", None),
+                "check_interval": getattr(algorithm_params, "plateau_check_interval", None),
+                "window_steps": getattr(algorithm_params, "plateau_window_steps", None),
+                "effective_window_steps": (
+                    getattr(algorithm_params, "plateau_window_steps", None)
+                    if getattr(algorithm_params, "plateau_window_steps", 0) > 0
+                    else getattr(algorithm_params, "plateau_check_interval", None)
+                ),
+                "patience": getattr(algorithm_params, "plateau_patience", None),
+                "abs_tol": getattr(algorithm_params, "plateau_abs_tol", None),
+                "rel_tol": getattr(algorithm_params, "plateau_rel_tol", None),
+                "rel_floor": 1e-2,
+                "min_steps": getattr(algorithm_params, "plateau_min_steps", None),
+                "min_steps_deprecated": True,
+                "effective_min_steps": 0,
+                "effective_earliest_check_step": (
+                    getattr(algorithm_params, "plateau_window_steps", None)
+                    if getattr(algorithm_params, "plateau_window_steps", 0) > 0
+                    else getattr(algorithm_params, "plateau_check_interval", None)
+                ),
+                "strategy": "self_convergence_window_trend_decay",
+                "trend_window_policy": "non_overlapping_windows",
+                "trend_ratio_tol": 0.95,
+                "slope_abs_tol": min(
+                    float(getattr(algorithm_params, "plateau_abs_tol", 0.003)) * 0.05,
+                    5e-4,
+                ),
+                "slope_abs_tol_ratio": 0.05,
+                "slope_abs_tol_cap": 5e-4,
+                "near_zero_slope_abs_tol": min(
+                    float(getattr(algorithm_params, "plateau_abs_tol", 0.003)) * 0.02,
+                    2e-4,
+                ),
+                "near_zero_slope_abs_tol_ratio": 0.02,
+                "near_zero_slope_abs_tol_cap": 2e-4,
+                "tail_min_windows": 10,
+                "signal": getattr(algorithm_params, "plateau_signal", None),
+                "monitor": getattr(algorithm_params, "plateau_monitor", None),
+                "teacher_assisted": bool(getattr(algorithm_params, "use_metric_plateau_stop", False)),
+            },
             "spreading.chunk_size": getattr(spreading, "chunk_size", None) if spreading else None,
             "spreading.tensor_order": getattr(spreading, "tensor_order", None) if spreading else None,
         },

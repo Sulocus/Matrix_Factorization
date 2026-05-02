@@ -29,6 +29,14 @@ from .resource_execution import build_resource_execution_plan
 
 logger = logging.getLogger(__name__)
 
+_METRIC_PLATEAU_CANDIDATE_WIDTHS = [1, 2, 3, 4, 6, 8]
+_METRIC_PLATEAU_TARGET_GPU_UTILIZATION = 0.88
+_METRIC_PLATEAU_WARMUP_STEPS = 20
+_METRIC_PLATEAU_MEASURE_STEPS = 100
+_METRIC_PLATEAU_SAMPLE_INTERVAL_S = 0.5
+_METRIC_PLATEAU_MIN_SAMPLES = 5
+_METRIC_PLATEAU_MIN_MEASURE_SECONDS = 3.0
+
 
 class ParallelCoordinator:
     """
@@ -117,6 +125,28 @@ class ParallelCoordinator:
         # Strategy 1: Try full parallel
         full_estimate = self.estimator.estimate(params)
         replan_metadata = self._replan_metadata(params)
+
+        if self._uses_metric_plateau_aware_alpha_batching(params) and A > 1:
+            batches = self._compute_metric_plateau_alpha_batches(params, target_gb)
+            if batches:
+                total_mem = max(b.estimated_memory_gb for b in batches)
+                plan = ExecutionPlan(
+                    mode=ParallelMode.HYBRID,
+                    batches=batches,
+                    total_estimated_memory_gb=total_mem,
+                    allocation_config=self.config,
+                    algorithm_key=params.algorithm_key,
+                    gpu_model=self.estimator.gpu_model,
+                    available_memory_gb=available_gb,
+                    **replan_metadata,
+                )
+                logger.info(
+                    "Selected metric-plateau-aware HYBRID mode: %d alpha-local batches, peak=%.1fGB",
+                    len(batches),
+                    total_mem,
+                )
+                self.stats["plans_created"] += 1
+                return self._attach_plan_provenance(plan, params)
         
         full_target_gb = self._safe_target_for_estimate(target_gb, full_estimate)
         if full_estimate.total_gb <= full_target_gb:
@@ -423,6 +453,135 @@ class ParallelCoordinator:
         
         return batches if batches else None
 
+    @staticmethod
+    def _uses_metric_plateau_aware_alpha_batching(params: EstimationParams) -> bool:
+        return (
+            params.algorithm_key == "bigamp_spreading"
+            and bool(getattr(params, "use_metric_plateau_stop", False))
+            and not bool(getattr(params, "allow_intra_connection", False))
+        )
+
+    def _compute_metric_plateau_alpha_batches(
+        self,
+        params: EstimationParams,
+        target_gb: float,
+    ) -> Optional[List[BatchConfig]]:
+        """Plan adjacent alpha batches for teacher-assisted plateau stop.
+
+        This path keeps the full sample axis intact and limits alpha span so a
+        slow transition alpha does not hold a wide high-alpha batch open.
+        """
+        alpha_values = sorted(float(alpha) for alpha in params.alpha_values)
+        if not alpha_values:
+            return None
+
+        batches: List[BatchConfig] = []
+        current_start = 0
+        n = len(alpha_values)
+        while current_start < n:
+            remaining = n - current_start
+            widths = sorted(
+                {
+                    width
+                    for width in _METRIC_PLATEAU_CANDIDATE_WIDTHS
+                    if width <= remaining
+                }
+                or {1}
+            )
+            candidate_reports = []
+            accepted = []
+            for width in widths:
+                end = current_start + width
+                batch_alphas = alpha_values[current_start:end]
+                span_allowed, span_limit, span_reason = self._metric_plateau_span_allowed(batch_alphas)
+                if not span_allowed:
+                    candidate_reports.append({
+                        "width": int(width),
+                        "alpha_values": [float(alpha) for alpha in batch_alphas],
+                        "alpha_span": float(max(batch_alphas) - min(batch_alphas)) if batch_alphas else 0.0,
+                        "span_limit": float(span_limit),
+                        "accepted": False,
+                        "rejection": span_reason,
+                    })
+                    continue
+                estimate = self.estimator.estimate(replace(params, alpha_values=batch_alphas))
+                safe_target_gb = self._safe_target_for_estimate(target_gb, estimate)
+                fits_memory = estimate.total_gb <= safe_target_gb
+                report = {
+                    "width": int(width),
+                    "alpha_values": [float(alpha) for alpha in batch_alphas],
+                    "alpha_span": float(max(batch_alphas) - min(batch_alphas)) if batch_alphas else 0.0,
+                    "span_limit": float(span_limit),
+                    "estimated_memory_gb": float(estimate.total_gb),
+                    "safe_target_gb": float(safe_target_gb),
+                    "accepted": bool(fits_memory),
+                    "rejection": "" if fits_memory else "memory_estimate_exceeds_safe_target",
+                }
+                candidate_reports.append(report)
+                if fits_memory:
+                    accepted.append((width, end, batch_alphas, estimate, report))
+
+            if not accepted:
+                return None
+
+            width, end, batch_alphas, estimate, selected_report = accepted[-1]
+            batch = self._batch_from_estimate(
+                estimate=estimate,
+                sample_range=(0, params.S),
+                alpha_range=(current_start, end),
+                alpha_values=batch_alphas,
+            )
+            batch.batching_metadata = {
+                "planner": "metric_plateau_compute_aware_alpha_local",
+                "preserve_full_samples": True,
+                "sample_sharding_policy": "fallback_only_if_single_alpha_full_s_unfit",
+                "compute_calibration": self._metric_plateau_compute_calibration_metadata(),
+                "candidate_reports": candidate_reports,
+                "selected_candidate": dict(selected_report),
+                "selected_width": int(width),
+                "selection_reason": (
+                    "largest_memory_feasible_adjacent_width_with_plateau_span_limit"
+                ),
+            }
+            batches.append(batch)
+            current_start = end
+
+        return batches if batches else None
+
+    @staticmethod
+    def _metric_plateau_span_allowed(alpha_values: List[float]) -> tuple:
+        if not alpha_values:
+            return True, 0.0, ""
+        alpha_min = min(alpha_values)
+        alpha_max = max(alpha_values)
+        span = alpha_max - alpha_min
+        in_transition = any(0.85 <= alpha <= 1.30 for alpha in alpha_values)
+        if in_transition:
+            if len(alpha_values) > 2:
+                return False, 0.15, "transition_region_max_pair_width"
+            limit = 0.15
+            reason = "transition_region_span_limit"
+        else:
+            limit = 0.30
+            reason = "outer_region_span_limit"
+        return span <= limit + 1e-9, limit, reason
+
+    @staticmethod
+    def _metric_plateau_compute_calibration_metadata() -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "target_gpu_utilization": _METRIC_PLATEAU_TARGET_GPU_UTILIZATION,
+            "warmup_steps": _METRIC_PLATEAU_WARMUP_STEPS,
+            "measure_steps": _METRIC_PLATEAU_MEASURE_STEPS,
+            "sample_interval_s": _METRIC_PLATEAU_SAMPLE_INTERVAL_S,
+            "min_samples": _METRIC_PLATEAU_MIN_SAMPLES,
+            "min_measure_seconds": _METRIC_PLATEAU_MIN_MEASURE_SECONDS,
+            "candidate_batch_widths": list(_METRIC_PLATEAU_CANDIDATE_WIDTHS),
+            "status": "planned_runtime_measurement",
+            "small_kernel_policy": "mark_small_kernel_limited_without_extending_steps",
+            "metadata_only": True,
+        }
+
     def _calibration_source(self, params: EstimationParams) -> str:
         calibration = getattr(self.estimator, "_calibration_data", {})
         gpu_model = getattr(self.estimator, "gpu_model", "cpu")
@@ -478,9 +637,20 @@ class ParallelCoordinator:
                 "dominant_stage": batch.dominant_stage,
                 "confidence": float(batch.confidence),
                 "calibration_source": batch.calibration_source,
+                "batching_metadata": dict(getattr(batch, "batching_metadata", {}) or {}),
             }
             for batch in plan.batches
         ]
+        compute_calibration = None
+        if ParallelCoordinator._uses_metric_plateau_aware_alpha_batching(params):
+            compute_calibration = ParallelCoordinator._metric_plateau_compute_calibration_metadata()
+            compute_calibration.update({
+                "selected_alpha_batches": [
+                    [float(alpha) for alpha in batch.alpha_values]
+                    for batch in plan.batches
+                ],
+                "num_selected_batches": len(plan.batches),
+            })
         plan_payload = {
             "mode": plan.mode.name,
             "algorithm_key": plan.algorithm_key,
@@ -488,6 +658,7 @@ class ParallelCoordinator:
             "batches": batch_summary,
             "seed_partition_policy": plan.seed_partition_policy,
             "replan_policy_key": plan.replan_policy_key,
+            "compute_calibration": compute_calibration,
         }
         digest = hashlib.blake2b(
             json.dumps(plan_payload, sort_keys=True).encode("utf-8"),
@@ -505,6 +676,8 @@ class ParallelCoordinator:
             "total_estimated_memory_gb": float(plan.total_estimated_memory_gb),
             "metadata_only": True,
         }
+        if compute_calibration is not None:
+            plan.replan_provenance["compute_calibration"] = compute_calibration
         return plan
 
     @staticmethod
@@ -547,6 +720,7 @@ class ParallelCoordinator:
             confidence=float(getattr(estimate, "confidence", 0.0) or 0.0),
             persistent_tensors=dict(getattr(estimate, "persistent_tensors", {}) or {}),
             transient_peak_tensors=dict(getattr(estimate, "transient_peak_tensors", {}) or {}),
+            batching_metadata={},
         )
     
     def _execute_batch(

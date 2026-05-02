@@ -305,6 +305,17 @@ class AlgorithmParams:
     # Early stop (AGD)
     use_early_stop: bool = False
     target_loss_threshold: float = 1e-8
+
+    # Teacher-assisted metric plateau stop (BiGAMP spreading diagnostic)
+    use_metric_plateau_stop: bool = False
+    plateau_check_interval: int = 100
+    plateau_window_steps: int = 500
+    plateau_patience: int = 3
+    plateau_abs_tol: float = 0.003
+    plateau_rel_tol: float = 0.01
+    plateau_min_steps: int = 0
+    plateau_signal: str = "teacher_latent_overlap"
+    plateau_monitor: str = "teacher_latent_overlap_qw_qx"
     
     # Step scanning: fixed alpha value when scanning steps
     default_alpha: float = 1.0
@@ -357,6 +368,42 @@ class AlgorithmParams:
         if float(self.acceptance_tolerance) < 0.0:
             raise ValueError(
                 f"algorithm_params.acceptance_tolerance must be non-negative, got {self.acceptance_tolerance!r}"
+            )
+        if int(self.plateau_check_interval) <= 0:
+            raise ValueError(
+                "algorithm_params.plateau_check_interval must be positive, "
+                f"got {self.plateau_check_interval!r}"
+            )
+        if int(self.plateau_window_steps) < 0:
+            raise ValueError(
+                "algorithm_params.plateau_window_steps must be non-negative, "
+                f"got {self.plateau_window_steps!r}"
+            )
+        if int(self.plateau_patience) <= 0:
+            raise ValueError(
+                f"algorithm_params.plateau_patience must be positive, got {self.plateau_patience!r}"
+            )
+        if float(self.plateau_abs_tol) < 0.0:
+            raise ValueError(
+                f"algorithm_params.plateau_abs_tol must be non-negative, got {self.plateau_abs_tol!r}"
+            )
+        if float(self.plateau_rel_tol) < 0.0:
+            raise ValueError(
+                f"algorithm_params.plateau_rel_tol must be non-negative, got {self.plateau_rel_tol!r}"
+            )
+        if int(self.plateau_min_steps) < 0:
+            raise ValueError(
+                f"algorithm_params.plateau_min_steps must be non-negative, got {self.plateau_min_steps!r}"
+            )
+        if self.plateau_signal != "teacher_latent_overlap":
+            raise ValueError(
+                "algorithm_params.plateau_signal must be 'teacher_latent_overlap', "
+                f"got {self.plateau_signal!r}"
+            )
+        if self.plateau_monitor != "teacher_latent_overlap_qw_qx":
+            raise ValueError(
+                "algorithm_params.plateau_monitor must be 'teacher_latent_overlap_qw_qx', "
+                f"got {self.plateau_monitor!r}"
             )
         if self.normalization_profile not in VALID_NORMALIZATION_PROFILES:
             raise ValueError(

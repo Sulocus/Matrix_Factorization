@@ -17,8 +17,10 @@ import torch
 
 
 METRIC_DEFINITION_POLICY = {
-    "metric_definition_profile": "projection_qy_physical_latent_v2",
+    "metric_definition_profile": "projection_qy_supergraph_full_cos_v3",
     "Q_Y_formula": "absolute_projection_teacher_norm_squared",
+    "spreading_Q_Y_full_scope": "full_supergraph_F_aware_measurements_0_Cmax",
+    "spreading_Q_Y_cosine_suffix": "_COS",
     "Q_W_Q_X_normalization": "fixed_coordinate_count",
     "legacy_projection_suffix": "_PROJ_ABS",
     "teacher_norm_epsilon": 1e-12,
@@ -737,8 +739,8 @@ class ExperimentResult:
         sorted_items = self._sorted_result_items()
         sorted_values = [scan_value for scan_value, _ in sorted_items]
         self._write_json(path / 'metrics.json', {
-            "schema_version": 5,
-            "metric_definition_profile": "projection_qy_physical_latent_v2",
+            "schema_version": 6,
+            "metric_definition_profile": "projection_qy_supergraph_full_cos_v3",
             "experiment_id": self.experiment_id,
             "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
             "contract": self.metadata.contract,
@@ -842,8 +844,8 @@ class ExperimentResult:
 
         if self.result_cube.artifacts:
             self._write_json(path / 'metrics.json', {
-                "schema_version": 5,
-                "metric_definition_profile": "projection_qy_physical_latent_v2",
+                "schema_version": 6,
+                "metric_definition_profile": "projection_qy_supergraph_full_cos_v3",
                 "experiment_id": self.experiment_id,
                 "config": self.config.to_dict() if hasattr(self.config, "to_dict") else {},
                 "contract": self.metadata.contract,
@@ -1097,8 +1099,8 @@ class ExperimentResult:
 
         completed_values = [str(value) for value, _ in self._sorted_result_items()]
         payload = {
-            "schema_version": 5,
-            "metric_definition_profile": "projection_qy_physical_latent_v2",
+            "schema_version": 6,
+            "metric_definition_profile": "projection_qy_supergraph_full_cos_v3",
             "partial_snapshot": True,
             "snapshot_mode": "compact_progress",
             "experiment_id": self.experiment_id,
@@ -1411,9 +1413,12 @@ class ExperimentResult:
                 return display_name
         return {
             "Q_Y_mean": "Q_Y",
+            "Q_Y_COS_mean": "Q_Y cosine",
             "NMSE_Y_mean": "NMSE_Y",
             "Q_Y_observed_mean": "Q_Y observed",
+            "Q_Y_observed_COS_mean": "Q_Y observed cosine",
             "Q_Y_unobserved_mean": "Q_Y unobserved",
+            "Q_Y_unobserved_COS_mean": "Q_Y unobserved cosine",
             "Q_W_mean": "Q_W",
             "Q_X_mean": "Q_X",
             "Q_W_SIGN_GAUGE_mean": "Q_W sign gauge",
@@ -1510,11 +1515,19 @@ class ExperimentResult:
                 "schema_v4_v5_q_y_mean_not_comparable": True,
                 "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_physical_latent_v2"),
             })
+        elif loaded_schema_version < 6:
+            result.metadata.contract.setdefault("metric_schema_compatibility", {
+                "loaded_schema_version": loaded_schema_version,
+                "q_y_mean_interpretation": "absolute_projection_on_previous_configured_evaluation_set",
+                "new_schema_q_y_mean_interpretation": "absolute_projection_on_full_supergraph_F_aware_measurements",
+                "schema_v5_v6_spreading_q_y_mean_not_comparable": True,
+                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_physical_latent_v2"),
+            })
         else:
             result.metadata.contract.setdefault("metric_schema_compatibility", {
                 "loaded_schema_version": loaded_schema_version,
                 "q_y_mean_interpretation": "absolute_projection",
-                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_physical_latent_v2"),
+                "metric_definition_profile": metrics_payload.get("metric_definition_profile", "projection_qy_supergraph_full_cos_v3"),
             })
         cube_payload = metrics_payload.get("result_cube", {}) if isinstance(metrics_payload, dict) else {}
         if cube_payload:

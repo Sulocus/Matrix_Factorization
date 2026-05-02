@@ -198,3 +198,96 @@ def test_scan_execution_can_disable_alpha_folding():
     assert resource_plan.num_batches == 2
     assert all(batch.batch_axes == ["point"] for batch in resource_plan.batches)
     assert [[item.alpha for item in batch.work_items] for batch in resource_plan.batches] == [[0.0], [0.1]]
+
+
+def test_metric_plateau_enabled_uses_alpha_local_compute_aware_batches():
+    alpha_values = [
+        0.00, 0.30, 0.60, 0.75,
+        0.85, 0.90, 0.95,
+        1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
+        1.40, 1.50, 1.60, 1.70, 1.80, 1.90, 2.00, 2.10,
+        2.30, 2.50,
+    ]
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=200, N2=200, M=50),
+        training=TrainingParams(samples_per_alpha=3, max_steps=20000, max_epochs=20000),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=alpha_values),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=False,
+            precision_profile="safe",
+            use_metric_plateau_stop=True,
+            seed_partition_policy="partition_invariant",
+        ),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=8192),
+        scan_spec={"axes": {"alpha": {"path": "alpha", "values": alpha_values}}},
+    )
+
+    resource_plan = build_scan_resource_execution_plan(
+        scan_plan=build_scan_plan(config),
+        base_config=config,
+        coordinator=ParallelCoordinator(estimator=MemoryEstimator(apply_calibration=False)),
+        batching_spec=get_batching_specs()[config.algorithm_key],
+    )
+
+    assert resource_plan.preflight_errors == []
+    assert resource_plan.num_batches > 1
+    assert resource_plan.num_work_items == len(alpha_values)
+    assert all(batch.work_items[0].sample_range == (0, 3) for batch in resource_plan.batches)
+    for batch in resource_plan.batches:
+        alphas = [float(item.alpha) for item in batch.work_items]
+        assert alphas == sorted(alphas)
+        metadata = batch.batching_metadata
+        assert metadata["planner"] == "metric_plateau_compute_aware_alpha_local"
+        assert metadata["preserve_full_samples"] is True
+        assert metadata["compute_calibration"]["target_gpu_utilization"] == 0.88
+        span = max(alphas) - min(alphas)
+        if any(0.85 <= alpha <= 1.30 for alpha in alphas):
+            assert len(alphas) <= 2
+            assert span <= 0.15 + 1e-9
+        else:
+            assert span <= 0.30 + 1e-9
+
+
+def test_metric_plateau_batches_do_not_cross_size_or_max_steps():
+    alpha_values = [0.85, 0.90, 1.00, 1.15, 1.30, 1.50]
+    config = ExperimentConfig(
+        matrix=MatrixParams(N1=200, N2=200, M=50),
+        training=TrainingParams(samples_per_alpha=1, max_steps=20000, max_epochs=20000),
+        algorithm_key="bigamp_spreading",
+        scan=ScanConfig(dimension="alpha", values=alpha_values),
+        algorithm_params=AlgorithmParams(
+            use_compile=False,
+            use_bf16=False,
+            precision_profile="safe",
+            use_metric_plateau_stop=True,
+        ),
+        spreading=SpreadingConfig(f_distribution="ising", tensor_order=2, chunk_size=8192),
+        scan_spec={
+            "axes": {
+                "size": {
+                    "kind": "composite",
+                    "values": {
+                        "N200": {"matrix.N1": 200, "matrix.N2": 200, "training.max_steps": 20000},
+                        "N500": {"matrix.N1": 500, "matrix.N2": 500, "training.max_steps": 24000},
+                    },
+                },
+                "alpha": {"path": "alpha", "values": alpha_values},
+            }
+        },
+    )
+
+    resource_plan = build_scan_resource_execution_plan(
+        scan_plan=build_scan_plan(config),
+        base_config=config,
+        coordinator=ParallelCoordinator(estimator=MemoryEstimator(apply_calibration=False)),
+        batching_spec=get_batching_specs()[config.algorithm_key],
+    )
+
+    assert resource_plan.preflight_errors == []
+    for batch in resource_plan.batches:
+        sizes = {item.axis_values["size"] for item in batch.work_items}
+        steps = {item.axis_values.get("max_steps") for item in batch.work_items}
+        assert len(sizes) == 1
+        assert len(steps) == 1

@@ -60,6 +60,7 @@ class ResourceBatch:
     transient_peak_tensors: Dict[str, float] = field(default_factory=dict)
     calibration_source: str = "theory_unchecked"
     seed_partition_policy: str = "legacy"
+    batching_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -77,6 +78,7 @@ class ResourceBatch:
             "transient_peak_tensors": dict(self.transient_peak_tensors),
             "calibration_source": self.calibration_source,
             "seed_partition_policy": self.seed_partition_policy,
+            "batching_metadata": copy.deepcopy(self.batching_metadata),
         }
 
 
@@ -706,6 +708,9 @@ def estimation_params_from_config(config: Any, alpha_values: Optional[List[float
         tensor_dims=tensor_dims,
         seed_partition_policy=config.algorithm_params.seed_partition_policy,
         chunk_size=getattr(spreading, "chunk_size", None) if spreading else None,
+        use_metric_plateau_stop=bool(
+            getattr(config.algorithm_params, "use_metric_plateau_stop", False)
+        ),
     )
 
 
@@ -773,6 +778,7 @@ def _resource_batch_from_template(
         transient_peak_tensors=dict(getattr(template, "transient_peak_tensors", {}) or {}),
         calibration_source=getattr(template, "calibration_source", "theory_unchecked"),
         seed_partition_policy=seed_partition_policy,
+        batching_metadata=copy.deepcopy(getattr(template, "batching_metadata", {}) or {}),
     )
 
 

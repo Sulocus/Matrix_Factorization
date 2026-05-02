@@ -1,0 +1,70 @@
+tensor_order: 2
+algorithm: bigamp_spreading
+teacher: standard
+
+teacher_config:
+  init_distribution: gaussian
+  mean_scale: 0.0
+
+matrix:
+  N1: 200
+  N2: 200
+  M: 50
+
+scan:
+  axes:
+    alpha:
+      path: alpha
+      values:
+        start: 0.0
+        stop: 4.0
+        step: 0.1
+
+training:
+  samples_per_alpha: 5
+  max_steps: 5000
+  max_epochs: 5000
+  num_workers: 1
+
+seeds:
+  model: 42
+  data: 12345
+  spreading_seed: 12345
+
+algorithm_params:
+  damping: 0.05
+  noise_var: 1.0e-6
+  normalization_profile: paper_sparse_sampling
+  precision_profile: safe
+  precision_fallback_policy: allow
+  use_compile: true
+  compile_fallback_policy: allow
+  use_tf32: true
+  seed_partition_policy: partition_invariant
+  adaptive_damping: false
+  init_mode: random
+  init_overlap: 0.0
+  use_metric_plateau_stop: false
+
+spreading:
+  f_distribution: ising
+  onsager_correction: true
+  allow_intra_connection: false
+  seed: 12345
+  chunk_size: 262144
+  tensor_order: 2
+
+output:
+  name: qy_cmp_spread_ons
+  storage_mode: lightweight
+  save_tensors: false
+  enable_heatmap: false
+  plots:
+    - x: alpha
+      y: Q_Y_mean
+      filename: qy_spreading_onsager.png
+  group_results:
+    enabled: false
+    save_tensors: false
+    enable_heatmap: false
+    write_plots: false
