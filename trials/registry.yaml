@@ -150,8 +150,8 @@ trials:
     status: active
     path: trials/active/qy_compare_200_m50_spreading/trial.yaml
   - key: qy_compare_200_m50_spreading_onsager
-    status: archived
-    path: trials/archive/2026-05-03_share_cleanup/qy_compare_200_m50_spreading_onsager/trial.yaml
+    status: active
+    path: trials/active/qy_compare_200_m50_spreading_onsager/trial.yaml
   - key: spreading_low_alpha_step_diag_no_onsager
     status: archived
     path: trials/archive/2026-05-03_share_cleanup/spreading_low_alpha_step_diag_no_onsager/trial.yaml

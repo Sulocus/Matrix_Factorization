@@ -21,7 +21,7 @@ scan:
         step: 0.1
 
 training:
-  samples_per_alpha: 5
+  samples_per_alpha: 20
   max_steps: 200000
   max_epochs: 200000
   num_workers: 1
@@ -45,7 +45,7 @@ algorithm_params:
   use_early_stop: false
 
 output:
-  name: qy_compare_200_m50_agd
+  name: qy_compare_200_m50_agd_s20
   storage_mode: lightweight
   save_tensors: false
   enable_heatmap: false
