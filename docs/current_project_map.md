@@ -1,6 +1,8 @@
 # 当前项目地图
 
 这份文档记录 `dev` 分支当前状态，用来在新增物理内容或算法内容之前，先恢复对项目结构的控制。
+更完整的目录、算法分支和 metric 全表见
+`docs/project_structure_algorithms_metrics.md`；本文保留运行链路和维护风险视角。
 
 ## 基本约定
 
